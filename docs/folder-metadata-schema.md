@@ -5,10 +5,12 @@ Goal: keep the library filesystem-first, iNaturalist-friendly, and easy to open 
 ## Principles
 
 - Originals stay immutable.
+- Raw camera files are the long-term source of truth.
 - Every derived file should be reproducible from the source plus metadata.
 - Folder names should be human-readable first, machine-readable second.
 - Metadata should live in plain text sidecars or a small local index, not a proprietary catalog.
 - One observation can drive multiple downstream outputs, including iNaturalist uploads and stock-ready exports.
+- Lower-resolution web exports are disposable unless you explicitly choose to keep them.
 
 ## Recommended layout
 
@@ -18,8 +20,10 @@ F:\Bio\
     2026-03-01\
       obs-20260301-001-prairie-warbler\
         source\
+          raw\
           IMG_1234.CR2
           IMG_1235.CR2
+          IMG_1236.NEF
         work\
           IMG_1234.dng
         review\
@@ -40,11 +44,11 @@ F:\Bio\
 
 | Folder | Purpose |
 |---|---|
-| `source/` | Camera originals and untouched imports |
+| `source/raw/` | Camera originals retained long term |
 | `work/` | Temporary or intermediate processing outputs |
 | `review/` | Human-review copies for culling or comparison |
-| `export/inat/` | Upload-ready images for iNaturalist |
-| `export/stock/` | Stock-ready exports and derivatives |
+| `export/inat/` | Upload-ready images for iNaturalist; delete after upload if not needed |
+| `export/stock/` | Stock-ready exports and derivatives; keep only if they are still useful |
 | `metadata/` | Observation and per-file sidecars |
 
 ## Naming rules
@@ -129,6 +133,14 @@ Rights and usage notes for stock uploads.
 - `uploaded`
 - `stock-ready`
 - `stock-submitted`
+
+## Retention policy
+
+- Keep `source/raw/` forever unless you intentionally prune failed shots.
+- Keep `metadata/` long term because it preserves the link between iNat and stock workflows.
+- Treat `review/` and `export/` as working files.
+- Remove `export/inat/` once the upload is complete if you do not need local copies.
+- Remove `export/stock/` after submission unless you want an archive of stock-ready renders.
 
 ## What to automate first
 
