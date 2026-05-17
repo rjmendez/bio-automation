@@ -11,6 +11,7 @@ Goal: keep the library filesystem-first, iNaturalist-friendly, and easy to open 
 - Metadata should live in plain text sidecars or a small local index, not a proprietary catalog.
 - One observation can drive multiple downstream outputs, including iNaturalist uploads and stock-ready exports.
 - Lower-resolution web exports are disposable unless you explicitly choose to keep them.
+- Script-only first: no GUI dependency is required for ingest, tagging, or export.
 
 ## Recommended layout
 
@@ -44,7 +45,7 @@ F:\Bio\
 
 | Folder | Purpose |
 |---|---|
-| `source/raw/` | Camera originals retained long term if selected |
+| `source/raw/` | Selected raw files retained long term |
 | `work/` | Temporary or intermediate processing outputs |
 | `review/` | Human-review copies for culling or comparison |
 | `export/inat/` | Upload-ready images for iNaturalist; delete after upload if not needed |
@@ -79,12 +80,32 @@ Observation-level data pulled from iNaturalist or entered locally.
 }
 ```
 
+### `metadata/image.exif.json`
+
+Per-file EXIF extracted from the raw or export copy.
+
+```json
+{
+  "file": "source/raw/DSC_0008.CR2",
+  "datetime_original": "2025-10-09 15:42:31",
+  "camera_make": "Nikon",
+  "camera_model": "Z 6",
+  "gps_latitude": 41.1234,
+  "gps_longitude": -72.5678,
+  "gps_altitude": 12.3
+}
+```
+
+### `metadata/image.xmp`
+
+Sidecar used by tooling that prefers XMP. Keep this in sync with EXIF where possible.
+
 ### `metadata/assets.jsonl`
 
 One row per file for file-level processing state.
 
 ```json
-{"file":"source/IMG_1234.CR2","role":"original","status":"kept"}
+{"file":"source/raw/IMG_1234.CR2","role":"original","status":"kept"}
 {"file":"review/IMG_1234.jpg","role":"review","status":"selected"}
 {"file":"export/inat/IMG_1234_upload.jpg","role":"upload","status":"ready"}
 {"file":"export/stock/IMG_1234_stock.jpg","role":"stock","status":"ready"}
@@ -141,6 +162,7 @@ Rights and usage notes for stock uploads.
 - Keep `source/raw/` forever unless you intentionally prune failed shots.
 - Delete rejected raw files after culling so accidental frames, missed shots, and unusable duplicates do not clutter the archive.
 - Keep `metadata/` long term because it preserves the link between iNat and stock workflows.
+- Store EXIF in both the file and a JSON sidecar when practical so the archive survives tooling changes.
 - Treat `review/` and `export/` as working files.
 - Remove `export/inat/` once the upload is complete if you do not need local copies.
 - Remove `export/stock/` after submission unless you want an archive of stock-ready renders.
@@ -149,10 +171,11 @@ Rights and usage notes for stock uploads.
 
 1. Ingest into `source/`.
 2. Create the observation folder and `observation.json`.
-3. Rename files by capture time if needed.
-4. Generate a review JPEG.
-5. Export an iNat-sized upload copy.
-6. Reuse the same observation metadata to generate stock captions and keywords.
+3. Extract EXIF into `metadata/image.exif.json` and write matching XMP where useful.
+4. Rename files by capture time if needed.
+5. Generate a review JPEG.
+6. Export an iNat-sized upload copy.
+7. Reuse the same observation metadata to generate stock captions and keywords.
 
 ## What to leave manual at first
 
