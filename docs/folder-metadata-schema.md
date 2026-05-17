@@ -177,6 +177,159 @@ Rights and usage notes for stock uploads.
 6. Export an iNat-sized upload copy.
 7. Reuse the same observation metadata to generate stock captions and keywords.
 
+## First-pass script architecture
+
+Keep it script-only and command-oriented. One thin CLI should orchestrate a few small library modules.
+
+```text
+scripts/
+  bio.py                  # single entrypoint / CLI dispatcher
+  ingest.py               # copy card -> raw inbox
+  cull.py                 # mark keep/reject, delete rejected raws
+  metadata.py             # iNat fetch, EXIF/XMP write, local sidecars
+  render.py               # review JPEGs and upload/stock exports
+  stock.py                # captions/keywords from observation data
+
+lib/
+  paths.py                # folder naming, stem rules, path helpers
+  models.py               # dataclasses / typed dicts for JSON
+  io.py                   # read/write json, jsonl, xmp, sidecars
+  exif.py                 # exiftool wrapper or equivalent
+  inat.py                 # iNat read-only API client
+  pipeline.py             # state transitions and retention rules
+```
+
+### Workflow
+
+1. **ingest**
+   - Copy camera files from card/import folder into an observation work folder.
+   - Create observation id + folder name.
+   - Record every file in `assets.jsonl`.
+
+2. **cull**
+   - Generate review JPEGs.
+   - Mark files `kept` or `rejected`.
+   - Delete rejected raws immediately after culling.
+   - Move only kept raws into long-term `source/raw/`.
+
+3. **metadata pull**
+   - Fetch read-only iNaturalist observation data only.
+   - Do not create/upload/sync observations to iNat.
+   - Store the fetched observation payload locally.
+
+4. **sidecar write**
+   - Write EXIF JSON sidecars from the raw file.
+   - Write XMP sidecars when the target app can consume them.
+   - Keep EXIF/XMP values aligned where possible.
+
+5. **export**
+   - Build iNat-ready JPEGs from selected raws.
+   - Build stock-ready derivatives and generate captions/keywords from the same observation record.
+
+6. **retain**
+   - Keep selected raws and metadata long term.
+   - Treat review files and exports as disposable unless explicitly archived.
+
+## Minimal data schema
+
+Use one folder-level observation record plus one file-level asset log.
+
+### `metadata/observation.json`
+
+```json
+{
+  "observation_id": 123456789,
+  "obsdate": "2026-03-01",
+  "source": "inat-readonly",
+  "taxon": {
+    "id": 12345,
+    "name": "Prairie Warbler",
+    "rank": "species"
+  },
+  "place_guess": "F:\\Bio\\2026\\2026-03-01",
+  "locality": "nearfield notes",
+  "license": "CC BY-NC",
+  "quality_grade": "research",
+  "keywords_seed": [
+    "prairie warbler",
+    "setophaga discolor",
+    "grassland",
+    "wildlife"
+  ]
+}
+```
+
+### `metadata/assets.jsonl`
+
+One row per file and per processing state.
+
+```json
+{"file":"source/raw/IMG_1234.CR2","role":"original","status":"kept","selected":true}
+{"file":"source/raw/IMG_0001.CR2","role":"original","status":"rejected","selected":false}
+{"file":"review/IMG_1234.jpg","role":"review","status":"generated"}
+{"file":"export/inat/IMG_1234.jpg","role":"upload","status":"ready"}
+{"file":"export/stock/IMG_1234.jpg","role":"stock","status":"ready"}
+```
+
+### `metadata/image.exif.json`
+
+```json
+{
+  "file": "source/raw/IMG_1234.CR2",
+  "datetime_original": "2025-10-09T15:42:31",
+  "camera_make": "Nikon",
+  "camera_model": "Z 6",
+  "lens_model": "NIKKOR Z 180-600mm",
+  "gps": {
+    "lat": 41.1234,
+    "lon": -72.5678,
+    "alt": 12.3
+  }
+}
+```
+
+### `metadata/image.xmp`
+
+Sidecar mirror for apps that prefer XMP.
+
+## Minimal command set
+
+```text
+bio ingest <card-or-folder> --obsdate YYYY-MM-DD --slug "prairie-warbler"
+bio cull <obs-folder>
+bio fetch-inat <obs-folder> --observation-id 123456789
+bio write-sidecars <obs-folder>
+bio render-review <obs-folder>
+bio export-inat <obs-folder>
+bio export-stock <obs-folder>
+bio build-keywords <obs-folder>
+bio prune <obs-folder> --rejected-only
+```
+
+## Minimal functions
+
+- `make_observation_path(obsdate, slug) -> Path`
+- `load_observation(folder) / save_observation(folder, data)`
+- `scan_assets(folder) -> list[Asset]`
+- `mark_asset(file, status, role)`
+- `delete_rejected_raws(folder)`
+- `fetch_inat_observation(observation_id) -> dict`
+- `extract_exif(raw_path) -> dict`
+- `write_exif_json(asset_path, data)`
+- `write_xmp_sidecar(asset_path, data)`
+- `render_review_jpeg(raw_path) -> Path`
+- `export_inat_jpeg(raw_path) -> Path`
+- `export_stock_jpeg(raw_path) -> Path`
+- `build_stock_metadata(observation, asset) -> {title, caption, keywords}`
+
+## Implementation notes
+
+- No GUI dependency in v1; every action must be runnable from the CLI.
+- Use read-only iNat metadata fetches only.
+- Keep raw retention strict: only selected raws survive long term.
+- Prefer plain JSON, JSONL, and XMP over any catalog database for v1.
+- Make the pipeline idempotent so reruns do not duplicate exports or metadata.
+
 ## What to leave manual at first
 
 - Auto-tagging from pixels.
