@@ -8,6 +8,7 @@ Goal: keep the library filesystem-first, iNaturalist-friendly, and easy to open 
 - Every derived file should be reproducible from the source plus metadata.
 - Folder names should be human-readable first, machine-readable second.
 - Metadata should live in plain text sidecars or a small local index, not a proprietary catalog.
+- One observation can drive multiple downstream outputs, including iNaturalist uploads and stock-ready exports.
 
 ## Recommended layout
 
@@ -26,9 +27,13 @@ F:\Bio\
         export\
           inat\
             IMG_1234_upload.jpg
+          stock\
+            IMG_1234_stock.jpg
         metadata\
           observation.json
           assets.jsonl
+          keywords.json
+          release.json
 ```
 
 ## Folder meaning
@@ -39,6 +44,7 @@ F:\Bio\
 | `work/` | Temporary or intermediate processing outputs |
 | `review/` | Human-review copies for culling or comparison |
 | `export/inat/` | Upload-ready images for iNaturalist |
+| `export/stock/` | Stock-ready exports and derivatives |
 | `metadata/` | Observation and per-file sidecars |
 
 ## Naming rules
@@ -77,6 +83,41 @@ One row per file for file-level processing state.
 {"file":"source/IMG_1234.CR2","role":"original","status":"kept"}
 {"file":"review/IMG_1234.jpg","role":"review","status":"selected"}
 {"file":"export/inat/IMG_1234_upload.jpg","role":"upload","status":"ready"}
+{"file":"export/stock/IMG_1234_stock.jpg","role":"stock","status":"ready"}
+```
+
+### `metadata/keywords.json`
+
+Shared keyword/caption data that can be reused months later for stock submission.
+
+```json
+{
+  "title": "Prairie Warbler in field grass",
+  "caption": "Prairie Warbler (Setophaga discolor) foraging in grassland habitat.",
+  "keywords": [
+    "prairie warbler",
+    "setophaga discolor",
+    "bird",
+    "warbler",
+    "grassland",
+    "wildlife"
+  ],
+  "source_taxon": "iNaturalist observation",
+  "source_observation_id": 123456789
+}
+```
+
+### `metadata/release.json`
+
+Rights and usage notes for stock uploads.
+
+```json
+{
+  "model_released": false,
+  "property_released": false,
+  "location_sensitive": true,
+  "stock_status": "draft"
+}
 ```
 
 ## Processing states
@@ -86,6 +127,8 @@ One row per file for file-level processing state.
 - `processed`
 - `exported`
 - `uploaded`
+- `stock-ready`
+- `stock-submitted`
 
 ## What to automate first
 
@@ -94,6 +137,7 @@ One row per file for file-level processing state.
 3. Rename files by capture time if needed.
 4. Generate a review JPEG.
 5. Export an iNat-sized upload copy.
+6. Reuse the same observation metadata to generate stock captions and keywords.
 
 ## What to leave manual at first
 
