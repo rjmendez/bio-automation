@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Local config and secrets
+.env
+.env.*
+*.secret
+*.key
+
+# Logs and artifacts
+*.log
+dist/
+build/
+*.sqlite3
