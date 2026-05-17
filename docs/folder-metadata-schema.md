@@ -5,7 +5,7 @@ Goal: keep the library filesystem-first, iNaturalist-friendly, and easy to open 
 ## Principles
 
 - Originals stay immutable.
-- Raw camera files are the long-term source of truth.
+- Raw camera files are the long-term source of truth, but only for frames worth keeping.
 - Every derived file should be reproducible from the source plus metadata.
 - Folder names should be human-readable first, machine-readable second.
 - Metadata should live in plain text sidecars or a small local index, not a proprietary catalog.
@@ -21,9 +21,9 @@ F:\Bio\
       obs-20260301-001-prairie-warbler\
         source\
           raw\
-          IMG_1234.CR2
-          IMG_1235.CR2
-          IMG_1236.NEF
+            IMG_1234.CR2
+            IMG_1235.CR2
+            IMG_1236.NEF
         work\
           IMG_1234.dng
         review\
@@ -44,7 +44,7 @@ F:\Bio\
 
 | Folder | Purpose |
 |---|---|
-| `source/raw/` | Camera originals retained long term |
+| `source/raw/` | Camera originals retained long term if selected |
 | `work/` | Temporary or intermediate processing outputs |
 | `review/` | Human-review copies for culling or comparison |
 | `export/inat/` | Upload-ready images for iNaturalist; delete after upload if not needed |
@@ -88,6 +88,7 @@ One row per file for file-level processing state.
 {"file":"review/IMG_1234.jpg","role":"review","status":"selected"}
 {"file":"export/inat/IMG_1234_upload.jpg","role":"upload","status":"ready"}
 {"file":"export/stock/IMG_1234_stock.jpg","role":"stock","status":"ready"}
+{"file":"source/raw/IMG_0001.CR2","role":"original","status":"rejected"}
 ```
 
 ### `metadata/keywords.json`
@@ -128,6 +129,7 @@ Rights and usage notes for stock uploads.
 
 - `ingested`
 - `selected`
+- `rejected`
 - `processed`
 - `exported`
 - `uploaded`
@@ -137,6 +139,7 @@ Rights and usage notes for stock uploads.
 ## Retention policy
 
 - Keep `source/raw/` forever unless you intentionally prune failed shots.
+- Delete rejected raw files after culling so accidental frames, missed shots, and unusable duplicates do not clutter the archive.
 - Keep `metadata/` long term because it preserves the link between iNat and stock workflows.
 - Treat `review/` and `export/` as working files.
 - Remove `export/inat/` once the upload is complete if you do not need local copies.
