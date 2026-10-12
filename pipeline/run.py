@@ -63,6 +63,15 @@ STAGES = [
     {'name': 'aggregate', 'desc': 'per-observation tags from per-file vision results', **stage('aggregate_vision.py'), 'needs': []},
     {'name': 'review', 'desc': 'release review page data (flagged photos) -> publish as a private page', **stage('make_review_page.py'),
      'needs': [], 'gate': 'RELEASE REVIEW: a human decides which flagged photos to drop'},
+    {'name': 'inat_candidates', 'desc': 'prepared exports (local + NAS) that are NOT on iNaturalist yet, by image correlation per day',
+     **stage('inat_candidates.py'), 'needs': ['nas', 'net'], 'long': True},
+    {'name': 'gpx_index', 'desc': 'index the field phone GPX tracks (WSL ~/gpx) into one compact private file',
+     'cmd': ['wsl.exe', '-e', 'python3', os.path.join(STAGES_DIR, 'gpx_index.py').replace('\\', '/').replace('C:', '/mnt/c')],
+     'env': {}, 'needs': ['wsl'], 'long': False},
+    {'name': 'geotag_raws', 'desc': 'location for raws without GPS from the phone track (stability-gated; no coverage = left blank)',
+     **stage('geotag_new_raws.py'), 'needs': []},
+    {'name': 'inat_queue', 'desc': 'iNat upload queue: location tiers, proposed observations, 2048 px upload copies with GPS',
+     **stage('build_inat_queue.py'), 'needs': ['disk'], 'gate': 'INAT UPLOAD: you upload the copies and confirm the IDs'},
 ]
 GATES = [
     ('release_review', 'Release review', 'Flagged photos (people, faces, text, brands, property). Only you can judge a release.'),

@@ -12,9 +12,18 @@ PORT = os.environ.get('LIGHTCRAFT_CONTROL', '127.0.0.1:7980')
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 
 
+def _argv():
+    """Headless engine on the saved library (no window, no GPU) when BIO_LC_HEADLESS=1, else the running app's control channel."""
+    if os.environ.get('BIO_LC_HEADLESS') == '1':
+        lib = os.environ.get('BIO_LC_LIBRARY', os.path.expanduser(os.path.join('~', 'Pictures', 'LightCraft Library')))
+        return [EXE, 'mcp', '--library', lib], dict(os.environ, LIGHTCRAFT_GPU='0')
+    return [EXE, 'mcp', '--connect', '127.0.0.1:7980'], None
+
+
 class Mcp:
     def __init__(self):
-        self.p = subprocess.Popen([EXE, 'mcp', '--connect', PORT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        argv, env = _argv()
+        self.p = subprocess.Popen(argv, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, encoding='utf-8', bufsize=1)
         self.n = 1
         self._s({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {},
