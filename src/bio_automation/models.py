@@ -16,7 +16,7 @@ class Asset:
 class Observation:
     observation_id: int | None = None
     obsdate: str | None = None
-    source: str = "inat-readonly"
+    source: str = "local-ingest"
     taxon: dict[str, Any] = field(default_factory=dict)
     place_guess: str | None = None
     locality: str | None = None
