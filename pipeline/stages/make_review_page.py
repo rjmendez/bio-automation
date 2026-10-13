@@ -1,6 +1,7 @@
 """Release review page: thumbnails of every photo the local vision screen flagged, with the reason, sorted by severity.
 Static HTML + inline thumbnails. Per-viewer checkboxes (localStorage) and a copy-list button; nothing leaves the page."""
 import base64, csv, html, io, json, os, sys
+import visionlib
 from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 
@@ -28,10 +29,10 @@ for r in rows:
     parts = src.replace('\\', '/').split('/')
     day = next((c for c in parts if len(c) == 10 and c[4] == '-' and c[7] == '-'), '')
     key = f'{day}_{os.path.basename(src)}'
-    t = (vf.get(key) or {}).get('tags')
+    t = visionlib.tags_for(key, vf.get(key))
     if not t or key in seen:
         continue
-    flags = [k for k, _ in FIELDS if truthy(t.get(k))]
+    flags = [k for k, _ in FIELDS if k in visionlib.release_flags(vf.get(key, {}).get('tags'), key)]
     if not flags:
         continue
     seen.add(key)
@@ -45,7 +46,7 @@ for r in rows:
         thumb = 'data:image/jpeg;base64,' + base64.b64encode(b.getvalue()).decode()
     except Exception:
         thumb = ''
-    cards.append({'key': key, 'title': r['title'], 'flags': flags, 'note': (t.get('notes') or '').strip(), 'thumb': thumb, 'day': day,
+    cards.append({'key': key, 'title': r['title'], 'flags': flags, 'note': (t.get('caption') or t.get('notes') or '').strip(), 'thumb': thumb, 'day': day,
                   'src': os.path.basename(src), 'obs': r['obs_ids']})
 cards.sort(key=lambda c: (min(SEV[f] for f in c['flags']), c['day'], c['src']))
 label = dict(FIELDS)

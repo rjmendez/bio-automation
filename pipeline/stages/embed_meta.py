@@ -111,16 +111,23 @@ def rewrite(src_bytes, title, keywords, caption):
     return b''.join(out)
 
 
-def verify(orig_path, new_path, title, keywords):
+def verify(orig_path, new_path, title, keywords, resized=False):
     from PIL import IptcImagePlugin
     errs = []
     with Image.open(orig_path) as a, Image.open(new_path) as b:
-        if a.size != b.size:
-            errs.append('size differs')
-        ha = hashlib.sha1(a.tobytes()).hexdigest()
-        hb = hashlib.sha1(b.tobytes()).hexdigest()
-        if ha != hb:
-            errs.append('PIXELS DIFFER')
+        if resized:
+            # over-limit source: pixels are resampled on purpose; check the result is within the limit and keeps the aspect ratio
+            if b.width * b.height > 100e6:
+                errs.append('still over 100 MP')
+            if abs(b.width / b.height - a.width / a.height) > 0.005 * (a.width / a.height):
+                errs.append('aspect ratio changed')
+        else:
+            if a.size != b.size:
+                errs.append('size differs')
+            ha = hashlib.sha1(a.tobytes()).hexdigest()
+            hb = hashlib.sha1(b.tobytes()).hexdigest()
+            if ha != hb:
+                errs.append('PIXELS DIFFER')
         iptc = IptcImagePlugin.getiptcinfo(b) or {}
         kws = iptc.get((2, 25))
         kws = [k.decode('utf-8') for k in (kws if isinstance(kws, list) else [kws] if kws else [])]
@@ -144,12 +151,11 @@ VISION = json.load(open(_VF, encoding='utf-8')) if os.path.exists(_VF) else {}
 
 
 def release_flags(name):
+    import visionlib                                  # nested vision answers must be flattened or flagged files look clear
     v = (VISION.get(name) or {}).get('tags') or {}
     if not v:
         return None                                   # not screened yet
-    def truthy(x):
-        return x is True or (isinstance(x, str) and x.strip().lower() in ('true', 'yes'))
-    return [k for k in RELEASE_FIELDS if truthy(v.get(k))]
+    return visionlib.release_flags(v, name)
 
 
 def resize_to_limit(src_bytes, target_mp=95.0):
@@ -227,7 +233,7 @@ def main():
             new = rewrite(data, r['title'], r['keywords'], caption)
             tmp = out + '.part'
             open(tmp, 'wb').write(new)
-            errs = verify(src, tmp, r['title'], r['keywords'])
+            errs = verify(src, tmp, r['title'], r['keywords'], resized=resized_to is not None)
             if errs:
                 os.remove(tmp)
                 bad += 1

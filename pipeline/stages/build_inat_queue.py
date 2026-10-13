@@ -17,6 +17,7 @@ import sys
 from datetime import datetime
 
 import piexif
+import visionlib
 from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
@@ -130,8 +131,8 @@ def main():
         vk = [k for k in vision if k.endswith(stem + '.jpg') or k.endswith(stem + '-Enhanced-NR.jpg')]
         flag = None
         for k in vk:
-            tg = (vision[k].get('tags') or {})
-            if tg.get('person_visible') or tg.get('face_visible') or tg.get('identifiable_person'):
+            fl = visionlib.release_flags(vision[k].get('tags'), k)
+            if any(f in fl for f in ('person_visible', 'face_visible', 'identifiable_person')):
                 flag = True
         it['release'] = 'flagged' if flag else ('clear' if vk else 'unscreened')
         stat[it['loc_source']] += 1
