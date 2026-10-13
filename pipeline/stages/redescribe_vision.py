@@ -66,7 +66,10 @@ def file_map():
         if not os.path.exists(p):
             continue
         for r in csv.DictReader(open(p, encoding='utf-8')):
-            name = os.path.basename(r['output_jpeg'])
+            # key like the vision pass and the aggregator: <day>_<source basename>; output_jpeg is empty for skipped rows
+            src = r['source_jpeg'].replace(chr(92), '/')
+            day = next((c for c in src.split('/') if re.fullmatch(r'\d{4}-\d{2}-\d{2}', c)), '')
+            name = f'{day}_{os.path.basename(src)}'
             path = next((os.path.join(d, name) for d in DIRS if os.path.exists(os.path.join(d, name))), None)
             if path:
                 m[name] = (path, [x for x in r['obs_ids'].split(';') if x])

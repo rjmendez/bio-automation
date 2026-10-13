@@ -240,6 +240,10 @@ def main():
                 manifest.append({**r, 'status': 'FAILED: ' + '; '.join(errs), 'out': ''})
             else:
                 os.replace(tmp, out)
+                # a file lives in exactly one of ready / _needs_review: drop the stale counterpart so routing changes move it
+                other = os.path.join(ready if os.path.dirname(out) == review else review, os.path.basename(out))
+                if os.path.exists(other):
+                    os.remove(other)
                 manifest.append({**r, 'status': 'ok', 'out': out})
         except Exception as e:
             bad += 1
