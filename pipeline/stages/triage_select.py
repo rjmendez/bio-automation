@@ -45,6 +45,8 @@ def main():
     z = np.load(os.path.join(ROOT, 'triage_vectors.npz'))
     vec = {int(i): v for i, v in zip(z['ids'], z['vectors'])}
     cap = {r['id']: r.get('captured') for r in json.load(open(os.path.join(ROOT, 'lc_raws.json')))}
+    sig_path = os.path.join(ROOT, 'lrcat_signals.json')       # lrcat_check.py: what the owner already did by hand in Lightroom
+    sig = json.load(open(sig_path)) if os.path.exists(sig_path) else {}
 
     rows = []
     for pid, it in index.items():
@@ -69,7 +71,8 @@ def main():
         except ValueError:
             pass
         rows.append({'id': pid, 'day': it['day'], 'stem': it['stem'], 'file': it['file'], 'category': cat, 'flags': flags, 'subject': s,
-                     'habitat': str(t.get('habitat') or ''), 't': ts, 'sharp': sharpness(os.path.join(THUMBS, f'{pid}.jpg'))})
+                     'habitat': str(t.get('habitat') or ''), 't': ts, 'sharp': sharpness(os.path.join(THUMBS, f'{pid}.jpg')),
+                     'pick': 'pick' in sig.get(str(pid), [])})
 
     byday = collections.defaultdict(list)
     for r in rows:
@@ -100,7 +103,9 @@ def main():
     for c, rs in groups.items():
         cand = sorted([r for r in rs if r['category'] in ('nature', 'unclear')], key=lambda r: -r['sharp'])
         k = 1 if len(rs) <= 3 else (2 if len(rs) <= 10 else 3)
-        for r in cand[:k]:
+        chosen = [r for r in cand if r['pick']]              # frames the owner flagged as Pick in Lightroom are always rendered
+        chosen += [r for r in cand if not r['pick']][:max(k - len(chosen), 0)]
+        for r in chosen:
             r['selected'] = True
             sel.append(r)
     json.dump(rows, open(os.path.join(ROOT, 'triage_all.json'), 'w'))
@@ -109,6 +114,7 @@ def main():
     cat = collections.Counter(r['category'] for r in rows)
     print('frames', len(rows), '| categories', dict(cat))
     print('clusters', len(groups), '| singletons', sum(1 for g in groups.values() if len(g) == 1), '| largest', max((len(g) for g in groups.values()), default=0))
+    print('owner picks in the library flagged for render:', sum(1 for r in sel if r.get('pick')), '| picks that were NOT nature/unflagged:', sum(1 for r in rows if r.get('pick') and not r.get('selected')))
     print(f'SELECTED for a full render: {len(sel)} (~{len(sel) * EST_MB / 1024:.0f} GB at ~{EST_MB} MB each)')
     yr = collections.Counter(r['day'][:7] for r in sel)
     print('selected by month:', dict(sorted(yr.items())))
