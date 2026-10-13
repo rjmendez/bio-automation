@@ -19,6 +19,7 @@ from embed_index import Embedder
 
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 K = 15
+TAG = os.environ.get('BIO_QUEUE_TAG', '')
 # measured by embed_loo.py on 2026-10-13 (species level / iconic level, vote share bins)
 BINS_SPECIES = [(0.0, 0.3, 0.154), (0.3, 0.5, 0.273), (0.5, 0.7, 0.486), (0.7, 0.9, 0.782), (0.9, 1.01, 0.877)]
 
@@ -31,7 +32,7 @@ def measured(share):
 
 
 def main():
-    q = json.load(open(os.path.join(ROOT, 'inat_queue.json')))
+    q = json.load(open(os.path.join(ROOT, f'inat_queue{TAG}.json')))
     obs = json.load(open(os.path.join(ROOT, 'inat_observations.json'), encoding='utf-8'))['observations']
     tid = {}
     for o in obs:
@@ -84,7 +85,7 @@ def main():
                             'vote_share': round(share, 3), 'measured_accuracy': measured(share)})
         iconic = [{'iconic': k, 'vote_share': round(v / m, 3)} for k, v in ic.most_common(2)]
         out[str(g)] = {'photos': m, 'species': species, 'iconic': iconic}
-    json.dump(out, open(os.path.join(ROOT, 'inat_suggestions.json'), 'w'))
+    json.dump(out, open(os.path.join(ROOT, f'inat_suggestions{TAG}.json'), 'w'))
     strong = sum(1 for v in out.values() if v['species'] and v['species'][0]['vote_share'] >= 0.7)
     print(f'groups with suggestions {len(out)} | species vote share >= 0.7 (measured ~78-88%): {strong}', flush=True)
 

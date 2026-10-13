@@ -23,8 +23,9 @@ from datetime import datetime
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 API = 'https://api.inaturalist.org/v1'
 UA = 'bio-automation-poster/0.1 (personal uploader; owner rjmendez)'
-LEDGER = os.path.join(ROOT, 'inat_decisions.jsonl')
-POSTED = os.path.join(ROOT, 'inat_posted.jsonl')
+TAG = os.environ.get('BIO_QUEUE_TAG', '')
+LEDGER = os.path.join(ROOT, f'inat_decisions{TAG}.jsonl')
+POSTED = os.path.join(ROOT, f'inat_posted{TAG}.jsonl')
 _last = [0.0]
 
 
@@ -103,7 +104,7 @@ def main():
     ap.add_argument('--live', action='store_true')
     ap.add_argument('--limit', type=int, default=10)
     a = ap.parse_args()
-    q = json.load(open(os.path.join(ROOT, 'inat_queue.json')))
+    q = json.load(open(os.path.join(ROOT, f'inat_queue{TAG}.json')))
     dec, done = latest_decisions(), posted_groups()
     todo = [d for g, d in sorted(dec.items()) if d.get('status') == 'approved' and g not in done]
     print(f'approved in the console: {sum(1 for d in dec.values() if d.get("status") == "approved")} | already posted/partial: {len(done)} | to send: {len(todo)}')

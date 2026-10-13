@@ -26,9 +26,10 @@ import visionlib
 
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 PORT = int(os.environ.get('BIO_CONSOLE_PORT', '8777'))
+TAG = os.environ.get('BIO_QUEUE_TAG', '')      # '' = the exported-files queue, '_lc' = the LightCraft queue
 UA = 'bio-automation-console/0.1 (personal photo review tool; owner rjmendez)'
-LEDGER = os.path.join(ROOT, 'inat_decisions.jsonl')
-POSTED = os.path.join(ROOT, 'inat_posted.jsonl')
+LEDGER = os.path.join(ROOT, f'inat_decisions{TAG}.jsonl')
+POSTED = os.path.join(ROOT, f'inat_posted{TAG}.jsonl')
 Image.MAX_IMAGE_PIXELS = None
 TZ_NAMES = {'America/New_York': 'Eastern Time (US & Canada)', 'America/Chicago': 'Central Time (US & Canada)',
             'America/Denver': 'Mountain Time (US & Canada)', 'America/Los_Angeles': 'Pacific Time (US & Canada)',
@@ -41,9 +42,9 @@ def jload(name, default):
     return json.load(open(p, encoding='utf-8')) if os.path.exists(p) else default
 
 
-QUEUE = jload('inat_queue.json', [])
-SUGG = jload('inat_suggestions.json', {})
-VIS = jload('vision_inat.json', {})
+QUEUE = jload(f'inat_queue{TAG}.json', [])
+SUGG = jload(f'inat_suggestions{TAG}.json', {})
+VIS = jload(f'vision_inat{TAG}.json', {})
 OBS = jload('inat_observations.json', {}).get('observations', [])
 DAY_TZ = {}
 for o in OBS:
@@ -96,6 +97,14 @@ def flags_for(items):
     return sorted(out)
 
 
+def tz_from_offset(off, day):
+    h = int(round(off / 3600.0))
+    dst = '03-10' <= day[5:] <= '11-02'     # US daylight saving, close enough for a default the reviewer can change
+    return {-4: 'Eastern Time (US & Canada)', -5: 'Central Time (US & Canada)' if dst else 'Eastern Time (US & Canada)',
+            -6: 'Mountain Time (US & Canada)' if dst else 'Central Time (US & Canada)',
+            -7: 'Pacific Time (US & Canada)' if dst else 'Mountain Time (US & Canada)', -8: 'Pacific Time (US & Canada)', 0: 'UTC'}.get(h)
+
+
 def group_default(items):
     first = min(items, key=lambda i: i.get('t') or 0)
     t = first.get('time') or ''
@@ -107,6 +116,8 @@ def group_default(items):
     c = DAY_TZ.get(first['day'])
     if c:
         tz = TZ_NAMES.get(c.most_common(1)[0][0])
+    if tz is None and first.get('tz_offset') is not None:       # LightCraft keeps the UTC offset the photo was taken with
+        tz = tz_from_offset(first['tz_offset'], first['day'])
     loc = next((i for i in items if i.get('lat') is not None), None)
     return {'observed_on_string': obs_str, 'time_zone': tz, 'lat': loc['lat'] if loc else None, 'lon': loc['lon'] if loc else None,
             'loc_source': loc['loc_source'] if loc else 'none', 'loc_note': loc.get('loc_note', '') if loc else 'no location',
@@ -193,7 +204,7 @@ class H(BaseHTTPRequestHandler):
             for r in rows:
                 r['posted'] = r['group'] in done
             c = collections.Counter(r['status'] for r in rows)
-            return self._send(200, {'groups': rows, 'counts': c, 'tz_choices': TZ_CHOICES, 'queue_total': len(QUEUE),
+            return self._send(200, {'groups': rows, 'counts': c, 'tz_choices': TZ_CHOICES, 'queue_total': len(QUEUE), 'queue': TAG or 'files',
                                     'without_copy': sum(1 for i in QUEUE if not i.get('copy'))})
         if u.path == '/api/group':
             g = int(q['id'][0])

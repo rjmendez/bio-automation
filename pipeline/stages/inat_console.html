@@ -37,7 +37,7 @@ var S={groups:[],cur:null,det:null,tz:[]};
 function $(i){return document.getElementById(i)}
 function api(u,o){return fetch(u,o).then(function(r){return r.json()})}
 function load(){return api('/api/state').then(function(s){S.groups=s.groups;S.tz=s.tz_choices;
- var c=s.counts;$('counts').textContent='approved '+(c.approved||0)+' / skipped '+(c.skipped||0)+' / hold '+(c.hold||0)+' / pending '+(c.pending||0)+' of '+s.groups.length+(s.without_copy?' | '+s.without_copy+' photos have no upload copy (no location)':'');
+ var c=s.counts;$('counts').textContent='queue: '+s.queue+' | approved '+(c.approved||0)+' / skipped '+(c.skipped||0)+' / hold '+(c.hold||0)+' / pending '+(c.pending||0)+' of '+s.groups.length+(s.without_copy?' | '+s.without_copy+' photos have no upload copy (no location)':'');
  drawList()})}
 function vis(g){var f=$('filter').value;
  if(f==='all')return true;if(f==='noloc')return g.loc==='none';if(f==='flagged')return g.flags.length>0&&g.flags.join()!=='unscreened';return g.status===f}

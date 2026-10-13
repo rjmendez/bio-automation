@@ -13,11 +13,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vision_files as vf
 
 ROOT = vf.ROOT
-OUT = os.path.join(ROOT, 'vision_inat.json')
+TAG = os.environ.get('BIO_QUEUE_TAG', '')
+OUT = os.path.join(ROOT, f'vision_inat{TAG}.json')
 
 
 def main():
-    q = json.load(open(os.path.join(ROOT, 'inat_queue.json')))
+    q = json.load(open(os.path.join(ROOT, f'inat_queue{TAG}.json')))
     paths = sorted({i['copy'] for i in q if i.get('copy') and os.path.exists(i['copy'])})
     done = json.load(open(OUT, encoding='utf-8')) if os.path.exists(OUT) else {}
     todo = [p for p in paths if p not in done or 'error' in done[p]]
