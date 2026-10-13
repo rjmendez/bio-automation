@@ -1,0 +1,255 @@
+"""Local review console for the iNaturalist upload queue (reproduces the web uploader's card workflow on your own machine).
+
+Loopback only (127.0.0.1). It never talks to iNaturalist except the public taxon autocomplete lookup (<= 1 request/second, identified
+User-Agent). Decisions are appended to inat_decisions.jsonl; NOTHING is posted from here. Posting is a separate command (inat_post.py)
+that only sends groups YOU approved one by one.
+
+Per proposed observation you see: the merged photos, location source, date/time, advisory release flags, ranked taxon suggestions with
+the accuracy measured on your own photos, and editable fields. Approve / skip / hold. Keys: A approve, S skip, H hold, J/K next/prev.
+"""
+import collections
+import io
+import json
+import os
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import visionlib
+
+ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
+PORT = int(os.environ.get('BIO_CONSOLE_PORT', '8777'))
+UA = 'bio-automation-console/0.1 (personal photo review tool; owner rjmendez)'
+LEDGER = os.path.join(ROOT, 'inat_decisions.jsonl')
+POSTED = os.path.join(ROOT, 'inat_posted.jsonl')
+Image.MAX_IMAGE_PIXELS = None
+TZ_NAMES = {'America/New_York': 'Eastern Time (US & Canada)', 'America/Chicago': 'Central Time (US & Canada)',
+            'America/Denver': 'Mountain Time (US & Canada)', 'America/Los_Angeles': 'Pacific Time (US & Canada)',
+            'America/Phoenix': 'Arizona', 'America/Anchorage': 'Alaska', 'Pacific/Honolulu': 'Hawaii', 'UTC': 'UTC'}
+TZ_CHOICES = sorted(set(TZ_NAMES.values()))
+
+
+def jload(name, default):
+    p = os.path.join(ROOT, name)
+    return json.load(open(p, encoding='utf-8')) if os.path.exists(p) else default
+
+
+QUEUE = jload('inat_queue.json', [])
+SUGG = jload('inat_suggestions.json', {})
+VIS = jload('vision_inat.json', {})
+OBS = jload('inat_observations.json', {}).get('observations', [])
+DAY_TZ = {}
+for o in OBS:
+    if o.get('observed_on') and o.get('tz'):
+        DAY_TZ.setdefault(o['observed_on'], collections.Counter())[o['tz']] += 1
+
+GROUPS = collections.OrderedDict()
+for idx, it in enumerate(QUEUE):
+    it['idx'] = idx
+    if it.get('copy'):
+        GROUPS.setdefault(it['group'], []).append(it)
+LOCK = threading.Lock()
+
+
+def decisions():
+    cur = {}
+    if os.path.exists(LEDGER):
+        for line in open(LEDGER, encoding='utf-8'):
+            try:
+                r = json.loads(line)
+                cur[r['group']] = r
+            except Exception:
+                pass
+    return cur
+
+
+def posted():
+    s = set()
+    if os.path.exists(POSTED):
+        for line in open(POSTED, encoding='utf-8'):
+            try:
+                r = json.loads(line)
+                if r.get('status') in ('posted', 'partial'):
+                    s.add(r['group'])
+            except Exception:
+                pass
+    return s
+
+
+def flags_for(items):
+    out = set()
+    for it in items:
+        t = (VIS.get(it['copy']) or {}).get('tags')
+        if not t:
+            out.add('unscreened')
+            continue
+        for f in visionlib.release_flags(t):
+            out.add({'person_visible': 'person', 'identifiable_person': 'person', 'face_visible': 'face', 'text_or_logo_visible': 'text',
+                     'brand_or_product_visible': 'brand', 'property_identifiable': 'property'}[f])
+    return sorted(out)
+
+
+def group_default(items):
+    first = min(items, key=lambda i: i.get('t') or 0)
+    t = first.get('time') or ''
+    try:
+        obs_str = datetime.strptime(t[:19], '%Y:%m:%d %H:%M:%S').strftime('%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        obs_str = first['day']
+    tz = None
+    c = DAY_TZ.get(first['day'])
+    if c:
+        tz = TZ_NAMES.get(c.most_common(1)[0][0])
+    loc = next((i for i in items if i.get('lat') is not None), None)
+    return {'observed_on_string': obs_str, 'time_zone': tz, 'lat': loc['lat'] if loc else None, 'lon': loc['lon'] if loc else None,
+            'loc_source': loc['loc_source'] if loc else 'none', 'loc_note': loc.get('loc_note', '') if loc else 'no location',
+            'positional_accuracy': 50 if loc and loc['loc_source'] == 'neighbor' else None, 'camera': first.get('camera')}
+
+
+def summary(g, items, dec):
+    d = group_default(items)
+    s = SUGG.get(str(g)) or {}
+    top = (s.get('species') or [None])[0]
+    return {'group': g, 'n': len(items), 'day': items[0]['day'], 'status': (dec.get(g) or {}).get('status', 'pending'),
+            'loc': d['loc_source'], 'tz': d['time_zone'], 'flags': flags_for(items), 'top': top['common'] or top['taxon'] if top else None,
+            'top_share': top['vote_share'] if top else None, 'top_acc': top['measured_accuracy'] if top else None,
+            'iconic': (s.get('iconic') or [{}])[0].get('iconic')}
+
+
+_last = [0.0]
+_cache = {}
+
+
+def taxa_search(q):
+    q = q.strip()
+    if len(q) < 3:
+        return []
+    if q in _cache:
+        return _cache[q]
+    wait = 1.1 - (time.time() - _last[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last[0] = time.time()
+    url = 'https://api.inaturalist.org/v1/taxa/autocomplete?' + urllib.parse.urlencode({'q': q, 'per_page': 8})
+    try:
+        r = json.load(urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': UA}), timeout=20))
+        out = [{'id': t['id'], 'name': t['name'], 'common': t.get('preferred_common_name'), 'rank': t.get('rank')} for t in r.get('results', [])]
+    except Exception as e:
+        out = [{'id': None, 'name': f'lookup failed: {type(e).__name__}', 'common': None, 'rank': None}]
+    _cache[q] = out
+    return out
+
+
+def thumb(idx, side):
+    it = QUEUE[idx]
+    im = Image.open(it['copy'])
+    im.draft('RGB', (side * 2, side * 2))
+    im = im.convert('RGB')
+    im.thumbnail((side, side))
+    b = io.BytesIO()
+    im.save(b, 'JPEG', quality=82)
+    return b.getvalue()
+
+
+PAGE = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'inat_console.html'), encoding='utf-8').read()
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body, ctype='application/json'):
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body).encode()
+        elif isinstance(body, str):
+            body = body.encode()
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _host_ok(self):
+        return (self.headers.get('Host') or '').split(':')[0] in ('127.0.0.1', 'localhost')
+
+    def do_GET(self):
+        if not self._host_ok():
+            return self._send(403, {'error': 'host'})
+        u = urllib.parse.urlparse(self.path)
+        q = urllib.parse.parse_qs(u.query)
+        if u.path == '/':
+            return self._send(200, PAGE, 'text/html; charset=utf-8')
+        if u.path == '/api/state':
+            dec, done = decisions(), posted()
+            rows = [summary(g, items, dec) for g, items in GROUPS.items()]
+            for r in rows:
+                r['posted'] = r['group'] in done
+            c = collections.Counter(r['status'] for r in rows)
+            return self._send(200, {'groups': rows, 'counts': c, 'tz_choices': TZ_CHOICES, 'queue_total': len(QUEUE),
+                                    'without_copy': sum(1 for i in QUEUE if not i.get('copy'))})
+        if u.path == '/api/group':
+            g = int(q['id'][0])
+            items = GROUPS.get(g)
+            if not items:
+                return self._send(404, {'error': 'no such group'})
+            dec = decisions().get(g)
+            d = group_default(items)
+            return self._send(200, {'group': g, 'defaults': d, 'decision': dec, 'flags': flags_for(items),
+                                    'suggestions': SUGG.get(str(g)),
+                                    'photos': [{'idx': i['idx'], 'name': os.path.basename(i['rel']), 'time': i.get('time'), 'w': i['w'], 'h': i['h'],
+                                                'release': i.get('release')} for i in sorted(items, key=lambda i: i.get('t') or 0)]})
+        if u.path == '/img':
+            i, side = int(q['i'][0]), min(int(q.get('s', ['700'])[0]), 1400)
+            if not (0 <= i < len(QUEUE)) or not QUEUE[i].get('copy'):
+                return self._send(404, {'error': 'no image'})
+            return self._send(200, thumb(i, side), 'image/jpeg')
+        if u.path == '/api/taxa':
+            return self._send(200, taxa_search(q.get('q', [''])[0]))
+        return self._send(404, {'error': 'not found'})
+
+    def do_POST(self):
+        if not self._host_ok() or self.headers.get('X-Console') != '1':
+            return self._send(403, {'error': 'forbidden'})
+        if self.path != '/api/decide':
+            return self._send(404, {'error': 'not found'})
+        n = int(self.headers.get('Content-Length') or 0)
+        d = json.loads(self.rfile.read(n) or b'{}')
+        g = d.get('group')
+        if g not in GROUPS:
+            return self._send(400, {'error': 'unknown group'})
+        status = d.get('status')
+        if status not in ('approved', 'skipped', 'hold', 'pending'):
+            return self._send(400, {'error': 'bad status'})
+        if status == 'approved':
+            miss = [k for k in ('observed_on_string', 'time_zone', 'lat', 'lon') if d.get(k) in (None, '')]
+            if miss:
+                return self._send(400, {'error': 'approve needs: ' + ', '.join(miss)})
+            if d.get('geoprivacy') not in ('open', 'obscured', 'private'):
+                return self._send(400, {'error': 'geoprivacy must be open, obscured or private'})
+            if d.get('time_zone') not in TZ_CHOICES:
+                return self._send(400, {'error': 'pick a time zone from the list'})
+        rec = {k: d.get(k) for k in ('group', 'status', 'taxon_id', 'taxon_name', 'species_guess', 'description', 'tags', 'geoprivacy',
+                                     'captive', 'observed_on_string', 'time_zone', 'lat', 'lon', 'positional_accuracy', 'photo_order')}
+        rec['ts'] = datetime.now().isoformat(timespec='seconds')
+        with LOCK:
+            with open(LEDGER, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(rec) + '\n')
+        return self._send(200, {'ok': True})
+
+
+def main():
+    print(f'console on http://127.0.0.1:{PORT}/  | groups {len(GROUPS)} | photos with copies {sum(len(v) for v in GROUPS.values())} '
+          f'| suggestions {len(SUGG)} | screened copies {len(VIS)}', flush=True)
+    ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
+
+
+if __name__ == '__main__':
+    main()

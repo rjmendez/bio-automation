@@ -75,12 +75,17 @@ STAGES = [
     {'name': 'geotag_raws', 'desc': 'location for raws without GPS from the phone track (stability-gated; no coverage = left blank)',
      **stage('geotag_new_raws.py'), 'needs': []},
     {'name': 'inat_queue', 'desc': 'iNat upload queue: location tiers, proposed observations, 2048 px upload copies with GPS',
-     **stage('build_inat_queue.py'), 'needs': ['disk'], 'gate': 'INAT UPLOAD: you upload the copies and confirm the IDs'},
+     **stage('build_inat_queue.py'), 'needs': ['disk']},
+    {'name': 'inat_screen', 'desc': 'people/text screening of the iNat upload copies (they sit outside the Adobe folders)',
+     **stage('screen_inat_copies.py'), 'needs': ['ollama'], 'long': True},
+    {'name': 'inat_suggest', 'desc': 'advisory taxon suggestions per proposed observation, with measured accuracy bins',
+     **stage('inat_suggest.py'), 'needs': [],
+     'gate': 'INAT UPLOAD: review each proposed observation in inat_console.py, then upload via the web uploader or inat_post.py'},
 ]
 GATES = [
     ('release_review', 'Release review', 'Flagged photos (people, faces, text, brands, property). Only you can judge a release.'),
     ('adobe_upload', 'Adobe Stock upload', 'Upload the files in the ready folder through the Contributor Portal. Titles and keywords are already embedded.'),
-    ('inat_upload', 'iNaturalist upload and ID confirmation', 'New photos are uploaded and identified on iNaturalist by you.'),
+    ('inat_upload', 'iNaturalist upload and ID confirmation', 'Review each proposed observation in the local console (inat_console.py), then upload via the web uploader or send your approved items with inat_post.py. Every observation needs your own decision.'),
 ]
 
 
