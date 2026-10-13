@@ -57,7 +57,9 @@ def main():
         t = visionlib.flat(e['tags'])
         flags = visionlib.release_flags(e['tags'])
         s = str(t.get('subject_part') or '').lower()
-        if flags:
+        if 'enhanced' in it['file'].lower() and not os.environ.get('BIO_INCLUDE_ENHANCED'):
+            cat = 'owner_enhanced'          # Lightroom Enhance output: made by hand, left alone unless BIO_INCLUDE_ENHANCED=1
+        elif flags:
             cat = 'flagged'
         elif NOT_NATURE.search(s) and not NATURE.search(s):
             cat = 'not_nature'
