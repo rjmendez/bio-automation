@@ -56,7 +56,7 @@ def main():
             m.call('select_photos', {'ids': [fid], 'active': fid})
             if pristine:
                 m.call('command_run', {'id': 'develop.auto', 'params': {}})      # photos you edited are exported as they are
-            if pristine and iso >= ISO_DENOISE:
+            if pristine and iso >= ISO_DENOISE and r['kind'] == 'backlog':       # gap days: CPU denoise costs 6-10 min per frame, skipped
                 m.call('command_run', {'id': 'denoise.toggle', 'params': {'id': fid, 'enabled': True}})
                 m.call('set_develop', {'id': fid, 'values': {'enhance.denoise': 25.0}, 'label': 'render: subtle AI denoise'})
                 m.call('command_run', {'id': 'denoise.queue', 'params': {'ids': [fid]}})
