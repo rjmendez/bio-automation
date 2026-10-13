@@ -11,6 +11,7 @@ import collections
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -124,6 +125,23 @@ def group_default(items):
             'positional_accuracy': 50 if loc and loc['loc_source'] == 'neighbor' else None, 'camera': first.get('camera')}
 
 
+NATURE = re.compile(r'flower|plant|leaf|leaves|fungus|fungi|mushroom|fruiting|insect|animal|bird|spider|butterfly|moth|bee|fly|beetle|tree|bark|wing|'
+                    r'petal|bud|berry|seed|cap|gill|lichen|moss|reptile|frog|snake|turtle|mammal|caterpillar|larva|cocoon|egg|web|nest|fruit|stem|branch', re.I)
+NOT_NATURE = re.compile(r'vehicle|car|truck|motorcycle|building|house|sign|person|people|human|food|plate|dish|drink|bottle|room|furniture|screen|'
+                        r'phone|text|poster|crowd|street|road|boat|machine|tool|toy', re.I)
+
+
+def nonnature(items):
+    """Advisory: most photos of the group have a non-organism subject according to the local vision pass."""
+    votes = []
+    for it in items:
+        t = visionlib.flat((VIS.get(it['copy']) or {}).get('tags'))
+        s = str(t.get('subject_part') or '').lower()
+        if s:
+            votes.append(bool(NOT_NATURE.search(s)) and not NATURE.search(s))
+    return bool(votes) and sum(votes) / len(votes) >= 0.5
+
+
 def summary(g, items, dec):
     d = group_default(items)
     s = SUGG.get(str(g)) or {}
@@ -131,7 +149,7 @@ def summary(g, items, dec):
     return {'group': g, 'n': len(items), 'day': items[0]['day'], 'status': (dec.get(g) or {}).get('status', 'pending'),
             'loc': d['loc_source'], 'tz': d['time_zone'], 'flags': flags_for(items), 'top': top['common'] or top['taxon'] if top else None,
             'top_share': top['vote_share'] if top else None, 'top_acc': top['measured_accuracy'] if top else None,
-            'iconic': (s.get('iconic') or [{}])[0].get('iconic')}
+            'iconic': (s.get('iconic') or [{}])[0].get('iconic'), 'nonnature': nonnature(items)}
 
 
 _last = [0.0]

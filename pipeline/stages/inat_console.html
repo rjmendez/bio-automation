@@ -30,7 +30,7 @@ button.go{background:var(--acc);color:#fff;border-color:var(--acc)}button.sug{di
 </style></head><body>
 <header><b>iNat review console</b><span class="note">Local only (127.0.0.1). Nothing is sent from this page; posting is a separate step you run yourself.</span>
 <span id="counts" class="note"></span>
-<select id="filter"><option value="pending">pending</option><option value="approved">approved</option><option value="skipped">skipped</option><option value="hold">hold</option><option value="noloc">needs location</option><option value="flagged">release flags</option><option value="all">all</option></select></header>
+<select id="filter"><option value="pending">pending</option><option value="approved">approved</option><option value="skipped">skipped</option><option value="hold">hold</option><option value="noloc">needs location</option><option value="flagged">release flags</option><option value="nonnature">likely not nature</option><option value="all">all</option></select></header>
 <div id="wrap"><div id="list"></div><div id="main"><p class="note">Pick an observation on the left.</p></div></div>
 <script>
 var S={groups:[],cur:null,det:null,tz:[]};
@@ -40,9 +40,9 @@ function load(){return api('/api/state').then(function(s){S.groups=s.groups;S.tz
  var c=s.counts;$('counts').textContent='queue: '+s.queue+' | approved '+(c.approved||0)+' / skipped '+(c.skipped||0)+' / hold '+(c.hold||0)+' / pending '+(c.pending||0)+' of '+s.groups.length+(s.without_copy?' | '+s.without_copy+' photos have no upload copy (no location)':'');
  drawList()})}
 function vis(g){var f=$('filter').value;
- if(f==='all')return true;if(f==='noloc')return g.loc==='none';if(f==='flagged')return g.flags.length>0&&g.flags.join()!=='unscreened';return g.status===f}
+ if(f==='all')return true;if(f==='noloc')return g.loc==='none';if(f==='nonnature')return g.nonnature;if(f==='flagged')return g.flags.length>0&&g.flags.join()!=='unscreened';return g.status===f}
 function drawList(){var h='';S.groups.filter(vis).forEach(function(g){
- var p='';if(g.loc==='none')p+='<span class="pill b">no location</span>';else if(g.loc==='neighbor')p+='<span class="pill w">loc: nearby frame</span>';
+ var p='';if(g.loc==='none')p+='<span class="pill b">no location</span>';if(g.nonnature)p+='<span class="pill w">not nature?</span>';else if(g.loc==='neighbor')p+='<span class="pill w">loc: nearby frame</span>';
  g.flags.forEach(function(x){p+='<span class="pill '+(x==='unscreened'?'w':'b')+'">'+x+'</span>'});
  if(g.posted)p+='<span class="pill ok">posted</span>';
  h+='<div class="row'+(S.cur===g.group?' sel':'')+'" data-g="'+g.group+'"><div><b>#'+g.group+'</b> <small>'+g.day+' · '+g.n+' photo'+(g.n>1?'s':'')+'</small><br><small>'+(g.top?g.top+(g.top_share!=null?' · '+Math.round(g.top_share*100)+'%':''):(g.iconic||'no suggestion'))+'</small><br>'+p+'</div></div>'});
