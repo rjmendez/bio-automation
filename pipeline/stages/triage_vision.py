@@ -36,6 +36,11 @@ def main():
         idx_path = os.path.join(ROOT, 'triage_index.json')
         total = len(json.load(open(idx_path))) if os.path.exists(idx_path) else None
         have = [int(f[:-4]) for f in os.listdir(THUMBS) if f.endswith('.jpg')]
+        tp = os.path.join(ROOT, 'triage_targets.json')
+        if os.path.exists(tp):                      # only the frames plan_backlog.py chose, oldest day first
+            tg = json.load(open(tp))
+            have = sorted((i for i in have if str(i) in tg), key=lambda i: (tg[str(i)]['kind'] != 'backlog', tg[str(i)]['day'], i))
+            total = len(tg)
         todo = [i for i in have if str(i) not in done or 'error' in done[str(i)] or i not in vec]
         if not todo:
             if total is not None and len(done) >= total:

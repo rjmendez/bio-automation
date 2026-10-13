@@ -1,4 +1,4 @@
-"""Render EVERY unprocessed raw (triage_index.json: no JPEG anywhere) to an iNaturalist-ready JPEG: LightCraft Auto, subtle denoise at
+"""Render the TARGET raws (triage_targets.json from plan_backlog.py: untouched days only) to an iNaturalist-ready JPEG: LightCraft Auto, subtle denoise at
 ISO >= 800, 2048 px long edge (iNaturalist's own maximum), sRGB, q90, camera EXIF kept. No culling, no selection.
 
 Keywords/title are written afterwards by tag_raws.py (lossless segment surgery on these files). Newest days first. Resumable: existing
@@ -27,8 +27,10 @@ def log(msg):
 
 
 def main():
-    todo = json.load(open(os.path.join(ROOT, 'triage_index.json'), encoding='utf-8'))
-    todo.sort(key=lambda r: (r['day'], r['id']), reverse=True)
+    targets = json.load(open(os.path.join(ROOT, 'triage_targets.json'), encoding='utf-8'))
+    todo = [dict(r, kind=targets[str(r['id'])]['kind']) for r in json.load(open(os.path.join(ROOT, 'triage_index.json'), encoding='utf-8'))
+            if str(r['id']) in targets]
+    todo.sort(key=lambda r: (r['kind'] != 'backlog', r['day'], r['id']))     # resume after the last worked day, oldest first; gap days last
     os.makedirs(OUT, exist_ok=True)
     m = Mcp()
     done = skipped = failed = 0
@@ -36,7 +38,8 @@ def main():
     for i, r in enumerate(todo, 1):
         fid = r['id']
         safe = ''.join(c if c not in '<>:"/\\|?*' else '_' for c in r['stem'])
-        out = os.path.join(OUT, r['day'][:4], r['day'], f"{r['day']}_{safe}_{fid}.jpg")
+        base = OUT if r['kind'] == 'backlog' else os.path.join(OUT, '_gap-days')
+        out = os.path.join(base, r['day'][:4], r['day'], f"{r['day']}_{safe}_{fid}.jpg")
         if os.path.exists(out) and os.path.getsize(out) > 0:
             done += 1
             continue
