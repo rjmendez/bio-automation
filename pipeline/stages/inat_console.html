@@ -31,6 +31,7 @@ button.go{background:var(--acc);color:#fff;border-color:var(--acc)}button.sug{di
 <header><b>iNat review console</b><span class="note">Nothing is sent to iNaturalist from this page; posting is a separate step you run yourself.</span>
 <a href="/export?scope=approved" download title="one flat folder of JPEGs: time + GPS only, no tags">download approved (.zip, flat)</a><a href="/export?scope=all" download title="one flat folder of JPEGs: time + GPS only, no tags">download all (.zip, flat)</a>
 <span id="counts" class="note"></span>
+<button id="bDays" title="set one location for a whole day, applied to every observation of that day that has none">Day locations</button>
 <select id="filter"><option value="pending">pending</option><option value="approved">approved</option><option value="skipped">skipped</option><option value="hold">hold</option><option value="noloc">needs location</option><option value="flagged">release flags</option><option value="nonnature">likely not nature</option><option value="all">all</option></select></header>
 <div id="wrap"><div id="list"></div><div id="main"><p class="note">Pick an observation on the left.</p></div></div>
 <script>
@@ -43,7 +44,7 @@ function load(){return api('/api/state').then(function(s){S.groups=s.groups;S.tz
 function vis(g){var f=$('filter').value;
  if(f==='all')return true;if(f==='noloc')return g.loc==='none';if(f==='nonnature')return g.nonnature;if(f==='flagged')return g.flags.length>0&&g.flags.join()!=='unscreened';return g.status===f}
 function drawList(){var h='';S.groups.filter(vis).forEach(function(g){
- var p='';if(g.loc==='none')p+='<span class="pill b">no location</span>';if(g.nonnature)p+='<span class="pill w">not nature?</span>';else if(g.loc==='neighbor')p+='<span class="pill w">loc: nearby frame</span>';
+ var p='';if(g.loc==='none')p+='<span class="pill b">no location</span>';else if(g.loc==='day_pin')p+='<span class="pill w">day pin</span>';if(g.nonnature)p+='<span class="pill w">not nature?</span>';else if(g.loc==='neighbor')p+='<span class="pill w">loc: nearby frame</span>';
  g.flags.forEach(function(x){p+='<span class="pill '+(x==='unscreened'?'w':'b')+'">'+x+'</span>'});
  if(g.posted)p+='<span class="pill ok">posted</span>';
  h+='<div class="row'+(S.cur===g.group?' sel':'')+'" data-g="'+g.group+'"><div><b>#'+g.group+'</b> <small>'+g.day+' · '+g.n+' photo'+(g.n>1?'s':'')+'</small><br><small>'+(g.top?g.top+(g.top_share!=null?' · '+Math.round(g.top_share*100)+'%':''):(g.iconic||'no suggestion'))+'</small><br>'+p+'</div></div>'});
@@ -75,6 +76,7 @@ function render(){var d=S.det,def=d.defaults,dec=d.decision||{},m=$('main');
  h+='</select><div class="row2"><div><label class="f">Latitude</label><input type="number" step="any" id="lat" value="'+esc(v('lat',def.lat))+'"></div><div><label class="f">Longitude</label><input type="number" step="any" id="lon" value="'+esc(v('lon',def.lon))+'"></div></div>';
  h+='<div class="row2"><div><label class="f">Accuracy (m)</label><input type="number" id="positional_accuracy" value="'+esc(v('positional_accuracy',def.positional_accuracy))+'"></div>';
  h+='<div><label class="f">Geoprivacy</label><select id="geoprivacy">'+['open','obscured','private'].map(function(x){return '<option'+(x===v('geoprivacy','open')?' selected':'')+'>'+x+'</option>'}).join('')+'</select></div></div>';
+ h+='<div class="note" style="margin-top:6px"><a href="#" id="pinFromCard">use this location for every observation on '+esc(d.day)+' that has none</a></div>';
  h+='</fieldset><div class="msg" id="msg"></div><button class="go" id="bA">Approve (A)</button> <button id="bS">Skip (S)</button> <button id="bH">Hold (H)</button> <button id="bP">Prev (K)</button> <button id="bN">Next (J)</button>';
  h+='<p class="note">Status now: <b>'+esc(dec.status||'pending')+'</b>. <a href="/export?scope=group&id='+d.group+'" download>download this observation (.zip, flat: time + GPS only)</a></p></div></div>';
  m.innerHTML=h;
@@ -83,9 +85,30 @@ function render(){var d=S.det,def=d.defaults,dec=d.decision||{},m=$('main');
  var t=null;$('tq').oninput=function(){clearTimeout(t);var q=$('tq').value;t=setTimeout(function(){api('/api/taxa?q='+encodeURIComponent(q)).then(function(r){
   $('tres').innerHTML=r.map(function(x){return '<button class="sug" data-id="'+(x.id||'')+'" data-name="'+esc(x.name)+'" data-c="'+esc(x.common||'')+'">'+esc(x.common||x.name)+' <i>'+esc(x.name)+'</i> · '+esc(x.rank||'')+'</button>'}).join('');
   Array.prototype.forEach.call($('tres').querySelectorAll('button'),function(b){b.onclick=function(){$('taxon_id').value=b.getAttribute('data-id');$('taxon_name').value=b.getAttribute('data-name');$('species_guess').value=b.getAttribute('data-c')||b.getAttribute('data-name')}})})},500)};
+ $('pinFromCard').onclick=function(e){e.preventDefault();var la=val('lat'),lo=val('lon');
+  if(la===''||lo===''){$('msg').innerHTML='<span class="err">Enter latitude and longitude first.</span>';return}
+  savePin({day:d.day,lat:parseFloat(la),lon:parseFloat(lo),accuracy_m:val('positional_accuracy')?parseInt(val('positional_accuracy'),10):null,label:''}).then(function(r){
+   if(r.error){$('msg').innerHTML='<span class="err">'+esc(r.error)+'</span>';return}
+   $('msg').innerHTML='<span class="ok">Pinned for '+esc(d.day)+'.</span>';load()})};
  $('bA').onclick=function(){decide('approved')};$('bS').onclick=function(){decide('skipped')};$('bH').onclick=function(){decide('hold')};
  $('bN').onclick=function(){step(1)};$('bP').onclick=function(){step(-1)}}
 function val(i){var e=$(i);return e?e.value:''}
+function savePin(body){return fetch('/api/daypin',{method:'POST',headers:{'Content-Type':'application/json','X-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json()})}
+function showDays(){S.cur=null;drawList();api('/api/days').then(function(r){
+ var h='<h3 style="margin:0 0 6px">Day locations</h3><p class="note">One place for a whole day. It is used only for observations that have no location of their own (EXIF, phone track or a nearby frame always win). Paste "lat, lon" as copied from a map. The accuracy is the radius of the place in metres; it goes into the file and onto iNaturalist as the uncertainty circle, so be honest (a whole trail: 500-2000, one clearing: 50).</p>';
+ h+='<table style="border-collapse:collapse;width:100%"><tr class="note"><th align="left">day</th><th>obs.</th><th>photos</th><th>own location</th><th>from pin</th><th>none</th><th align="left">location (lat, lon)</th><th>accuracy m</th><th align="left">label</th><th></th></tr>';
+ r.days.forEach(function(d){var p=d.pin;
+  h+='<tr data-day="'+d.day+'" style="border-top:1px solid var(--line)"><td>'+d.day+'</td><td align="center">'+d.groups+'</td><td align="center">'+d.photos+'</td><td align="center">'+d.own_location+'</td><td align="center">'+d.from_pin+'</td><td align="center" style="'+(d.none?'color:var(--bad);font-weight:600':'')+'">'+d.none+'</td>'+
+   '<td><input type="text" class="pl" size="26" placeholder="39.9305, -77.4406" value="'+(p?esc(p.lat.toFixed(5)+', '+p.lon.toFixed(5)):'')+'"></td>'+
+   '<td><input type="number" class="pa" style="width:90px" value="'+(p&&p.accuracy_m?p.accuracy_m:r.default_accuracy_m)+'"></td>'+
+   '<td><input type="text" class="pn" size="18" placeholder="e.g. creek trail" value="'+(p?esc(p.label||''):'')+'"></td>'+
+   '<td><button class="ps">Save</button> '+(p?'<button class="pc">Clear</button>':'')+'</td></tr>'});
+ h+='</table><div class="msg" id="dmsg"></div>';
+ $('main').innerHTML=h;
+ Array.prototype.forEach.call(document.querySelectorAll('tr[data-day]'),function(tr){var day=tr.getAttribute('data-day');
+  var s=tr.querySelector('.ps');if(s)s.onclick=function(){savePin({day:day,latlon:tr.querySelector('.pl').value,accuracy_m:parseInt(tr.querySelector('.pa').value,10),label:tr.querySelector('.pn').value}).then(function(x){
+    if(x.error){$('dmsg').innerHTML='<span class="err">'+esc(day)+': '+esc(x.error)+'</span>';return}load().then(showDays)})};
+  var c=tr.querySelector('.pc');if(c)c.onclick=function(){savePin({day:day,clear:true}).then(function(){load().then(showDays)})}})})}
 function decide(status){var d=S.det;var photos=[];Array.prototype.forEach.call(document.querySelectorAll('.ph'),function(c){if(c.checked)photos.push(parseInt(c.value,10))});
  var lat=val('lat'),lon=val('lon'),pa=val('positional_accuracy');
  var body={group:d.group,status:status,taxon_id:val('taxon_id')?parseInt(val('taxon_id'),10):null,taxon_name:val('taxon_name'),species_guess:val('species_guess'),description:val('description'),tags:val('tags'),
@@ -98,6 +121,6 @@ function step(dir){var vis_=S.groups.filter(vis);var i=vis_.map(function(g){retu
  var n=vis_[Math.max(0,Math.min(vis_.length-1,(i<0?0:i+dir)))];if(n)open(n.group)}
 document.addEventListener('keydown',function(e){if(/INPUT|TEXTAREA|SELECT/.test((e.target.tagName||'')))return;
  if(e.key==='a')decide('approved');else if(e.key==='s')decide('skipped');else if(e.key==='h')decide('hold');else if(e.key==='j')step(1);else if(e.key==='k')step(-1)});
-$('filter').onchange=drawList;
+$('filter').onchange=drawList;$('bDays').onclick=showDays;
 load().then(function(){var f=S.groups.filter(vis)[0];if(f)open(f.group)});
 </script></body></html>

@@ -38,6 +38,7 @@ TZ_NAMES = {'America/New_York': 'Eastern Time (US & Canada)', 'America/Chicago':
             'America/Denver': 'Mountain Time (US & Canada)', 'America/Los_Angeles': 'Pacific Time (US & Canada)',
             'America/Phoenix': 'Arizona', 'America/Anchorage': 'Alaska', 'Pacific/Honolulu': 'Hawaii', 'UTC': 'UTC'}
 TZ_CHOICES = sorted(set(TZ_NAMES.values()))
+DEFAULT_PIN_ACCURACY = 500        # metres: a day pin is a place, not a point; iNaturalist then shows the right uncertainty circle
 
 
 def jload(name, default):
@@ -72,6 +73,42 @@ def decisions():
             except Exception:
                 pass
     return cur
+
+
+PINS_PATH = os.path.join(ROOT, f'inat_daypins{TAG}.jsonl')
+_pins = {'mtime': None, 'data': {}}
+
+
+def daypins():
+    """{day: {lat, lon, accuracy_m, label}} from the append-only pin ledger (the latest record per day wins; a clear record removes it)."""
+    try:
+        m = os.path.getmtime(PINS_PATH)
+    except OSError:
+        return {}
+    if _pins['mtime'] != m:
+        data = {}
+        for line in open(PINS_PATH, encoding='utf-8'):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get('clear'):
+                data.pop(r.get('day'), None)
+            elif r.get('day'):
+                data[r['day']] = r
+        _pins['mtime'], _pins['data'] = m, data
+    return _pins['data']
+
+
+def parse_latlon(s):
+    """'39.9305, -77.4406' (as copied from a map) or '39.9305 -77.4406' -> (lat, lon) or None."""
+    nums = re.findall(r'-?\d+(?:\.\d+)?', str(s or ''))
+    if len(nums) != 2:
+        return None
+    lat, lon = float(nums[0]), float(nums[1])
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (abs(lat) < 1e-6 and abs(lon) < 1e-6):
+        return None
+    return lat, lon
 
 
 def posted():
@@ -122,9 +159,18 @@ def group_default(items):
     if tz is None and first.get('tz_offset') is not None:       # LightCraft keeps the UTC offset the photo was taken with
         tz = tz_from_offset(first['tz_offset'], first['day'])
     loc = next((i for i in items if i.get('lat') is not None), None)
-    return {'observed_on_string': obs_str, 'time_zone': tz, 'lat': loc['lat'] if loc else None, 'lon': loc['lon'] if loc else None,
-            'loc_source': loc['loc_source'] if loc else 'none', 'loc_note': loc.get('loc_note', '') if loc else 'no location',
-            'positional_accuracy': 50 if loc and loc['loc_source'] == 'neighbor' else None, 'camera': first.get('camera')}
+    pin = None if loc else daypins().get(first['day'])        # a frame's own location always wins over the day pin
+    if loc:
+        lat, lon, src, note = loc['lat'], loc['lon'], loc['loc_source'], loc.get('loc_note', '')
+        acc = 50 if loc['loc_source'] == 'neighbor' else loc.get('positional_accuracy')
+    elif pin:
+        lat, lon, src, acc = pin['lat'], pin['lon'], 'day_pin', pin.get('accuracy_m')
+        note = f"day pin{' ' + repr(pin['label']) if pin.get('label') else ''} (accuracy {acc} m)"
+    else:
+        lat = lon = acc = None
+        src, note = 'none', 'no location'
+    return {'observed_on_string': obs_str, 'time_zone': tz, 'lat': lat, 'lon': lon, 'loc_source': src, 'loc_note': note,
+            'positional_accuracy': acc, 'camera': first.get('camera')}
 
 
 NATURE = re.compile(r'flower|plant|leaf|leaves|fungus|fungi|mushroom|fruiting|insect|animal|bird|spider|butterfly|moth|bee|fly|beetle|tree|bark|wing|'
@@ -226,6 +272,25 @@ class H(BaseHTTPRequestHandler):
             c = collections.Counter(r['status'] for r in rows)
             return self._send(200, {'groups': rows, 'counts': c, 'tz_choices': TZ_CHOICES, 'queue_total': len(QUEUE), 'queue': TAG or 'files',
                                     'without_copy': sum(1 for i in QUEUE if not i.get('copy'))})
+        if u.path == '/api/days':
+            pins = daypins()
+            byday = collections.OrderedDict()
+            for g, items in GROUPS.items():
+                d = items[0]['day']
+                row = byday.setdefault(d, {'day': d, 'groups': 0, 'photos': 0, 'own_location': 0, 'from_pin': 0, 'none': 0})
+                row['groups'] += 1
+                row['photos'] += len(items)
+                if any(i.get('lat') is not None for i in items):
+                    row['own_location'] += 1
+                elif d in pins:
+                    row['from_pin'] += 1
+                else:
+                    row['none'] += 1
+            rows = sorted(byday.values(), key=lambda r: r['day'])
+            for r in rows:
+                p = pins.get(r['day'])
+                r['pin'] = {'lat': p['lat'], 'lon': p['lon'], 'accuracy_m': p.get('accuracy_m'), 'label': p.get('label', '')} if p else None
+            return self._send(200, {'days': rows, 'default_accuracy_m': DEFAULT_PIN_ACCURACY})
         if u.path == '/api/group':
             g = int(q['id'][0])
             items = GROUPS.get(g)
@@ -233,7 +298,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(404, {'error': 'no such group'})
             dec = decisions().get(g)
             d = group_default(items)
-            return self._send(200, {'group': g, 'defaults': d, 'decision': dec, 'flags': flags_for(items),
+            return self._send(200, {'group': g, 'day': items[0]['day'], 'defaults': d, 'decision': dec, 'flags': flags_for(items),
                                     'suggestions': SUGG.get(str(g)),
                                     'photos': [{'idx': i['idx'], 'name': os.path.basename(i['rel']), 'time': i.get('time'), 'w': i['w'], 'h': i['h'],
                                                 'release': i.get('release')} for i in sorted(items, key=lambda i: i.get('t') or 0)]})
@@ -282,6 +347,30 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok() or self.headers.get('X-Console') != '1':
             return self._send(403, {'error': 'forbidden'})
+        if self.path == '/api/daypin':
+            n = int(self.headers.get('Content-Length') or 0)
+            d = json.loads(self.rfile.read(n) or b'{}')
+            day = str(d.get('day') or '')
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) or not any(it[0]['day'] == day for it in GROUPS.values()):
+                return self._send(400, {'error': 'unknown day'})
+            rec = {'day': day, 'ts': datetime.now().isoformat(timespec='seconds')}
+            if d.get('clear'):
+                rec['clear'] = True
+            else:
+                ll = parse_latlon(d.get('latlon')) if d.get('latlon') else parse_latlon(f"{d.get('lat')} {d.get('lon')}")
+                if not ll:
+                    return self._send(400, {'error': 'give a location as "lat, lon" (for example 39.9305, -77.4406)'})
+                try:
+                    acc = int(d.get('accuracy_m') or DEFAULT_PIN_ACCURACY)
+                except (TypeError, ValueError):
+                    return self._send(400, {'error': 'accuracy must be a whole number of metres'})
+                if not 1 <= acc <= 100000:
+                    return self._send(400, {'error': 'accuracy must be between 1 and 100000 metres'})
+                rec.update(lat=ll[0], lon=ll[1], accuracy_m=acc, label=str(d.get('label') or '')[:80])
+            with LOCK:
+                with open(PINS_PATH, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(rec) + '\n')
+            return self._send(200, {'ok': True})
         if self.path != '/api/decide':
             return self._send(404, {'error': 'not found'})
         n = int(self.headers.get('Content-Length') or 0)
