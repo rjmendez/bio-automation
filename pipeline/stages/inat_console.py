@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -24,6 +25,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import visionlib
+import inat_export
 
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 PORT = int(os.environ.get('BIO_CONSOLE_PORT', '8777'))
@@ -242,6 +244,38 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, thumb(i, side), 'image/jpeg')
         if u.path == '/api/taxa':
             return self._send(200, taxa_search(q.get('q', [''])[0]))
+        if u.path == '/export':
+            scope = q.get('scope', ['approved'])[0]
+            dec = decisions()
+            if scope == 'group':
+                try:
+                    g = int(q['id'][0])
+                except (KeyError, ValueError):
+                    return self._send(400, {'error': 'group id needed'})
+                groups = {g: GROUPS[g]} if g in GROUPS else {}
+            elif scope == 'approved':
+                groups = {g: its for g, its in GROUPS.items() if (dec.get(g) or {}).get('status') == 'approved'}
+            elif scope == 'all':
+                groups = dict(GROUPS)
+            else:
+                return self._send(400, {'error': 'scope must be group, approved or all'})
+            if not groups:
+                return self._send(404, {'error': 'nothing to export for this scope (approve observations first, or use scope=all)'})
+            try:
+                path, n_groups, n_files = inat_export.build_zip(groups, dec, group_default, scope)
+            except Exception as e:
+                return self._send(500, {'error': f'export failed: {type(e).__name__}: {str(e)[:120]}'})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/zip')
+            self.send_header('Content-Length', str(os.path.getsize(path)))
+            self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(path)}"')
+            self.send_header('X-Export-Observations', str(n_groups))
+            self.send_header('X-Export-Photos', str(n_files))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            with open(path, 'rb') as f:
+                shutil.copyfileobj(f, self.wfile, 1 << 20)
+            return None
         return self._send(404, {'error': 'not found'})
 
     def do_POST(self):
