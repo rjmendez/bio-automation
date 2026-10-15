@@ -29,7 +29,7 @@ button.go{background:var(--acc);color:#fff;border-color:var(--acc)}button.sug{di
 .row2{display:flex;gap:8px}.row2>*{flex:1}.msg{min-height:20px;margin:6px 0}.err{color:var(--bad)}.ok{color:var(--acc)}
 </style></head><body>
 <header><b>iNat review console</b><span class="note">Nothing is sent to iNaturalist from this page; posting is a separate step you run yourself.</span>
-<a href="/export?scope=approved" download>download approved (.zip)</a><a href="/export?scope=all" download>download all (.zip)</a>
+<a href="/export?scope=approved" download title="one flat folder of JPEGs: time + GPS only, no tags">download approved (.zip, flat)</a><a href="/export?scope=all" download title="one flat folder of JPEGs: time + GPS only, no tags">download all (.zip, flat)</a>
 <span id="counts" class="note"></span>
 <select id="filter"><option value="pending">pending</option><option value="approved">approved</option><option value="skipped">skipped</option><option value="hold">hold</option><option value="noloc">needs location</option><option value="flagged">release flags</option><option value="nonnature">likely not nature</option><option value="all">all</option></select></header>
 <div id="wrap"><div id="list"></div><div id="main"><p class="note">Pick an observation on the left.</p></div></div>
@@ -76,7 +76,7 @@ function render(){var d=S.det,def=d.defaults,dec=d.decision||{},m=$('main');
  h+='<div class="row2"><div><label class="f">Accuracy (m)</label><input type="number" id="positional_accuracy" value="'+esc(v('positional_accuracy',def.positional_accuracy))+'"></div>';
  h+='<div><label class="f">Geoprivacy</label><select id="geoprivacy">'+['open','obscured','private'].map(function(x){return '<option'+(x===v('geoprivacy','open')?' selected':'')+'>'+x+'</option>'}).join('')+'</select></div></div>';
  h+='</fieldset><div class="msg" id="msg"></div><button class="go" id="bA">Approve (A)</button> <button id="bS">Skip (S)</button> <button id="bH">Hold (H)</button> <button id="bP">Prev (K)</button> <button id="bN">Next (J)</button>';
- h+='<p class="note">Status now: <b>'+esc(dec.status||'pending')+'</b>. <a href="/export?scope=group&id='+d.group+'" download>download this observation (.zip, metadata embedded)</a></p></div></div>';
+ h+='<p class="note">Status now: <b>'+esc(dec.status||'pending')+'</b>. <a href="/export?scope=group&id='+d.group+'" download>download this observation (.zip, flat: time + GPS only)</a></p></div></div>';
  m.innerHTML=h;
  Array.prototype.forEach.call(m.querySelectorAll('#strip img'),function(im){im.onclick=function(e){e.preventDefault();var b=$('big');b.src='/img?i='+im.getAttribute('data-i')+'&s=1200';b.style.display='block'}});
  Array.prototype.forEach.call(m.querySelectorAll('button.sug'),function(b){b.onclick=function(){$('taxon_id').value=b.getAttribute('data-id');$('taxon_name').value=b.getAttribute('data-name');if(!$('species_guess').value)$('species_guess').value=b.firstChild.textContent.trim()}});

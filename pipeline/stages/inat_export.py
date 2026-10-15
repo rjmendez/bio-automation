@@ -1,28 +1,28 @@
-"""Bulk export of the photos queued for iNaturalist, with the review console's data embedded in each file (EXIF + XMP + IPTC).
+"""Bulk export of the photos queued for iNaturalist: ONE FLAT folder of JPEGs carrying time and GPS, nothing else.
 
-The files are the upload copies already on disk; only metadata segments are rewritten, pixel data is byte-identical. What goes in:
-  EXIF   camera data kept; GPS lat/lon (+ HPositioningError = accuracy) from the decision or the proposed location;
-         DateTimeOriginal + OffsetTimeOriginal when the reviewer changed the observation time (else each photo keeps its own capture time);
-         ImageDescription = the description.
-  XMP/IPTC  title (taxon / what you saw), keywords (existing + taxon + common name + your tags), caption.
-Things EXIF cannot carry (geoprivacy, captive, taxon id, status) go to observations.csv in the zip, one row per observation.
-Layout: <group folder>/<nn>_<stem>.jpg so photos of one observation stay together and sort in capture order.
-Contains private coordinates when you set them: treat the zip as private.
+Owner rule 2026-10-15: what an iNaturalist submission needs is the capture time, the GPS position and the auto-adjusted pixels.
+No identification, no title, no keywords, no description: those come back FROM iNaturalist data after the owner identifies the
+observation, and Adobe Stock titles/keywords are a later step that starts only from verified IDs.
+
+Per file (the upload copy already on disk; pixel data is byte-identical):
+  * any XMP / IPTC segment is dropped (nothing but EXIF + colour profile is left);
+  * EXIF keeps the camera data and the photo's own DateTimeOriginal; OffsetTimeOriginal is set from the UTC offset LightCraft recorded
+    (or, failing that, the reviewer's time zone); if the reviewer edited the observation time it is written to every photo of the group;
+  * GPS latitude/longitude (+ HPositioningError = accuracy) from the reviewer's decision, else the proposed location.
+Layout: a single directory, no subfolders: g<group>_<nn>_<stem>.jpg (photos of one observation stay adjacent when sorted).
+observations.csv (per-observation fields EXIF cannot carry) is only included when asked for (csv=True); it is not part of the default.
+Contains private coordinates when a location is set: treat the zip as private.
 """
 import csv
-import json
 import io
-import json
 import os
 import re
+import struct
 import time
 import zipfile
 from datetime import datetime
 
 import piexif
-from PIL import IptcImagePlugin, Image
-
-import embed_meta
 
 EXPORT_DIR = os.environ.get('BIO_EXPORT_DIR', r'F:\services\inat-console\export')
 # US zones (the console's choices); DST window is approximate (second Sunday of March .. first Sunday of November)
@@ -41,12 +41,16 @@ def offset_hours(tz, day):
         m, d = int(day[5:7]), int(day[8:10])
     except (ValueError, IndexError):
         return base
-    dst = (3, 10) <= (m, d) < (11, 3)
-    return base + (1 if dst else 0)
+    return base + (1 if (3, 10) <= (m, d) < (11, 3) else 0)
 
 
-def fmt_offset(h):
-    return None if h is None else f'{"+" if h >= 0 else "-"}{abs(h):02d}:00'
+def fmt_offset(seconds_or_hours, seconds=True):
+    if seconds_or_hours is None:
+        return None
+    s = int(round(seconds_or_hours if seconds else seconds_or_hours * 3600))
+    sign = '+' if s >= 0 else '-'
+    s = abs(s)
+    return f'{sign}{s // 3600:02d}:{(s % 3600) // 60:02d}'
 
 
 def dms(v):
@@ -56,95 +60,75 @@ def dms(v):
     return ((d, 1), (mi, 1), (round((v - d - mi / 60) * 3600 * 10000), 10000))
 
 
-AUTO_GROUP_WORDS = {'fungus', 'plant', 'insect', 'arthropod', 'arachnid', 'spider', 'bird', 'mammal', 'reptile', 'amphibian', 'mollusc',
-                    'animal', 'slime mold', 'alga'}
-_TL = None
+def drop_tag_segments(data):
+    """Remove XMP (APP1 'http://ns.adobe.com/xap/1.0/') and IPTC/Photoshop (APP13) segments; everything from the scan header on is kept."""
+    if data[:2] != b'\xff\xd8':
+        raise ValueError('not a JPEG')
+    out, i = bytearray(data[:2]), 2
+    while i < len(data) - 4 and data[i] == 0xFF:
+        m = data[i + 1]
+        if m == 0xDA:
+            break
+        ln = struct.unpack('>H', data[i + 2:i + 4])[0]
+        seg = data[i:i + 2 + ln]
+        payload = seg[4:]
+        if not ((m == 0xE1 and payload.startswith(b'http://ns.adobe.com/xap/1.0/')) or m == 0xED):
+            out += seg
+        i += 2 + ln
+    out += data[i:]
+    return bytes(out)
 
 
-def _tag_log():
-    global _TL
-    if _TL is None:
-        p = os.path.join(os.environ.get('BIO_DATA', r'F:\bio-automation-data'), 'tag_raws_log.json')
-        _TL = json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
-    return _TL
-
-
-def existing_iptc(data):
-    try:
-        info = IptcImagePlugin.getiptcinfo(Image.open(io.BytesIO(data))) or {}
-    except Exception:
-        return '', []
-    t = info.get((2, 5))
-    k = info.get((2, 25))
-    ks = [x.decode('utf-8', 'replace') for x in (k if isinstance(k, list) else ([k] if k else []))]
-    return (t.decode('utf-8', 'replace') if t else ''), ks
-
-
-def ascii_safe(s):
-    return (s or '').encode('ascii', 'replace').decode('ascii')
-
-
-def embed(path, rec, default, first_time_changed):
-    data = open(path, 'rb').read()
-    old_title, old_kw = existing_iptc(data)
-    what = (rec.get('species_guess') or rec.get('taxon_name') or '').strip()
-    if what:                                    # a chosen taxon replaces the auto-generated ID keywords (group word, auto species)
-        m = re.search(r'_(\d+)\.jpg$', path)
-        basis = (_tag_log().get(m.group(1)) or {}).get('id_basis', '') if m else ''
-        if basis.startswith('species'):
-            old_kw = old_kw[2:]
-        old_kw = [k for k in old_kw if k.lower() not in AUTO_GROUP_WORDS]
-    title = what or old_title or 'Nature observation'
-    tags = [t.strip() for t in re.split(r'[,;]', rec.get('tags') or '') if t.strip()]
-    kws, seen = [], set()
-    for k in [rec.get('taxon_name'), rec.get('species_guess')] + tags + old_kw:
-        k = re.sub(r'\s+', ' ', (k or '').replace(',', ' ')).strip().lower()
-        if k and k not in seen:
-            seen.add(k)
-            kws.append(k)
-    kws = kws[:49]
-    caption = (rec.get('description') or '').strip() or title + '.'
-    new = embed_meta.rewrite(data, title, kws, caption)       # XMP + IPTC; this also drops EXIF GPS, which is re-added below
-    ex = piexif.load(new)
+def export_photo(path, item, rec, default, time_changed):
+    """Bytes of one upload file carrying only camera EXIF + time + GPS."""
+    data = drop_tag_segments(open(path, 'rb').read())
+    ex = piexif.load(data)
+    ex.pop('1st', None)
+    ex['thumbnail'] = None
+    ex.setdefault('0th', {}).pop(piexif.ImageIFD.ImageDescription, None)        # no description, no title
     lat, lon = rec.get('lat'), rec.get('lon')
     if lat is None:
         lat, lon = default.get('lat'), default.get('lon')
+    ex['GPS'] = {}
     if lat is not None and lon is not None:
-        g = ex.setdefault('GPS', {})
+        g = ex['GPS']
         g[piexif.GPSIFD.GPSVersionID] = (2, 3, 0, 0)
         g[piexif.GPSIFD.GPSLatitudeRef] = 'N' if lat >= 0 else 'S'
         g[piexif.GPSIFD.GPSLatitude] = dms(lat)
         g[piexif.GPSIFD.GPSLongitudeRef] = 'E' if lon >= 0 else 'W'
         g[piexif.GPSIFD.GPSLongitude] = dms(lon)
-        acc = rec.get('positional_accuracy') or default.get('positional_accuracy')
+        acc = rec.get('positional_accuracy') or default.get('positional_accuracy') or item.get('positional_accuracy')
         if acc:
             g[piexif.GPSIFD.GPSHPositioningError] = (int(acc), 1)
-    if first_time_changed:
+    exif = ex.setdefault('Exif', {})
+    off = None
+    if time_changed:
         try:
-            dt = datetime.strptime(first_time_changed[:19], '%Y-%m-%d %H:%M:%S')
+            dt = datetime.strptime(time_changed[:19], '%Y-%m-%d %H:%M:%S')
             s = dt.strftime('%Y:%m:%d %H:%M:%S').encode()
-            ex.setdefault('Exif', {})[piexif.ExifIFD.DateTimeOriginal] = s
-            ex.setdefault('Exif', {})[piexif.ExifIFD.DateTimeDigitized] = s
+            exif[piexif.ExifIFD.DateTimeOriginal] = s
+            exif[piexif.ExifIFD.DateTimeDigitized] = s
             ex.setdefault('0th', {})[piexif.ImageIFD.DateTime] = s
-            off = fmt_offset(offset_hours(rec.get('time_zone') or default.get('time_zone'), dt.strftime('%Y-%m-%d')))
-            if off:
-                for name in ('OffsetTime', 'OffsetTimeOriginal', 'OffsetTimeDigitized'):
-                    tag = getattr(piexif.ExifIFD, name, None)
-                    if tag:
-                        ex['Exif'][tag] = off.encode()
+            off = fmt_offset(offset_hours(rec.get('time_zone') or default.get('time_zone'), dt.strftime('%Y-%m-%d')), seconds=False)
         except ValueError:
             pass
-    if caption:
-        ex.setdefault('0th', {})[piexif.ImageIFD.ImageDescription] = ascii_safe(caption)[:2000].encode('ascii')
-    ex['thumbnail'] = None
-    ex.pop('1st', None)
+    if off is None:
+        off = fmt_offset(item.get('tz_offset'))                   # the UTC offset LightCraft recorded for this photo
+    if off is None and exif.get(piexif.ExifIFD.DateTimeOriginal):
+        day = exif[piexif.ExifIFD.DateTimeOriginal][:10].decode('ascii', 'ignore').replace(':', '-')
+        off = fmt_offset(offset_hours(rec.get('time_zone') or default.get('time_zone'), day), seconds=False)
+    if off:
+        for name in ('OffsetTime', 'OffsetTimeOriginal', 'OffsetTimeDigitized'):
+            tag = getattr(piexif.ExifIFD, name, None)
+            if tag:
+                exif[tag] = off.encode()
     out = io.BytesIO()
-    piexif.insert(piexif.dump(ex), new, out)
+    piexif.insert(piexif.dump(ex), data, out)
     return out.getvalue()
 
 
-def build_zip(groups, decisions, group_default, scope):
-    """groups: {group id: [queue items]} to export. Returns the path of the zip."""
+def build_zip(groups, decisions, group_default, scope, csv_sidecar=False):
+    """groups: {group id: [queue items]}. Returns (zip path, observations, photos). Flat: no folders inside the zip."""
     os.makedirs(EXPORT_DIR, exist_ok=True)
     for f in os.listdir(EXPORT_DIR):                      # keep the folder small: drop exports older than two days
         p = os.path.join(EXPORT_DIR, f)
@@ -153,9 +137,8 @@ def build_zip(groups, decisions, group_default, scope):
                 os.remove(p)
             except OSError:
                 pass
-    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    path = os.path.join(EXPORT_DIR, f'inat-export-{scope}-{stamp}.zip')
-    rows = []
+    path = os.path.join(EXPORT_DIR, f'inat-export-{scope}-{datetime.now().strftime("%Y%m%d-%H%M%S")}.zip')
+    rows, n_photos = [], 0
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_STORED) as z:
         for g, items in groups.items():
             rec = decisions.get(g) or {}
@@ -164,31 +147,29 @@ def build_zip(groups, decisions, group_default, scope):
             order = rec.get('photo_order')
             if order:
                 items = [i for i in items if i['idx'] in order]
-            what = re.sub(r'[^A-Za-z0-9 _-]+', '', (rec.get('species_guess') or rec.get('taxon_name') or 'unidentified')).strip().replace(' ', '_')[:40]
-            folder = f'g{g:04d}_{what}'
-            changed = rec.get('observed_on_string') if rec.get('observed_on_string') and rec['observed_on_string'] != default.get('observed_on_string') else None
+            changed = rec.get('observed_on_string') if rec.get('observed_on_string') and \
+                rec['observed_on_string'] != default.get('observed_on_string') else None
             names = []
             for n, it in enumerate(items, 1):
-                stem = re.sub(r'[^A-Za-z0-9._-]+', '_', os.path.splitext(os.path.basename(it['copy']))[0])[:60]
-                name = f'{n:02d}_{stem}.jpg'
+                stem = re.sub(r'[^A-Za-z0-9._-]+', '_', os.path.splitext(os.path.basename(it['copy']))[0])[:70]
+                name = f'g{g:04d}_{n:02d}_{stem}.jpg'
                 try:
-                    z.writestr(f'{folder}/{name}', embed(it['copy'], rec, default, changed))
+                    z.writestr(name, export_photo(it['copy'], it, rec, default, changed))
                 except Exception:
-                    z.write(it['copy'], f'{folder}/{name}')       # never lose a photo to a metadata problem
+                    z.write(it['copy'], name)                 # never lose a photo to a metadata problem
                 names.append(name)
-            rows.append({'group': g, 'folder': folder, 'files': ';'.join(names), 'status': rec.get('status', 'pending'),
-                         'taxon_name': rec.get('taxon_name') or '', 'taxon_id': rec.get('taxon_id') or '',
-                         'species_guess': rec.get('species_guess') or '',
+                n_photos += 1
+            rows.append({'group': g, 'files': ';'.join(names), 'status': rec.get('status', 'pending'),
                          'observed_on_string': rec.get('observed_on_string') or default.get('observed_on_string'),
                          'time_zone': rec.get('time_zone') or default.get('time_zone') or '',
                          'latitude': rec.get('lat') if rec.get('lat') is not None else default.get('lat'),
                          'longitude': rec.get('lon') if rec.get('lon') is not None else default.get('lon'),
                          'positional_accuracy': rec.get('positional_accuracy') or default.get('positional_accuracy') or '',
-                         'geoprivacy': rec.get('geoprivacy') or '', 'captive': rec.get('captive') or False,
-                         'tags': rec.get('tags') or '', 'description': rec.get('description') or ''})
-        buf = io.StringIO()
-        w = csv.DictWriter(buf, fieldnames=list(rows[0]) if rows else ['group'])
-        w.writeheader()
-        w.writerows(rows)
-        z.writestr('observations.csv', buf.getvalue())
-    return path, len(rows), sum(len(r['files'].split(';')) for r in rows if r['files'])
+                         'geoprivacy': rec.get('geoprivacy') or '', 'captive': rec.get('captive') or False})
+        if csv_sidecar and rows:
+            buf = io.StringIO()
+            w = csv.DictWriter(buf, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+            z.writestr('observations.csv', buf.getvalue())
+    return path, len(rows), n_photos

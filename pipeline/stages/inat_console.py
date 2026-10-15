@@ -262,7 +262,8 @@ class H(BaseHTTPRequestHandler):
             if not groups:
                 return self._send(404, {'error': 'nothing to export for this scope (approve observations first, or use scope=all)'})
             try:
-                path, n_groups, n_files = inat_export.build_zip(groups, dec, group_default, scope)
+                path, n_groups, n_files = inat_export.build_zip(groups, dec, group_default, scope,
+                                                                csv_sidecar=q.get('csv', ['0'])[0] == '1')
             except Exception as e:
                 return self._send(500, {'error': f'export failed: {type(e).__name__}: {str(e)[:120]}'})
             self.send_response(200)
