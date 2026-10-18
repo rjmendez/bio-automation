@@ -1,8 +1,14 @@
 """Topaz Photo AI standalone inference module.
 
-Decrypts .tz (ZipCrypto-encrypted ZIPs) model archives, caches extracted
-OpenVINO IR models on disk, and runs tiled inference for lens-sharpening and
-2× upscaling.
+Decrypts .tz (ZipCrypto-encrypted ZIPs) model archives and .tz2
+(HKDF-SHA256 + ChaCha20-Poly1305) archives, caches extracted OpenVINO IR
+models on disk, and runs tiled inference for lens-sharpening and 2× upscaling.
+
+**Private use only** — requires a licensed Topaz Photo AI installation.
+The extracted model weights are Topaz Labs IP; do not redistribute.
+
+For an open-source equivalent suitable for redistribution, see:
+https://github.com/rjmendez/lce  (lce — LightCraft Enhancement Plugin)
 
 All I/O uses Pillow (no cv2 dependency).
 """
