@@ -267,12 +267,8 @@ def sharpen(img_bgr: np.ndarray, cache: ModelCache,
     noise_val = np.array([noise], dtype=np.float32)
 
     def feed(tile: np.ndarray, mdl) -> np.ndarray:
-        infer = mdl.create_infer_request()
-        infer.set_tensor("netInput", tile[np.newaxis])           # [1,3,512,512]
-        infer.set_tensor("param", blur_val)                       # [1]
-        infer.set_tensor("t_param1", noise_val)                   # [1]
-        infer.infer()
-        return infer.get_output_tensor(0).data[0]               # [3,512,512]
+        results = mdl({"netInput": tile[np.newaxis], "t_param": blur_val, "t_param1": noise_val})
+        return next(iter(results.values()))[0]                   # [3,512,512]
 
     result_chw = _run_tiled(compiled, img_chw, 512, 512, 64, 1, feed, "tl_unet/netOutput")
 
@@ -300,19 +296,18 @@ def upscale_2x(img_bgr: np.ndarray, cache: ModelCache) -> np.ndarray:
     _z1 = np.zeros((1,), dtype=np.float32)
 
     def feed(tile: np.ndarray, mdl) -> np.ndarray:
-        infer = mdl.create_infer_request()
-        infer.set_tensor("netInput", tile[np.newaxis])          # [1,3,128,128]
+        feed_dict: dict = {"netInput": tile[np.newaxis]}        # [1,3,128,128]
         # Optional scalar params (zero = neutral)
         for pname in ("pn", "pb", "pc"):
             if not known or pname in known:
-                infer.set_tensor(pname, _z1)
+                feed_dict[pname] = _z1
         # gclc colour-classifier placeholders (zero-fill skips the imcc step)
         if not known or "infer_input" in known:
-            infer.set_tensor("infer_input", _z128)              # [1,3,128,128]
+            feed_dict["infer_input"] = _z128                    # [1,3,128,128]
         if not known or "infer_output" in known:
-            infer.set_tensor("infer_output", _z256)             # [1,3,256,256]
-        infer.infer()
-        return infer.get_output_tensor(0).data[0]               # [3,256,256]
+            feed_dict["infer_output"] = _z256                   # [1,3,256,256]
+        results = mdl(feed_dict)
+        return next(iter(results.values()))[0]                  # [3,256,256]
 
     result_chw = _run_tiled(compiled, img_chw, 128, 128, 16, 2, feed, "netOutput")
 
