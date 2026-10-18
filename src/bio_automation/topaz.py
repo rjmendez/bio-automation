@@ -19,8 +19,14 @@ import numpy as np
 from PIL import Image
 
 _PASSWORD = b"a0331add513e4e6fae035cb12e4b11e5"
+_TZ2_IKM   = b"a0331add513e4e6f"   # first 16 bytes of password; hardcoded in aiengine.dll .rdata
+_TZ2_INFO  = b"payload"            # separate 7-byte constant in .rdata
+_TZ2_MAGIC = b"com.topazlabs.tz2\x00"
+_TZ2_BLOCK = 64 * 1024 * 1024      # 64 MiB per ChaCha20-Poly1305 block
+_TZ2_TAG   = 16                    # Poly1305 tag bytes
+
 MODELS_DIR = Path(r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
-CACHE_DIR = Path(r"C:\TopazModels")
+CACHE_DIR  = Path(r"C:\TopazModels")
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +76,64 @@ def extract_tz(tz_path: Path, dest_dir: Path) -> dict[str, Path]:
     return extracted
 
 
-# ---------------------------------------------------------------------------
-# Model cache
-# ---------------------------------------------------------------------------
+def extract_tz2(tz2_path: Path, dest_dir: Path) -> dict[str, Path]:
+    """Decrypt a .tz2 file (HKDF-SHA256 + ChaCha20-Poly1305) and extract members.
+
+    .tz2 container (after decryption):
+        uint64 count | N×(char[112] name | uint64 data_offset | uint64 data_size) | blobs
+
+    IKM and INFO are hardcoded in aiengine.dll .rdata (recovered via Frida, 2026-10-18).
+    Returns a mapping from internal filename (basename) to extracted Path.
+    """
+    try:
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    except ImportError as exc:
+        raise ImportError("pip install cryptography  # required for .tz2 decryption") from exc
+
+    raw = tz2_path.read_bytes()
+    if not raw.startswith(_TZ2_MAGIC):
+        raise ValueError(f"{tz2_path.name}: bad magic {raw[:18]!r}")
+
+    salt = raw[18:34]
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=_TZ2_INFO).derive(_TZ2_IKM)
+    cipher = ChaCha20Poly1305(key)
+
+    # Decrypt all blocks
+    ct = raw[34:]
+    total = len(ct)
+    n_full, remainder = divmod(total, _TZ2_BLOCK + _TZ2_TAG)
+    n_blocks = n_full + (1 if remainder > _TZ2_TAG else 0)
+
+    plaintext_parts: list[bytes] = []
+    off = 0
+    for i in range(n_blocks):
+        is_last = i == n_blocks - 1
+        nonce = b"\x00" * 10 + bytes([i & 0xFF, 0x01 if is_last else 0x00])
+        chunk = ct[off: off + _TZ2_BLOCK + _TZ2_TAG]
+        plaintext_parts.append(cipher.decrypt(nonce, chunk, None))
+        off += len(chunk)
+    plain = b"".join(plaintext_parts)
+
+    # Parse container: uint64 count | N×(name[112] | offset[8] | size[8]) | blobs
+    import struct
+    count = struct.unpack_from("<Q", plain, 0)[0]
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    result: dict[str, Path] = {}
+    for i in range(count):
+        base = 8 + i * 128
+        name = plain[base: base + 112].rstrip(b"\x00").decode("utf-8")
+        d_off = struct.unpack_from("<Q", plain, base + 112)[0]
+        d_sz  = struct.unpack_from("<Q", plain, base + 120)[0]
+        out = dest_dir / Path(name).name
+        out.write_bytes(plain[d_off: d_off + d_sz])
+        result[Path(name).name] = out
+    return result
+
+
+
 
 class ModelCache:
     """LRU in-memory cache of compiled OpenVINO models with persistent disk cache.
@@ -116,7 +177,10 @@ class ModelCache:
             dest = Path(tempfile.mkdtemp())
 
         # RuntimeError (truncated ZIP) propagates to the caller
-        extract_tz(tz_path, dest)
+        if tz_path.suffix == ".tz2":
+            extract_tz2(tz_path, dest)
+        else:
+            extract_tz(tz_path, dest)
 
         xmls = list(dest.glob("*.xml"))
         if not xmls:
@@ -253,9 +317,45 @@ def _input_names_of(compiled) -> frozenset[str]:
         return frozenset()
 
 
+def _estimate_sharpen_params(img_chw_f32: np.ndarray, cache: ModelCache) -> tuple[float, float, float, float]:
+    """Run slsp_ap autoparam on a centre crop and return (noise, lensblur, motionblur, compression).
+
+    Falls back to (0.0, 0.5, 0.0, 0.0) if the .tz2 model is unavailable.
+    Params are averaged over a centre 512×512 crop (or the full image if smaller).
+    """
+    ap_tz2 = MODELS_DIR / "slsp_ap-v3-fp32-512x512-ov.tz2"
+    if not ap_tz2.exists():
+        return (0.0, 0.5, 0.0, 0.0)
+    try:
+        compiled = cache.load(ap_tz2)
+    except Exception:
+        return (0.0, 0.5, 0.0, 0.0)
+
+    _, H, W = img_chw_f32.shape
+    cy, cx = H // 2, W // 2
+    h2, w2 = min(256, H // 2), min(256, W // 2)
+    crop = img_chw_f32[:, cy - h2:cy + h2, cx - w2:cx + w2]
+    # Pad to 512×512
+    ph = max(0, 512 - crop.shape[1])
+    pw = max(0, 512 - crop.shape[2])
+    if ph or pw:
+        crop = np.pad(crop, ((0, 0), (0, ph), (0, pw)), mode="reflect")
+    crop = crop[:, :512, :512]
+
+    results = compiled({"netInput": crop[np.newaxis]})
+    params = next(iter(results.values()))[0]  # [4]
+    return tuple(float(np.clip(p, 0.0, 1.0)) for p in params)
+
+
 def sharpen(img_bgr: np.ndarray, cache: ModelCache,
-            blur: float = 0.5, noise: float = 0.0) -> np.ndarray:
-    """Lens-blur sharpening via slb-v1-fp32-512x512-ov.tz, 512×512 tiles."""
+            blur: float | None = None, noise: float = 0.0,
+            auto_params: bool = True) -> np.ndarray:
+    """Lens-blur sharpening via slb-v1-fp32-512x512-ov.tz, 512×512 tiles.
+
+    When *auto_params* is True (default) and *blur* is None, runs the slsp_ap
+    autoparam .tz2 model to estimate the best blur/noise values for this image,
+    mirroring what Topaz Photo AI does internally.
+    """
     tz = MODELS_DIR / "slb-v1-fp32-512x512-ov.tz"
     compiled = cache.load(tz)
 
@@ -263,7 +363,13 @@ def sharpen(img_bgr: np.ndarray, cache: ModelCache,
     img_rgb = img_bgr[:, :, ::-1].astype(np.float32) / 255.0
     img_chw = np.transpose(img_rgb, (2, 0, 1))
 
-    blur_val = np.array([blur], dtype=np.float32)
+    if blur is None and auto_params:
+        _, lensblur, _, _ = _estimate_sharpen_params(img_chw, cache)
+        blur = lensblur
+    elif blur is None:
+        blur = 0.5
+
+    blur_val  = np.array([blur],  dtype=np.float32)
     noise_val = np.array([noise], dtype=np.float32)
 
     def feed(tile: np.ndarray, mdl) -> np.ndarray:
