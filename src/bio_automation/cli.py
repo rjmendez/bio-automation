@@ -64,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
 
+    p_serve = sub.add_parser("serve", help="Start Topaz enhancement HTTP server")
+    p_serve.add_argument("--host", default="0.0.0.0")
+    p_serve.add_argument("--port", type=int, default=8091)
+    p_serve.add_argument("--device", default="AUTO",
+                         help="OpenVINO device: CPU, GPU, AUTO (default: AUTO)")
+
     return parser
 
 
@@ -166,6 +172,19 @@ def cmd_build_keywords(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    import subprocess
+
+    serve_script = Path(__file__).parent.parent.parent / "tools" / "topaz_serve.py"
+    cmd = [
+        "python", str(serve_script),
+        "--host", args.host,
+        "--port", str(args.port),
+        "--device", args.device,
+    ]
+    raise SystemExit(subprocess.call(cmd))
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -189,6 +208,8 @@ def main() -> int:
         return cmd_export_stock(args)
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
+    if args.command == "serve":
+        return cmd_serve(args)
     raise SystemExit(2)
 
 
