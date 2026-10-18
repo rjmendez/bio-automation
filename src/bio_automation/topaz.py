@@ -8,6 +8,7 @@ All I/O uses Pillow (no cv2 dependency).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import zipfile
@@ -27,6 +28,8 @@ _TZ2_TAG   = 16                    # Poly1305 tag bytes
 
 MODELS_DIR = Path(r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
 CACHE_DIR  = Path(r"C:\TopazModels")
+
+DEFAULT_DEVICE: str = os.environ.get("TOPAZ_DEVICE", "AUTO")
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +145,7 @@ class ModelCache:
     model objects are evicted when *max_models* is exceeded.
     """
 
-    def __init__(self, max_models: int = 3, device: str = "CPU",
+    def __init__(self, max_models: int = 3, device: str = DEFAULT_DEVICE,
                  cache_dir: Path = CACHE_DIR):
         self._max = max_models
         self._device = device
