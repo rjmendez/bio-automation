@@ -61,8 +61,8 @@ async def _read_image(file: UploadFile) -> np.ndarray:
 @app.get("/health")
 def health():
     try:
-        from openvino.runtime import Core
-        devices = Core().available_devices
+        import openvino as ov
+        devices = ov.Core().available_devices
     except Exception:
         devices = ["unavailable"]
 
