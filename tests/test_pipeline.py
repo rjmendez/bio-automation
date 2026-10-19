@@ -305,6 +305,10 @@ class TestSubjectConsistencyGate:
 
         assert fake_run.calls == []
         assert len(fake_check.calls) == 1
+        # Fails fast on the raw files, before paying for denoise at all --
+        # not after denoising every frame and only then discovering the
+        # mismatch inside stack_focus.
+        assert fake_denoise.calls == []
 
     def test_clean_and_stack_forwards_check_subjects_false(self, tmp_path, monkeypatch):
         """Positive twin to the test above: the same outliers must not

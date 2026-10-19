@@ -348,15 +348,17 @@ associated with a different `--observation-id`; see **Workflow** step 3.
   used to appear here described the API *access policy* (read-only), not
   per-record data provenance, and has been retired.
 - `bio write-sidecars`/`render-review`/`export-inat`/`export-stock` and their
-  underlying `render.py` functions are design stubs (`NotImplementedError`),
-  not yet implemented. The intended v1 source for review/inat/stock JPEGs is
-  the raw's embedded preview (`exiftool -b -PreviewImage` / `-JpgFromRaw` —
-  exiftool is already a hard runtime dependency via `exif.py`) resized and
-  re-encoded with Pillow, not a full raw development. Pillow is not yet in
-  `pyproject.toml`'s `dependencies` and must be added before these stubs can
-  be implemented; `export-stock` in particular will be capped by whatever
-  resolution/color the camera embedded until a raw-decode library (e.g.
-  `rawpy`/LibRaw) is added, if ever needed for stock buyers.
+  underlying `render.py`/`exif.py` functions are implemented (2026-10-19).
+  review/inat/stock JPEGs are sourced from the raw's embedded preview
+  (`exiftool -b -PreviewImage`, falling back to `-JpgFromRaw`), resized and
+  re-encoded with Pillow (now a real `pyproject.toml` dependency), not a full
+  raw development. `export-stock` is therefore capped by whatever
+  resolution/color the camera embedded in-frame -- a raw-decode library
+  (e.g. `rawpy`/LibRaw, already used elsewhere in this codebase by
+  `preclean.py`) would be needed to go beyond that, if ever needed for stock
+  buyers. All four operate only on raws at `status == "kept"` (not merely
+  ingested) -- a raw that cull never explicitly kept is skipped, not treated
+  as implicitly kept.
 
 ## What to leave manual at first
 

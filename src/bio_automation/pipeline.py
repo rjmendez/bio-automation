@@ -5,11 +5,14 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .daclip import load_session
+from .exif import build_exif_sidecar, render_xmp
 from .grouping import DEFAULT_THRESHOLD, SubjectMismatchError, check_subject_consistency
 from .io import read_json, read_jsonl, write_json, write_jsonl
 from .models import Asset, Observation
 from .paths import export_dir, metadata_dir, review_dir, source_raw_dir, work_dir
 from .preclean import denoise_stack_frames
+from .render import export_inat_jpeg, export_stock_jpeg, render_review_jpeg
+from .stock import build_keywords
 from .topaz import ModelCache
 from .zerene import run_batch as zerene_run_batch
 
@@ -119,36 +122,82 @@ def merge_inat_fields(existing: Observation, fetched: dict) -> Observation:
     raise NotImplementedError("fetch-inat reconciliation merge will be added next.")
 
 
+def _kept_original_raws(folder: Path) -> list[Asset]:
+    """Original raws marked 'kept' by `bio keep` -- the only assets
+    write_sidecars/render_review/export_inat/export_stock operate on, per
+    docs/folder-metadata-schema.md's workflow ordering (cull, THEN sidecar
+    write/export). A raw still sitting at 'ingested' (cull never ran on it)
+    is deliberately excluded, not treated as implicitly kept.
+    """
+    return [a for a in scan_assets(folder) if a.role == "original" and a.status == "kept"]
+
+
 def write_sidecars(folder: Path) -> list[Path]:
     """Write metadata/<stem>.exif.json and metadata/<stem>.xmp for every
     kept raw in source/raw/, one pair per raw (an observation folder can
     hold multiple kept raws, so a single shared sidecar file would collide).
     """
-    raise NotImplementedError("write_sidecars will be added next.")
+    written: list[Path] = []
+    for asset in _kept_original_raws(folder):
+        raw_path = folder / asset.file
+        stem = raw_path.stem
+        sidecar = build_exif_sidecar(raw_path, folder)
+
+        exif_path = metadata_dir(folder) / f"{stem}.exif.json"
+        write_json(exif_path, sidecar)
+        written.append(exif_path)
+
+        xmp_path = metadata_dir(folder) / f"{stem}.xmp"
+        xmp_path.write_text(render_xmp(sidecar), encoding="utf-8")
+        written.append(xmp_path)
+    return written
+
+
+def _render_derivatives(folder: Path, render_fn, dest_dir: Path, role: str,
+                         status: str) -> list[Path]:
+    """Shared body for render_review/export_inat/export_stock: run
+    *render_fn* over every kept raw into *dest_dir*, append a matching
+    Asset row (role, status) for each, save once, return the written paths.
+    """
+    written: list[Path] = []
+    new_assets: list[Asset] = []
+    for asset in _kept_original_raws(folder):
+        raw_path = folder / asset.file
+        dest_path = dest_dir / f"{raw_path.stem}.jpg"
+        render_fn(raw_path, dest_path)
+        written.append(dest_path)
+        new_assets.append(Asset(
+            file=str(dest_path.relative_to(folder)).replace("\\", "/"),
+            role=role, status=status, selected=None,
+        ))
+    if new_assets:
+        assets = scan_assets(folder)
+        assets.extend(new_assets)
+        save_assets(folder, assets)
+    return written
 
 
 def render_review(folder: Path) -> list[Path]:
     """Render review/<stem>.jpg proxies for every kept raw, to drive the
     keep/reject decision. Decoupled from where the raw itself lives -- see
-    Workflow step 2 (cull). Needs render.render_review_jpeg, which is
-    blocked on an image-rendering dependency (see Implementation notes).
+    Workflow step 2 (cull).
     """
-    raise NotImplementedError("render_review will be added next.")
+    return _render_derivatives(folder, render_review_jpeg, review_dir(folder),
+                                role="review", status="generated")
 
 
 def export_inat(folder: Path) -> list[Path]:
-    """Render export/inat/<stem>.jpg upload-ready copies for every kept
-    raw. Needs render.export_inat_jpeg (same dependency as render_review).
-    """
-    raise NotImplementedError("export_inat will be added next.")
+    """Render export/inat/<stem>.jpg upload-ready copies for every kept raw."""
+    return _render_derivatives(folder, export_inat_jpeg, export_dir(folder, "inat"),
+                                role="upload", status="ready")
 
 
 def export_stock(folder: Path) -> list[Path]:
     """Render export/stock/<stem>.jpg stock-ready derivatives for every
-    kept raw. Needs render.export_stock_jpeg (same dependency as
-    render_review).
+    kept raw.
     """
-    raise NotImplementedError("export_stock will be added next.")
+    return _render_derivatives(folder, export_stock_jpeg, export_dir(folder, "stock"),
+                                role="stock", status="ready")
 
 
 def _run_subject_consistency_gate(raw_paths: list[Path], threshold: float = DEFAULT_THRESHOLD) -> None:
@@ -256,10 +305,14 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
 
     Assumes cull/delete_rejected_raws already ran, like stack_focus().
 
-    *check_subjects* is forwarded to stack_focus(): the subject-consistency
-    gate runs against work/denoised/ (the files actually handed to Zerene),
-    not the pre-denoise raws, since denoising does not change which
-    subject is in frame. See stack_focus()'s docstring.
+    *check_subjects*: the subject-consistency gate runs FIRST, against the
+    raw files in source/raw/, before denoise_stack_frames() is even called
+    -- denoising does not change which subject is in frame, so checking the
+    cheap-to-read raws catches a mismatch before paying the real cost of
+    denoising every frame (per-frame OpenVINO inference, large TIFF writes
+    to work/denoised/). stack_focus() is then called with
+    check_subjects=False, since the batch has already been verified
+    consistent; it does not re-check the denoised intermediates.
 
     *cache* is forwarded to preclean.denoise_stack_frames() as-is. Left at
     the default None, behavior is unchanged from before this parameter
@@ -283,12 +336,16 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     folder = Path(folder)
     raw_dir = source_raw_dir(folder)
     raw_paths = sorted(p for p in raw_dir.iterdir() if p.is_file())
+
+    if check_subjects:
+        _run_subject_consistency_gate(raw_paths)
+
     denoised_dir = work_dir(folder) / "denoised"
     try:
         denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev,
                               cache=cache, min_free_gb=min_free_gb)
         asset = stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir,
-                             min_free_gb=min_free_gb, check_subjects=check_subjects)
+                             min_free_gb=min_free_gb, check_subjects=False)
     except Exception:
         if denoised_dir.exists():
             shutil.rmtree(denoised_dir)
@@ -354,4 +411,7 @@ def build_and_save_keywords(folder: Path) -> dict:
     stock.build_keywords() and write it to disk. One record per observation
     folder, not per asset.
     """
-    raise NotImplementedError("build_and_save_keywords will be added next.")
+    observation = load_observation(folder)
+    keywords = build_keywords(observation)
+    write_json(metadata_dir(folder) / "keywords.json", keywords)
+    return keywords
