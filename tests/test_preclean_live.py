@@ -1,0 +1,139 @@
+"""Live, unmocked proof that bio_automation.preclean's raw-decode and
+OpenVINO-model code paths actually work against real data -- not hermetic,
+and deliberately NOT gated behind an opt-in env var or marker: every
+default `pytest` run exercises the real rawpy call against a real raw
+file (tests/fixtures/sample_raw.NEF) and the real slb OpenVINO model.
+
+Why this file exists and is not skippable: test_preclean.py mocks both
+rawpy.imread and _sharpen_f32, which proves the module's own logic is
+internally consistent but nothing about whether rawpy's actual kwargs or
+the real model's actual input/output tensor names match what the code
+assumes. A prior tool (smart_focus_stack.py, this same project) was
+recorded as "built and verified" in Loci's memory but was never actually
+proven against anything that persisted -- the verification evaporated
+with whatever ephemeral environment ran it, and the file itself no longer
+exists anywhere on disk. An opt-in-gated live test has the same failure
+mode in miniature: a check that doesn't run by default doesn't run.
+
+Cropped to a 768x768 window post-decode (not the full ~48MP frame) so
+this stays fast (~3-10s) while still forcing _run_tiled through multiple
+overlapping tiles with real blending, not a single trivial tile.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from bio_automation.preclean import (
+    _sharpen_f32,
+    _to_chw_rgb_f32,
+    apply_levels,
+    compute_fixed_params,
+    decode_raw_to_bgr16,
+)
+from bio_automation.topaz import ModelCache
+
+FIXTURE = Path(__file__).parent / "fixtures" / "sample_raw.NEF"
+
+
+def _crop_chw(bgr16: np.ndarray, size: int = 768) -> np.ndarray:
+    h, w = bgr16.shape[:2]
+    cy, cx = h // 2, w // 2
+    half = size // 2
+    crop = bgr16[cy - half:cy + half, cx - half:cx + half]
+    return _to_chw_rgb_f32(crop)
+
+
+@pytest.fixture(scope="module")
+def cache():
+    with ModelCache() as c:
+        yield c
+
+
+class TestDecodeRawToBgr16Live:
+    def test_real_nef_decodes_to_sane_sensor_data(self):
+        assert FIXTURE.exists(), f"missing committed fixture: {FIXTURE}"
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+
+        assert bgr16.dtype == np.uint16
+        assert bgr16.ndim == 3
+        assert bgr16.shape[2] == 3
+        # a real daylight macro exposure: not blank, not saturated, real variance
+        assert bgr16.min() < bgr16.max()
+        assert 0 < int(bgr16.mean()) < 65535
+        assert float(bgr16.std()) > 100.0  # real sensor texture, not a flat/corrupt frame
+
+
+class TestSharpenF32Live:
+    def test_output_shape_and_range_on_real_tile_boundary_crossing_crop(self, cache):
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _crop_chw(bgr16, size=768)  # forces multi-tile blending, see module docstring
+
+        out = _sharpen_f32(chw, cache, blur=0.5, noise=0.5)
+
+        assert out.shape == chw.shape
+        assert out.dtype == np.float32
+        assert float(out.min()) >= 0.0
+        assert float(out.max()) <= 1.0
+
+    def test_model_actually_transforms_real_data_not_identity(self, cache):
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _crop_chw(bgr16, size=768)
+
+        out = _sharpen_f32(chw, cache, blur=0.5, noise=0.5)
+
+        assert not np.array_equal(out, chw)
+
+    def test_different_noise_params_produce_different_real_output(self, cache):
+        """Proves noise actually reaches the real model call, not silently ignored."""
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _crop_chw(bgr16, size=768)
+
+        low = _sharpen_f32(chw, cache, blur=0.5, noise=0.0)
+        high = _sharpen_f32(chw, cache, blur=0.5, noise=1.0)
+
+        assert not np.allclose(low, high)
+
+    def test_same_input_and_params_are_reproducible(self, cache):
+        """Real-model determinism check: same input/params -> same output, not
+        just 'ran without crashing'."""
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _crop_chw(bgr16, size=768)
+
+        first = _sharpen_f32(chw, cache, blur=0.4, noise=0.6)
+        second = _sharpen_f32(chw, cache, blur=0.4, noise=0.6)
+
+        assert np.array_equal(first, second)
+
+
+class TestComputeFixedParamsLive:
+    def test_real_autoparam_model_returns_in_range_blur(self, cache):
+        blur, noise = compute_fixed_params([FIXTURE], cache, noise=0.7)
+
+        assert 0.0 <= blur <= 1.0
+        assert noise == 0.7
+
+    def test_real_autoparam_model_is_reproducible(self, cache):
+        blur1, _ = compute_fixed_params([FIXTURE], cache, noise=0.5)
+        blur2, _ = compute_fixed_params([FIXTURE], cache, noise=0.5)
+        assert blur1 == blur2
+
+
+class TestEndToEndLive:
+    def test_full_denoise_then_levels_pipeline_on_real_crop(self, cache):
+        """The exact sequence denoise_stack_frames runs per frame, unmocked:
+        decode -> real denoise model -> real levels -- end to end on real data."""
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _crop_chw(bgr16, size=768)
+
+        blur, noise = compute_fixed_params([FIXTURE], cache, noise=0.8)
+        denoised = _sharpen_f32(chw, cache, blur=blur, noise=noise)
+        leveled = apply_levels(denoised, exposure_ev=-0.5)
+
+        assert leveled.shape == chw.shape
+        assert float(leveled.max()) <= 1.0
+        assert float(leveled.min()) >= 0.0
+        # levels is a gain < 1.0 here (negative EV): leveled must be <= denoised everywhere
+        assert bool(np.all(leveled <= denoised + 1e-6))

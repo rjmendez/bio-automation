@@ -1,0 +1,19 @@
+# Allowlist for scripts/check_test_honesty.py -- see AGENTS.md "Test-writing rules".
+#
+# Every entry is a known violation this repo tolerates for now, with the reason it
+# is tolerated. This list starts empty (2026-10-18: all 9 test files clean on
+# introduction) and is meant to stay that way. When a violation is found, fix the
+# test; only add an entry if a reviewer can check the reason, never "pre-existing".
+#
+# Entries are keyed by (file, test, rule); `test` is the function's qualified name
+# (Class::method) or "<module>" for module-level code. Regenerate, keeping existing
+# reasons, with: python scripts/check_test_honesty.py --write-allowlist
+
+# No live-smoke opt-ins: tests/test_preclean_live.py runs unconditionally on every
+# default `pytest` invocation against tests/fixtures/sample_raw.NEF -- deliberately
+# not gated behind an env var, since an off-by-default test is no test (see its
+# module docstring for why that matters in this project specifically).
+[live_smoke_opt_ins]
+
+[helpers]
+names = []
