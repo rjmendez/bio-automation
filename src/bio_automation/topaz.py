@@ -35,7 +35,12 @@ _TZ2_TAG   = 16                    # Poly1305 tag bytes
 MODELS_DIR = Path(r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
 CACHE_DIR  = Path(r"C:\TopazModels")
 
-DEFAULT_DEVICE: str = os.environ.get("TOPAZ_DEVICE", "GPU.1")  # RTX 4070 Ti via OpenVINO
+DEFAULT_DEVICE: str = os.environ.get("TOPAZ_DEVICE", "CPU")
+# NOTE: topaz.py models are all OpenVINO IR (.xml/.bin).
+# OpenVINO's GPU plugin uses OpenCL on NVIDIA which is SLOWER than CPU for these models
+# (benchmark: slb 820ms GPU.1/OpenCL vs 660ms CPU on RTX 4070 Ti).
+# For NVIDIA GPU acceleration on OV models, convert to ONNX first and use CUDA via ort.
+# ONNX models (e.g. DACLIP) already get CUDAExecutionProvider at 13ms via lce.engine.
 
 
 # ---------------------------------------------------------------------------
