@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import os
+
 from bio_automation import zerene
 from bio_automation.zerene import (
     ZereneError,
@@ -233,3 +235,101 @@ class TestRunBatchDiskGuard:
         assert (tmp_path / "ZereneBatch.xml").exists()
         assert len(FakePopen.instances) == 1
         assert result == output
+
+
+# ---------------------------------------------------------------------------
+# run_batch -- concurrency guard (lock file). Zerene is a single GUI-app
+# process; nothing stops a second headless batch launch while one is still
+# running unless run_batch itself refuses the overlap.
+# ---------------------------------------------------------------------------
+
+class _RecordingPopen:
+    """Records every construction call instead of blowing up when called, so
+    a broken guard shows up as a non-empty call list (rule 4), not as the
+    stub itself crashing the test for an unrelated reason."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(cmd)
+        return FakePopen(cmd, returncode=0, **kwargs)
+
+
+class TestRunBatchLock:
+    def setup_method(self):
+        FakePopen.instances = []
+
+    def test_lock_already_held_raises_without_calling_popen(self, tmp_path):
+        lock_path = tmp_path / "zerene.lock"
+        lock_path.write_text("424242", encoding="utf-8")
+        recording_popen = _RecordingPopen()
+
+        with pytest.raises(
+            ZereneError,
+            match=r"Zerene stacking is already in progress \(lock .* held by pid 424242\)",
+        ):
+            run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=recording_popen,
+                      lock_path=lock_path)
+
+        assert recording_popen.calls == []
+        assert lock_path.read_text(encoding="utf-8") == "424242"  # untouched, not reclaimed
+
+    def test_lock_released_after_successful_run(self, tmp_path):
+        lock_path = tmp_path / "zerene.lock"
+        output = tmp_path / "ZS-OutputImage.tif"
+        seen_lock_contents = {}
+
+        def factory(cmd, **kwargs):
+            fake = FakePopen(cmd, returncode=0, **kwargs)
+            seen_lock_contents["pid"] = lock_path.read_text(encoding="utf-8")
+            output.write_bytes(b"stacked")
+            return fake
+
+        result = run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=factory,
+                            lock_path=lock_path)
+
+        assert result == output
+        assert seen_lock_contents["pid"] == str(os.getpid())
+        assert not lock_path.exists()
+
+    def test_lock_released_after_failed_run(self, tmp_path):
+        lock_path = tmp_path / "zerene.lock"
+        popen = _make_popen_factory(returncode=1, communicate_result=("boom", None))
+
+        with pytest.raises(ZereneError, match=r"Zerene batch exited 1 on"):
+            run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=popen,
+                      lock_path=lock_path)
+
+        assert not lock_path.exists()
+
+    def test_lock_released_after_timed_out_run(self, tmp_path):
+        lock_path = tmp_path / "zerene.lock"
+        popen = _make_popen_factory(
+            communicate_side_effect=subprocess.TimeoutExpired(cmd="zerene", timeout=5)
+        )
+
+        with pytest.raises(ZereneError, match=r"timed out after 5s"):
+            run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=popen,
+                      lock_path=lock_path, timeout=5)
+
+        assert not lock_path.exists()
+
+    def test_two_sequential_non_overlapping_calls_both_succeed(self, tmp_path):
+        lock_path = tmp_path / "zerene.lock"
+        output = tmp_path / "ZS-OutputImage.tif"
+
+        def factory(cmd, **kwargs):
+            fake = FakePopen(cmd, returncode=0, **kwargs)
+            output.write_bytes(b"stacked")
+            return fake
+
+        first = run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=factory,
+                           lock_path=lock_path)
+        assert first == output
+        assert not lock_path.exists()
+
+        second = run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=factory,
+                            lock_path=lock_path)
+        assert second == output
+        assert not lock_path.exists()
