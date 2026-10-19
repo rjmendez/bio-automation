@@ -31,18 +31,17 @@ PROMPT = (
 
 log = logging.getLogger('vision_files')
 SLEEP = time.sleep
-DEFAULT_MAIN_GPU = 1          # Ollama device index of the card the vision model is kept resident on; override with BIO_OLLAMA_MAIN_GPU
 CHAT_RETRIES = 3
 CHAT_BACKOFF_S = 2.0
 RETRY_COUNT = 0               # retried /api/chat calls in this process (reported, never silent)
 
 
 def gpu_options(environ=None):
-    """The one place main_gpu is decided. Every caller sends it on every request: a request without it makes Ollama reload the
-    model onto another card (~15 s calls, a reload every 5-25 min, see ~/.loci/backends.toml). Env BIO_OLLAMA_MAIN_GPU overrides."""
+    """The one place main_gpu is decided. No card is pinned by default: Ollama places the model by free VRAM. Set BIO_OLLAMA_MAIN_GPU
+    to pin one; then every caller sends it on every request (a request without it makes Ollama reload the model onto another card)."""
     raw = (os.environ if environ is None else environ).get('BIO_OLLAMA_MAIN_GPU')
     if raw in (None, ''):
-        return {'main_gpu': DEFAULT_MAIN_GPU}
+        return {}
     try:
         n = int(raw)
     except ValueError:

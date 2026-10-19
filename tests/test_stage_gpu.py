@@ -135,8 +135,9 @@ def vf(stage, monkeypatch):
 
 
 class TestGpuOptions:
-    def test_default_pin(self, vf):
-        assert vf.gpu_options({}) == {"main_gpu": 1}
+    def test_default_is_no_pin(self, vf):
+        assert vf.gpu_options({}) == {}
+        assert vf.gpu_options({"BIO_OLLAMA_MAIN_GPU": ""}) == {}
 
     def test_env_pin(self, vf):
         assert vf.gpu_options({"BIO_OLLAMA_MAIN_GPU": "0"}) == {"main_gpu": 0}
@@ -215,13 +216,13 @@ def _run_main(mod, monkeypatch, argv):
     mod.main()
 
 
-@pytest.fixture(params=[(None, 1), ("0", 0), ("3", 3)], ids=["default", "env0", "env3"])
+@pytest.fixture(params=[(None, None), ("0", 0), ("3", 3)], ids=["default", "env0", "env3"])
 def pin(request, monkeypatch):
-    """The options every request must carry: the default pin, or BIO_OLLAMA_MAIN_GPU."""
+    """The options every request must carry: no pin by default, or BIO_OLLAMA_MAIN_GPU."""
     env, expected = request.param
     if env is not None:
         monkeypatch.setenv("BIO_OLLAMA_MAIN_GPU", env)
-    return {"temperature": 0, "main_gpu": expected}
+    return {"temperature": 0} if expected is None else {"temperature": 0, "main_gpu": expected}
 
 
 class TestScriptsKeepThePinAfterAnError:
