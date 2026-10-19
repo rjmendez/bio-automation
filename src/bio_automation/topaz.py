@@ -35,7 +35,7 @@ _TZ2_TAG   = 16                    # Poly1305 tag bytes
 MODELS_DIR = Path(r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
 CACHE_DIR  = Path(r"C:\TopazModels")
 
-DEFAULT_DEVICE: str = os.environ.get("TOPAZ_DEVICE", "AUTO")
+DEFAULT_DEVICE: str = os.environ.get("TOPAZ_DEVICE", "GPU.1")  # RTX 4070 Ti via OpenVINO
 
 
 # ---------------------------------------------------------------------------
