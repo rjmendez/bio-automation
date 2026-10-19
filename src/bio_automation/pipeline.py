@@ -293,6 +293,7 @@ def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
 
 
 def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
+                     subject_boost_ev: float = 0.0,
                      method: str = "pmax", timeout: float = 1800.0,
                      min_free_gb: float = 5.0, check_subjects: bool = True,
                      cache: ModelCache | None = None) -> Asset:
@@ -313,6 +314,10 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     to work/denoised/). stack_focus() is then called with
     check_subjects=False, since the batch has already been verified
     consistent; it does not re-check the denoised intermediates.
+
+    *subject_boost_ev* is forwarded to preclean.denoise_stack_frames() as-is
+    (default 0.0, no mask model call -- see its docstring for the fixed-
+    across-the-stack masking it does when non-zero).
 
     *cache* is forwarded to preclean.denoise_stack_frames() as-is. Left at
     the default None, behavior is unchanged from before this parameter
@@ -343,6 +348,7 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     denoised_dir = work_dir(folder) / "denoised"
     try:
         denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev,
+                              subject_boost_ev=subject_boost_ev,
                               cache=cache, min_free_gb=min_free_gb)
         asset = stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir,
                              min_free_gb=min_free_gb, check_subjects=False)
@@ -356,6 +362,7 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
 
 
 def stack_all(base_dir: Path, noise: float = 1.0, exposure_ev: float = 0.0,
+              subject_boost_ev: float = 0.0,
               method: str = "pmax", timeout: float = 1800.0,
               min_free_gb: float = 5.0, check_subjects: bool = True) -> list[dict]:
     """Run cull + clean_and_stack() over every observation folder under
@@ -384,7 +391,8 @@ def stack_all(base_dir: Path, noise: float = 1.0, exposure_ev: float = 0.0,
             try:
                 delete_rejected_raws(folder)
                 asset = clean_and_stack(
-                    folder, noise=noise, exposure_ev=exposure_ev, method=method,
+                    folder, noise=noise, exposure_ev=exposure_ev,
+                    subject_boost_ev=subject_boost_ev, method=method,
                     timeout=timeout, min_free_gb=min_free_gb,
                     check_subjects=check_subjects, cache=cache,
                 )

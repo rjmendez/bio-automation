@@ -123,11 +123,12 @@ class RecordingDenoise:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def __call__(self, raw_paths, dest_dir, noise=1.0, exposure_ev=0.0, cache=None,
-                 min_free_gb=5.0):
+    def __call__(self, raw_paths, dest_dir, noise=1.0, exposure_ev=0.0,
+                 subject_boost_ev=0.0, cache=None, min_free_gb=5.0):
         self.calls.append({
             "raw_paths": list(raw_paths), "dest_dir": Path(dest_dir),
-            "noise": noise, "exposure_ev": exposure_ev, "min_free_gb": min_free_gb,
+            "noise": noise, "exposure_ev": exposure_ev,
+            "subject_boost_ev": subject_boost_ev, "min_free_gb": min_free_gb,
         })
         dest_dir = Path(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -398,8 +399,8 @@ class TestCleanAndStackCleanup:
         self._prep(tmp_path, monkeypatch)
         monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", RecordingBatchRun())
 
-        def failing_denoise(raw_paths, dest_dir, noise=1.0, exposure_ev=0.0, cache=None,
-                             min_free_gb=5.0):
+        def failing_denoise(raw_paths, dest_dir, noise=1.0, exposure_ev=0.0,
+                             subject_boost_ev=0.0, cache=None, min_free_gb=5.0):
             dest_dir = Path(dest_dir)
             dest_dir.mkdir(parents=True, exist_ok=True)
             (dest_dir / "DSC_0001.tif").write_bytes(b"partial")  # frame 1 written...
@@ -491,11 +492,13 @@ class RecordingCleanAndStack:
         self.calls: list[dict] = []
         self.behaviors = behaviors
 
-    def __call__(self, folder, noise=1.0, exposure_ev=0.0, method="pmax", timeout=1800.0,
+    def __call__(self, folder, noise=1.0, exposure_ev=0.0, subject_boost_ev=0.0,
+                 method="pmax", timeout=1800.0,
                  min_free_gb=5.0, check_subjects=True, cache=None):
         folder = Path(folder)
         self.calls.append({
-            "folder": folder, "noise": noise, "exposure_ev": exposure_ev, "method": method,
+            "folder": folder, "noise": noise, "exposure_ev": exposure_ev,
+            "subject_boost_ev": subject_boost_ev, "method": method,
             "timeout": timeout, "min_free_gb": min_free_gb, "check_subjects": check_subjects,
             "cache": cache,
         })
@@ -627,10 +630,12 @@ class TestStackAll:
             behaviors={"obs-a": None, "obs-b": None, "obs-c": None},
         )
 
-        stack_all(tmp_path, noise=0.3, exposure_ev=-1.0, method="pmax", timeout=99.0,
+        stack_all(tmp_path, noise=0.3, exposure_ev=-1.0, subject_boost_ev=0.8,
+                  method="pmax", timeout=99.0,
                   min_free_gb=7.5, check_subjects=False)
 
-        expected_common = {"noise": 0.3, "exposure_ev": -1.0, "method": "pmax", "timeout": 99.0,
+        expected_common = {"noise": 0.3, "exposure_ev": -1.0, "subject_boost_ev": 0.8,
+                            "method": "pmax", "timeout": 99.0,
                             "min_free_gb": 7.5, "check_subjects": False}
         shared_cache = RecordingModelCache.instances_built[0]
         assert [

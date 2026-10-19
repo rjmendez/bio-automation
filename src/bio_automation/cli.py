@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_stack.add_argument("--exposure-ev", type=float, default=0.0,
                           help="Fixed EV pull-down applied after denoise, only with --denoise "
                                "(negative leaves headroom under clipping for specular highlights)")
+    p_stack.add_argument("--subject-boost-ev", type=float, default=0.0,
+                          help="Extra EV lift inside the subject only (on top of --exposure-ev), "
+                               "only with --denoise. Uses Topaz Photo AI's s_mask_l_flexible "
+                               "subject-mask model (not Meta's SAM); 0.0 (default) skips the mask "
+                               "model entirely.")
     p_stack.add_argument("--min-free-gb", type=float, default=5.0,
                           help="Abort before any work if free disk space at the "
                                "destination/source folder is below this many GB")
@@ -84,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Fixed EV pull-down applied after denoise to every folder's "
                                    "stack (negative leaves headroom under clipping for specular "
                                    "highlights)")
+    p_stack_all.add_argument("--subject-boost-ev", type=float, default=0.0,
+                              help="Extra EV lift inside the subject only (on top of "
+                                   "--exposure-ev), for every folder's stack. Uses Topaz Photo "
+                                   "AI's s_mask_l_flexible subject-mask model (not Meta's SAM); "
+                                   "0.0 (default) skips the mask model entirely.")
     p_stack_all.add_argument("--min-free-gb", type=float, default=5.0,
                               help="Abort before any work if free disk space at the "
                                    "destination/source folder is below this many GB")
@@ -195,6 +205,7 @@ def cmd_stack(args: argparse.Namespace) -> int:
         if args.denoise:
             asset = clean_and_stack(Path(args.folder), noise=args.noise,
                                      exposure_ev=args.exposure_ev,
+                                     subject_boost_ev=args.subject_boost_ev,
                                      method=args.method, timeout=args.timeout,
                                      min_free_gb=args.min_free_gb,
                                      check_subjects=check_subjects)
@@ -212,7 +223,8 @@ def cmd_stack_all(args: argparse.Namespace) -> int:
     base_dir = Path(args.base_dir)
     check_subjects = not args.skip_subject_check
     results = stack_all(
-        base_dir, noise=args.noise, exposure_ev=args.exposure_ev, method=args.method,
+        base_dir, noise=args.noise, exposure_ev=args.exposure_ev,
+        subject_boost_ev=args.subject_boost_ev, method=args.method,
         timeout=args.timeout, min_free_gb=args.min_free_gb, check_subjects=check_subjects,
     )
     ok = sum(1 for row in results if row["status"] == "ok")
