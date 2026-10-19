@@ -1,0 +1,146 @@
+"""Zerene Stacker headless batch automation (focus stacking).
+
+Zerene Stacker has no public API or MCP server, but it does have a
+documented Batch API (https://www.zerenesystems.com/cms/stacker/docs/batchapi):
+launch the bundled JRE directly -- not zerenstk.exe, which returns before
+stacking finishes and leaves the GUI running -- with
+-noSplashScreen -exitOnBatchScriptCompletion -runMinimized and the source
+image folder as the final argument. The batch script is implicitly
+ZereneBatch.xml, read from that same folder.
+
+The exact launch command (javaw.exe path, -Xmx sizing, classpath,
+-Dlaunchcmddir) is machine- and install-specific, so it is not
+reconstructed here: Zerene writes it to its own preferences dir on every
+normal GUI launch, as zerenstk.launchcmd. Confirmed on this machine at
+%APPDATA%\\ZereneStacker\\zerenstk.launchcmd (captured 2026-10-18 via a
+one-time GUI launch, per the docs' own instructions for Windows/Linux/macOS).
+
+Only TaskIndicatorCode 1 (Align and Stack All / PMax) is used: it is the
+only stacking-method code the docs publish. DMap's code is undocumented.
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+DEFAULT_LAUNCHCMD = Path(os.environ.get("APPDATA", "")) / "ZereneStacker" / "zerenstk.launchcmd"
+OUTPUT_NAME_TEMPLATE = "ZS-OutputImage"
+
+METHOD_TASK_CODES = {
+    "pmax": 1,  # Align and Stack All (PMax) -- the only documented code
+}
+
+
+class ZereneError(RuntimeError):
+    """Raised when a Zerene batch run fails, times out, or produces no output."""
+
+
+def locate_launch_command(launchcmd_path: Path | None = None) -> str:
+    """Read Zerene's self-written launch command line.
+
+    Raises FileNotFoundError if Zerene Stacker has never been launched
+    normally (via its GUI) on this machine -- that one-time launch is how
+    the docs say to learn the install's classpath/launchcmddir/heap size;
+    there is no other documented way to obtain it.
+    """
+    path = launchcmd_path if launchcmd_path is not None else DEFAULT_LAUNCHCMD
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found -- launch Zerene Stacker's GUI once first so it "
+            "writes its own launch command (see Zerene's Batch API docs)."
+        )
+    return path.read_text(encoding="utf-8").strip()
+
+
+def write_batch_script(folder: Path, method: str = "pmax",
+                        output_name: str = OUTPUT_NAME_TEMPLATE) -> Path:
+    """Write ZereneBatch.xml into *folder* and return its path.
+
+    ProjectDispositionCode 101 = new project is temporary (we only want the
+    output image, not a saved .zpr). OutputImageDispositionCode 2 = save in
+    the source folder.
+    """
+    if method not in METHOD_TASK_CODES:
+        raise ValueError(f"Unknown method {method!r}; choose from {sorted(METHOD_TASK_CODES)}")
+    task_code = METHOD_TASK_CODES[method]
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<ZereneStackerBatchScript>\n"
+        "  <BatchQueue>\n"
+        "    <Batches>\n"
+        "      <Batch>\n"
+        "        <Sources>\n"
+        '          <Source value="%CurrentProject%" />\n'
+        "        </Sources>\n"
+        '        <ProjectDispositionCode value="101" />\n'
+        "        <Tasks>\n"
+        "          <Task>\n"
+        f'            <TaskIndicatorCode value="{task_code}" />\n'
+        '            <OutputImageDispositionCode value="2" />\n'
+        "            <Preferences>\n"
+        f'              <OutputImageNaming.Template value="{escape(output_name)}" />\n'
+        "            </Preferences>\n"
+        "          </Task>\n"
+        "        </Tasks>\n"
+        "      </Batch>\n"
+        "    </Batches>\n"
+        "  </BatchQueue>\n"
+        "</ZereneStackerBatchScript>\n"
+    )
+    script_path = Path(folder) / "ZereneBatch.xml"
+    script_path.write_text(xml, encoding="utf-8")
+    return script_path
+
+
+def find_output(folder: Path, output_name: str = OUTPUT_NAME_TEMPLATE) -> Path | None:
+    """Return the most recently modified file matching ``output_name.*`` in *folder*.
+
+    None if no match. "Most recent" because a folder can carry leftover
+    output from a prior run; the one just produced is always the newest.
+    """
+    matches = sorted(Path(folder).glob(f"{output_name}.*"), key=lambda p: p.stat().st_mtime)
+    return matches[-1] if matches else None
+
+
+def run_batch(folder: Path, method: str = "pmax",
+              output_name: str = OUTPUT_NAME_TEMPLATE,
+              launch_command: str | None = None,
+              timeout: float = 1800.0,
+              popen=subprocess.Popen) -> Path:
+    """Run Zerene Stacker headless against *folder* and return the output image path.
+
+    Writes ZereneBatch.xml, launches Zerene via the captured launch command
+    plus -noSplashScreen -exitOnBatchScriptCompletion -runMinimized "<folder>",
+    passed as a single command-line string (not a pre-split arg list) so
+    Windows' own CreateProcess parses it exactly as it parsed the string
+    Zerene wrote for itself -- avoiding a hand-rolled Windows quoting parser
+    for a line that mixes quoted and unquoted "-Dkey=value" segments.
+
+    The docs warn the caller must drain stdout/stderr while waiting or both
+    processes can hang; ``communicate()`` does this. Raises ZereneError on a
+    non-zero exit, a timeout (the process is killed first), or a missing
+    output file after a clean exit.
+    """
+    folder = Path(folder)
+    write_batch_script(folder, method=method, output_name=output_name)
+
+    base = launch_command if launch_command is not None else locate_launch_command()
+    full_cmd = f'{base} -noSplashScreen -exitOnBatchScriptCompletion -runMinimized "{folder}"'
+
+    proc = popen(full_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        output_text, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise ZereneError(f"Zerene batch timed out after {timeout}s on {folder}")
+
+    if proc.returncode != 0:
+        raise ZereneError(f"Zerene batch exited {proc.returncode} on {folder}:\n{output_text}")
+
+    output_path = find_output(folder, output_name)
+    if output_path is None:
+        raise ZereneError(f"Zerene batch finished but produced no {output_name}.* in {folder}")
+    return output_path

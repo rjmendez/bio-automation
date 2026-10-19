@@ -16,6 +16,10 @@ def metadata_dir(observation_dir: Path) -> Path:
     return observation_dir / "metadata"
 
 
+def work_dir(observation_dir: Path) -> Path:
+    return observation_dir / "work"
+
+
 def review_dir(observation_dir: Path) -> Path:
     return observation_dir / "review"
 

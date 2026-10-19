@@ -19,6 +19,8 @@ from .pipeline import (
     save_assets,
     save_observation,
     set_asset_status,
+    clean_and_stack,
+    stack_focus,
     write_sidecars,
 )
 
@@ -48,6 +50,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch_inat.add_argument("folder")
     p_fetch_inat.add_argument("--observation-id", required=True, type=int)
     p_fetch_inat.add_argument("--force", action="store_true")
+
+    p_stack = sub.add_parser("stack")
+    p_stack.add_argument("folder")
+    p_stack.add_argument("--method", default="pmax", choices=["pmax"])
+    p_stack.add_argument("--timeout", type=float, default=1800.0)
+    p_stack.add_argument("--denoise", action="store_true",
+                          help="Denoise+levels every raw (fixed params shared across "
+                               "the stack) before handing off to Zerene")
+    p_stack.add_argument("--noise", type=float, default=1.0,
+                          help="Fixed denoise strength 0..1, only with --denoise")
+    p_stack.add_argument("--exposure-ev", type=float, default=0.0,
+                          help="Fixed EV pull-down applied after denoise, only with --denoise "
+                               "(negative leaves headroom under clipping for specular highlights)")
 
     p_write_sidecars = sub.add_parser("write-sidecars")
     p_write_sidecars.add_argument("folder")
@@ -141,6 +156,22 @@ def cmd_fetch_inat(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stack(args: argparse.Namespace) -> int:
+    from .zerene import ZereneError
+
+    try:
+        if args.denoise:
+            asset = clean_and_stack(Path(args.folder), noise=args.noise,
+                                     exposure_ev=args.exposure_ev,
+                                     method=args.method, timeout=args.timeout)
+        else:
+            asset = stack_focus(Path(args.folder), method=args.method, timeout=args.timeout)
+    except ZereneError as exc:
+        raise SystemExit(str(exc))
+    print(Path(args.folder) / asset.file)
+    return 0
+
+
 def cmd_write_sidecars(args: argparse.Namespace) -> int:
     for path in write_sidecars(Path(args.folder)):
         print(path)
@@ -198,6 +229,8 @@ def main() -> int:
         return cmd_keep(args)
     if args.command == "fetch-inat":
         return cmd_fetch_inat(args)
+    if args.command == "stack":
+        return cmd_stack(args)
     if args.command == "write-sidecars":
         return cmd_write_sidecars(args)
     if args.command == "render-review":

@@ -6,7 +6,9 @@ from pathlib import Path
 
 from .io import read_json, read_jsonl, write_json, write_jsonl
 from .models import Asset, Observation
-from .paths import export_dir, metadata_dir, review_dir, source_raw_dir
+from .paths import export_dir, metadata_dir, review_dir, source_raw_dir, work_dir
+from .preclean import denoise_stack_frames
+from .zerene import run_batch as zerene_run_batch
 
 
 def load_observation(folder: Path) -> Observation:
@@ -72,6 +74,7 @@ def delete_rejected_raws(folder: Path) -> list[Path]:
 def ensure_layout(folder: Path) -> None:
     for subdir in [
         source_raw_dir(folder),
+        work_dir(folder),
         review_dir(folder),
         export_dir(folder, "inat"),
         export_dir(folder, "stock"),
@@ -124,6 +127,68 @@ def export_stock(folder: Path) -> list[Path]:
     render_review).
     """
     raise NotImplementedError("export_stock will be added next.")
+
+
+def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
+                 source_dir: Path | None = None) -> Asset:
+    """Run Zerene Stacker (headless batch) over *source_dir* (default:
+    source/raw/), move the merged output into work/, and append a
+    stack_output Asset row.
+
+    *source_dir* lets clean_and_stack() point Zerene at a denoised
+    intermediate instead of the raw NEFs directly; callers that pass it
+    are responsible for that directory already holding only the kept
+    bracket frames for one focus stack. With the default, this assumes
+    cull/delete_rejected_raws already ran. Zerene's
+    OutputImageDispositionCode=2 writes the merged image into *source_dir*
+    itself (the only documented "save in source folder" option); it is
+    moved into work/ immediately after so raw/ keeps holding only camera
+    originals, per the "originals stay immutable" principle in
+    docs/folder-metadata-schema.md. The batch script Zerene reads from (and
+    leaves behind in) *source_dir* is removed once the run succeeds.
+    """
+    folder = Path(folder)
+    raw_dir = Path(source_dir) if source_dir is not None else source_raw_dir(folder)
+    output_path = zerene_run_batch(raw_dir, method=method, timeout=timeout)
+
+    dest_dir = work_dir(folder)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / output_path.name
+    output_path.replace(dest_path)
+
+    batch_script = raw_dir / "ZereneBatch.xml"
+    if batch_script.exists():
+        batch_script.unlink()
+
+    asset = Asset(
+        file=str(dest_path.relative_to(folder)).replace("\\", "/"),
+        role="stack_output",
+        status="ready",
+        selected=True,
+    )
+    assets = scan_assets(folder)
+    assets.append(asset)
+    save_assets(folder, assets)
+    return asset
+
+
+def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
+                     method: str = "pmax", timeout: float = 1800.0) -> Asset:
+    """Denoise every raw in source/raw/ with one shared parameter set (see
+    preclean.denoise_stack_frames: raw denoise, then levels, in that fixed
+    order) into work/denoised/, then run Zerene against that denoised set
+    instead of the raw NEFs. Fixed params across the whole stack keep
+    Zerene's cross-frame contrast comparison reading real focus
+    differences, not per-frame cleanup variance.
+
+    Assumes cull/delete_rejected_raws already ran, like stack_focus().
+    """
+    folder = Path(folder)
+    raw_dir = source_raw_dir(folder)
+    raw_paths = sorted(p for p in raw_dir.iterdir() if p.is_file())
+    denoised_dir = work_dir(folder) / "denoised"
+    denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev)
+    return stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir)
 
 
 def build_and_save_keywords(folder: Path) -> dict:
