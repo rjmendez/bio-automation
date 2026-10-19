@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import shutil
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .daclip import load_session
 from .exif import build_exif_sidecar, render_xmp
+from .focus_stack import run_focus_stack as focus_stack_run_batch
 from .grouping import DEFAULT_THRESHOLD, SubjectMismatchError, check_subject_consistency
 from .io import read_json, read_jsonl, write_json, write_jsonl
 from .models import Asset, Observation
@@ -15,6 +17,19 @@ from .render import export_inat_jpeg, export_stock_jpeg, render_review_jpeg
 from .stock import build_keywords
 from .topaz import ModelCache
 from .zerene import run_batch as zerene_run_batch
+
+# Stacking-engine dispatch (see stack_focus()). "focus-stack" is the default
+# engine (2026-10-19): Zerene's own multi-file batch loader is confirmed
+# (decompiled, see zerene.py's module docstring) to never get past the first
+# frame on this machine, so PMax never actually runs there. "zerene" stays
+# reachable as an explicit, opt-in alternate -- it is not deleted, just no
+# longer the default. This is a dispatch choice between two whole engines,
+# distinct from (and unrelated to) zerene.py's own METHOD_TASK_CODES, which
+# selects a task *within* Zerene's batch API (currently only "pmax" exists
+# there) -- that internal choice is now fixed to "pmax" by this module
+# whenever the "zerene" engine is selected, since it is the only documented
+# code zerene.py supports.
+STACK_ENGINES = ("focus-stack", "zerene")
 
 
 def load_observation(folder: Path) -> Observation:
@@ -119,7 +134,10 @@ def merge_inat_fields(existing: Observation, fetched: dict) -> Observation:
     silently rewritten from iNat's observed_on, since it is already baked
     into the folder path via make_observation_path(). Pure, no I/O.
     """
-    raise NotImplementedError("fetch-inat reconciliation merge will be added next.")
+    overrides = {field: fetched[field] for field in INAT_OWNED_FIELDS if field in fetched}
+    merged = replace(existing, **overrides)
+    merged.keywords_seed = sorted(set(existing.keywords_seed) | set(fetched.get("keywords_seed", [])))
+    return merged
 
 
 def _kept_original_raws(folder: Path) -> list[Asset]:
@@ -230,46 +248,58 @@ def _run_subject_consistency_gate(raw_paths: list[Path], threshold: float = DEFA
         raise SubjectMismatchError(outliers, threshold)
 
 
-def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
+def stack_focus(folder: Path, method: str = "focus-stack", timeout: float = 1800.0,
                  source_dir: Path | None = None, min_free_gb: float = 5.0,
                  check_subjects: bool = True) -> Asset:
-    """Run Zerene Stacker (headless batch) over *source_dir* (default:
-    source/raw/), move the merged output into work/, and append a
-    stack_output Asset row.
+    """Run a focus-stacking engine over *source_dir* (default: source/raw/),
+    move the merged output into work/, and append a stack_output Asset row.
 
-    *source_dir* lets clean_and_stack() point Zerene at a denoised
+    *method* picks the stacking ENGINE, not a task within it: "focus-stack"
+    (default, see STACK_ENGINES above) runs the real focus-stack CLI binary
+    via focus_stack.run_focus_stack(); "zerene" runs Zerene Stacker's
+    headless batch API via zerene.run_batch() with its only documented task
+    code (PMax). Any other value raises ValueError.
+
+    *source_dir* lets clean_and_stack() point the engine at a denoised
     intermediate instead of the raw NEFs directly; callers that pass it
     are responsible for that directory already holding only the kept
     bracket frames for one focus stack. With the default, this assumes
-    cull/delete_rejected_raws already ran. Zerene's
-    OutputImageDispositionCode=2 writes the merged image into *source_dir*
-    itself (the only documented "save in source folder" option); it is
-    moved into work/ immediately after so raw/ keeps holding only camera
-    originals, per the "originals stay immutable" principle in
-    docs/folder-metadata-schema.md. The batch script Zerene reads from (and
-    leaves behind in) *source_dir* is removed once the run succeeds.
+    cull/delete_rejected_raws already ran. Both engines write their merged
+    image into *source_dir* itself (see each engine module's docstring for
+    why); it is moved into work/ immediately after so raw/ keeps holding
+    only camera originals, per the "originals stay immutable" principle in
+    docs/folder-metadata-schema.md. A batch script Zerene reads from (and
+    leaves behind in) *source_dir* is removed once the run succeeds -- a
+    focus-stack run never writes one, so this cleanup is a no-op for that
+    engine.
 
     *check_subjects* (default True) runs grouping.check_subject_consistency()
-    over the files in *source_dir* before handing off to Zerene, and raises
-    SubjectMismatchError if any frame looks like a different subject --
-    see _run_subject_consistency_gate for why this defaults on and fails
-    loud rather than open. Pass False only to explicitly bypass it for a
-    deliberate override; there is no separate flag to silently skip just
-    the "model missing" case.
+    over the files in *source_dir* before handing off to the stacking
+    engine, and raises SubjectMismatchError if any frame looks like a
+    different subject -- see _run_subject_consistency_gate for why this
+    defaults on and fails loud rather than open. Pass False only to
+    explicitly bypass it for a deliberate override; there is no separate
+    flag to silently skip just the "model missing" case.
     """
     folder = Path(folder)
     raw_dir = Path(source_dir) if source_dir is not None else source_raw_dir(folder)
 
+    if method not in STACK_ENGINES:
+        raise ValueError(f"Unknown stacking method {method!r}; choose from {STACK_ENGINES}")
+
     if check_subjects:
-        # Excludes a leftover ZereneBatch.xml from a prior crashed run (see
-        # the cleanup below) -- it is this module's own bookkeeping file,
-        # never a frame, so it must not be fed to the DA-CLIP embedder.
+        # Excludes a leftover ZereneBatch.xml from a prior crashed Zerene run
+        # (see the cleanup below) -- it is that engine's own bookkeeping
+        # file, never a frame, so it must not be fed to the DA-CLIP embedder.
         raw_paths = sorted(
             p for p in raw_dir.iterdir() if p.is_file() and p.name != "ZereneBatch.xml"
         )
         _run_subject_consistency_gate(raw_paths)
 
-    output_path = zerene_run_batch(raw_dir, method=method, timeout=timeout, min_free_gb=min_free_gb)
+    if method == "focus-stack":
+        output_path = focus_stack_run_batch(raw_dir, timeout=timeout, min_free_gb=min_free_gb)
+    else:
+        output_path = zerene_run_batch(raw_dir, method="pmax", timeout=timeout, min_free_gb=min_free_gb)
 
     dest_dir = work_dir(folder)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -294,15 +324,16 @@ def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
 
 def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
                      subject_boost_ev: float = 0.0,
-                     method: str = "pmax", timeout: float = 1800.0,
+                     method: str = "focus-stack", timeout: float = 1800.0,
                      min_free_gb: float = 5.0, check_subjects: bool = True,
                      cache: ModelCache | None = None) -> Asset:
     """Denoise every raw in source/raw/ with one shared parameter set (see
     preclean.denoise_stack_frames: raw denoise, then levels, in that fixed
-    order) into work/denoised/, then run Zerene against that denoised set
-    instead of the raw NEFs. Fixed params across the whole stack keep
-    Zerene's cross-frame contrast comparison reading real focus
-    differences, not per-frame cleanup variance.
+    order) into work/denoised/, then run the stacking engine named by
+    *method* (see stack_focus()'s docstring; default "focus-stack") against
+    that denoised set instead of the raw NEFs. Fixed params across the whole
+    stack keep the engine's cross-frame contrast comparison reading real
+    focus differences, not per-frame cleanup variance.
 
     Assumes cull/delete_rejected_raws already ran, like stack_focus().
 
@@ -328,12 +359,13 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     per observation folder) instead of reloading the denoise models from
     disk every time.
 
-    work/denoised/ holds the per-frame denoised TIFFs fed to Zerene -- large,
-    disposable intermediates once stacking is done. On a successful stack
-    (stack_focus() returns its Asset without raising), that directory and
-    its contents are deleted; only the final stack_output asset in work/ is
-    kept. On failure -- an exception from denoise_stack_frames() or from
-    stack_focus()/zerene_run_batch() -- any partial work/denoised/ output is
+    work/denoised/ holds the per-frame denoised TIFFs fed to the stacking
+    engine -- large, disposable intermediates once stacking is done. On a
+    successful stack (stack_focus() returns its Asset without raising), that
+    directory and its contents are deleted; only the final stack_output
+    asset in work/ is kept. On failure -- an exception from
+    denoise_stack_frames() or from stack_focus() (whichever engine's error,
+    FocusStackError or ZereneError) -- any partial work/denoised/ output is
     cleaned up the same way before the original exception propagates
     unchanged, so a failed batch item does not leave large orphaned files
     behind either.
@@ -363,17 +395,19 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
 
 def stack_all(base_dir: Path, noise: float = 1.0, exposure_ev: float = 0.0,
               subject_boost_ev: float = 0.0,
-              method: str = "pmax", timeout: float = 1800.0,
+              method: str = "focus-stack", timeout: float = 1800.0,
               min_free_gb: float = 5.0, check_subjects: bool = True) -> list[dict]:
     """Run cull + clean_and_stack() over every observation folder under
     *base_dir* (see discover_observation_folders()), sharing one ModelCache
     across the whole batch so denoise models load once instead of once per
-    folder.
+    folder. *method* picks the stacking engine ("focus-stack" default,
+    "zerene" alternate -- see stack_focus()'s docstring) used for every
+    folder in the batch.
 
-    One bad folder (a Zerene failure, a subject-consistency mismatch, a
-    disk-space guard tripping, or anything else clean_and_stack() can raise)
-    does not abort the batch: the exception is caught per folder and
-    recorded, and the next folder still runs.
+    One bad folder (a stacking-engine failure, a subject-consistency
+    mismatch, a disk-space guard tripping, or anything else
+    clean_and_stack() can raise) does not abort the batch: the exception is
+    caught per folder and recorded, and the next folder still runs.
 
     Returns a list of one dict per folder --
     {folder, status: "ok"|"failed", error: str|None, asset: str|None} -- in
@@ -423,3 +457,140 @@ def build_and_save_keywords(folder: Path) -> dict:
     keywords = build_keywords(observation)
     write_json(metadata_dir(folder) / "keywords.json", keywords)
     return keywords
+
+
+def process_observation(folder: Path, *, method: str = "focus-stack", timeout: float = 1800.0,
+                         min_free_gb: float = 5.0, check_subjects: bool = True,
+                         denoise: bool = False, noise: float = 1.0, exposure_ev: float = 0.0,
+                         subject_boost_ev: float = 0.0, cache: ModelCache | None = None) -> dict:
+    """Run the mechanical, no-judgment-required chain for one observation
+    folder that a human has already ingested and curated (kept/rejected via
+    `bio keep`/`bio reject`, cull via `bio cull` already applied) and
+    optionally linked to iNat (via `bio fetch-inat`):
+
+        stack -> write_sidecars -> render_review -> export_inat (if linked)
+        -> export_stock -> build_and_save_keywords
+
+    This is the ONLY new auto-chaining this orchestrator adds. It
+    deliberately does NOT call ingest/copy_into_raw, delete_rejected_raws
+    (cull), set_asset_status (reject/keep), or fetch_inat_observation --
+    those stay separate, deliberate, human-triggered steps (see cli.py);
+    folding them in here would mean this function was silently making a
+    culling or iNat-linking decision for the user. Callers are responsible
+    for having already run `bio cull`/`bio reject`/`bio keep` (and, if
+    applicable, `bio fetch-inat`) on *folder* before calling this.
+
+    Stacking dispatch mirrors `bio stack`'s own --denoise switch: with
+    denoise=False (the default), stack_focus() runs directly against
+    source/raw/; with denoise=True, clean_and_stack() runs first (shared
+    noise/exposure_ev/subject_boost_ev/cache params, same meaning as
+    clean_and_stack()'s own). method/timeout/min_free_gb/check_subjects are
+    forwarded to whichever one runs, same as cmd_stack().
+
+    export_inat is skipped -- not treated as an error, not run with zero
+    files -- when the observation has no linked iNat observation. "Linked"
+    is exactly the signal `bio fetch-inat` writes and cmd_fetch_inat reads:
+    Observation.observation_id is not None (see models.Observation and
+    merge_inat_fields(), which only ever sets it from a real
+    fetch_inat_observation() payload). A folder that was ingested but never
+    fetch-inat'd has observation_id=None from Observation's own default, so
+    this is a real, already-existing business rule, not a new inference.
+
+    Any stage raising -- FocusStackError/ZereneError/SubjectMismatchError
+    from stacking, or anything else -- propagates immediately and
+    unchanged: no later stage in the chain runs, and this function returns
+    nothing (an exception, not a partial dict) on that path, so a caller
+    can never mistake a partial run for success.
+
+    Returns a dict on success: {folder: str, stack_asset: str,
+    sidecars: list[str], review: list[str],
+    inat: list[str] | None (None means "skipped, not iNat-linked"),
+    stock: list[str], keywords: dict}.
+    """
+    folder = Path(folder)
+
+    if denoise:
+        stack_asset = clean_and_stack(
+            folder, noise=noise, exposure_ev=exposure_ev, subject_boost_ev=subject_boost_ev,
+            method=method, timeout=timeout, min_free_gb=min_free_gb,
+            check_subjects=check_subjects, cache=cache,
+        )
+    else:
+        stack_asset = stack_focus(
+            folder, method=method, timeout=timeout, min_free_gb=min_free_gb,
+            check_subjects=check_subjects,
+        )
+
+    sidecars = write_sidecars(folder)
+    review = render_review(folder)
+
+    observation = load_observation(folder)
+    inat = export_inat(folder) if observation.observation_id is not None else None
+
+    stock = export_stock(folder)
+    keywords = build_and_save_keywords(folder)
+
+    return {
+        "folder": str(folder),
+        "stack_asset": stack_asset.file,
+        "sidecars": [str(p) for p in sidecars],
+        "review": [str(p) for p in review],
+        "inat": None if inat is None else [str(p) for p in inat],
+        "stock": [str(p) for p in stock],
+        "keywords": keywords,
+    }
+
+
+def process_all(base_dir: Path, *, method: str = "focus-stack", timeout: float = 1800.0,
+                 min_free_gb: float = 5.0, check_subjects: bool = True,
+                 denoise: bool = False, noise: float = 1.0, exposure_ev: float = 0.0,
+                 subject_boost_ev: float = 0.0) -> list[dict]:
+    """Run process_observation() over every observation folder under
+    *base_dir*, reusing discover_observation_folders() -- the same
+    folder-discovery stack_all() already uses -- rather than a second
+    implementation of it.
+
+    Mirrors stack_all()'s own batch contract: one bad folder (any exception
+    from process_observation(), including a mid-chain stage failure) does
+    not abort the batch -- it is caught per folder and recorded, and the
+    next folder still runs. Results are a list of
+    {folder, status: "ok"|"failed", error: str|None, result: dict|None} in
+    discover_observation_folders() order, also written as indented JSON to
+    base_dir/"process_batch_manifest.json" (a distinct filename from
+    stack_all()'s own "stack_batch_manifest.json" so the two batch
+    commands' manifests never collide on disk).
+
+    When denoise=True, one ModelCache is built and shared across the whole
+    batch (same reuse stack_all() does for clean_and_stack(), so the
+    denoise models load once instead of once per folder); when denoise is
+    False (the default -- stack_focus() does not use a ModelCache at all),
+    no ModelCache is built.
+    """
+    base_dir = Path(base_dir)
+    folders = discover_observation_folders(base_dir)
+    results: list[dict] = []
+    cache_scope = ModelCache() if denoise else contextlib.nullcontext(None)
+    with cache_scope as cache:
+        for folder in folders:
+            try:
+                result = process_observation(
+                    folder, method=method, timeout=timeout, min_free_gb=min_free_gb,
+                    check_subjects=check_subjects, denoise=denoise, noise=noise,
+                    exposure_ev=exposure_ev, subject_boost_ev=subject_boost_ev, cache=cache,
+                )
+            except Exception as exc:
+                results.append({
+                    "folder": str(folder),
+                    "status": "failed",
+                    "error": str(exc),
+                    "result": None,
+                })
+            else:
+                results.append({
+                    "folder": str(folder),
+                    "status": "ok",
+                    "error": None,
+                    "result": result,
+                })
+    write_json(base_dir / "process_batch_manifest.json", results)
+    return results

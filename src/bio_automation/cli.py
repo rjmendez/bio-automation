@@ -15,6 +15,8 @@ from .pipeline import (
     export_stock,
     load_observation,
     merge_inat_fields,
+    process_all,
+    process_observation,
     render_review,
     save_assets,
     save_observation,
@@ -24,6 +26,7 @@ from .pipeline import (
     stack_focus,
     write_sidecars,
 )
+from .quality import PRESORT_FILENAME, suggest_culling
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cull = sub.add_parser("cull")
     p_cull.add_argument("folder")
+
+    p_presort = sub.add_parser(
+        "presort",
+        help="Score ingested raws for blur/exposure/near-duplicates and write a "
+             "keep/cull proposal -- never changes asset status itself; review the "
+             "written file, then apply with `bio reject`/`bio keep`.",
+    )
+    p_presort.add_argument("folder")
 
     p_reject = sub.add_parser("reject")
     p_reject.add_argument("folder")
@@ -54,11 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_stack = sub.add_parser("stack")
     p_stack.add_argument("folder")
-    p_stack.add_argument("--method", default="pmax", choices=["pmax"])
+    p_stack.add_argument("--method", default="focus-stack", choices=["focus-stack", "zerene"])
     p_stack.add_argument("--timeout", type=float, default=1800.0)
     p_stack.add_argument("--denoise", action="store_true",
                           help="Denoise+levels every raw (fixed params shared across "
-                               "the stack) before handing off to Zerene")
+                               "the stack) before handing off to the stacking engine")
     p_stack.add_argument("--noise", type=float, default=1.0,
                           help="Fixed denoise strength 0..1, only with --denoise")
     p_stack.add_argument("--exposure-ev", type=float, default=0.0,
@@ -74,14 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
                                "destination/source folder is below this many GB")
     p_stack.add_argument("--skip-subject-check", action="store_true",
                           help="Skip the DA-CLIP subject-consistency safety gate before "
-                               "handing off to Zerene. Runs by default and raises "
-                               "SubjectMismatchError if any frame looks like a different "
-                               "subject (see bio_automation.grouping); pass this flag only "
-                               "for a deliberate override.")
+                               "handing off to the stacking engine. Runs by default and "
+                               "raises SubjectMismatchError if any frame looks like a "
+                               "different subject (see bio_automation.grouping); pass this "
+                               "flag only for a deliberate override.")
 
     p_stack_all = sub.add_parser("stack-all")
     p_stack_all.add_argument("base_dir")
-    p_stack_all.add_argument("--method", default="pmax", choices=["pmax"])
+    p_stack_all.add_argument("--method", default="focus-stack", choices=["focus-stack", "zerene"])
     p_stack_all.add_argument("--timeout", type=float, default=1800.0)
     p_stack_all.add_argument("--noise", type=float, default=1.0,
                               help="Fixed denoise strength 0..1 applied to every folder's stack")
@@ -99,10 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
                                    "destination/source folder is below this many GB")
     p_stack_all.add_argument("--skip-subject-check", action="store_true",
                               help="Skip the DA-CLIP subject-consistency safety gate before "
-                                   "handing off to Zerene, for every folder. Runs by default "
-                                   "and raises SubjectMismatchError if any frame looks like a "
-                                   "different subject (see bio_automation.grouping); pass this "
-                                   "flag only for a deliberate override.")
+                                   "handing off to the stacking engine, for every folder. Runs "
+                                   "by default and raises SubjectMismatchError if any frame "
+                                   "looks like a different subject (see "
+                                   "bio_automation.grouping); pass this flag only for a "
+                                   "deliberate override.")
 
     p_write_sidecars = sub.add_parser("write-sidecars")
     p_write_sidecars.add_argument("folder")
@@ -118,6 +130,54 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
+
+    p_process = sub.add_parser(
+        "process",
+        help="Run the full mechanical post-curation chain for one observation "
+             "folder with zero further manual calls: stack -> write-sidecars -> "
+             "render-review -> export-inat (if iNat-linked) -> export-stock -> "
+             "build-keywords. Assumes ingest/cull/reject/keep (and fetch-inat, "
+             "if this observation is iNat-linked) already ran -- those stay "
+             "separate, deliberate steps.",
+    )
+    p_process.add_argument("folder")
+    p_process.add_argument("--method", default="focus-stack", choices=["focus-stack", "zerene"])
+    p_process.add_argument("--timeout", type=float, default=1800.0)
+    p_process.add_argument("--denoise", action="store_true",
+                            help="Denoise+levels every raw before handing off to the "
+                                 "stacking engine, same as `bio stack --denoise`")
+    p_process.add_argument("--noise", type=float, default=1.0,
+                            help="Fixed denoise strength 0..1, only with --denoise")
+    p_process.add_argument("--exposure-ev", type=float, default=0.0,
+                            help="Fixed EV pull-down applied after denoise, only with --denoise")
+    p_process.add_argument("--subject-boost-ev", type=float, default=0.0,
+                            help="Extra EV lift inside the subject only, only with --denoise")
+    p_process.add_argument("--min-free-gb", type=float, default=5.0)
+    p_process.add_argument("--skip-subject-check", action="store_true",
+                            help="Skip the DA-CLIP subject-consistency safety gate before "
+                                 "handing off to the stacking engine")
+
+    p_process_all = sub.add_parser(
+        "process-all",
+        help="Run `process` over every observation folder under base_dir "
+             "(see stack-all's own folder discovery).",
+    )
+    p_process_all.add_argument("base_dir")
+    p_process_all.add_argument("--method", default="focus-stack", choices=["focus-stack", "zerene"])
+    p_process_all.add_argument("--timeout", type=float, default=1800.0)
+    p_process_all.add_argument("--denoise", action="store_true",
+                                help="Denoise+levels every raw for every folder before "
+                                     "handing off to the stacking engine")
+    p_process_all.add_argument("--noise", type=float, default=1.0,
+                                help="Fixed denoise strength 0..1, only with --denoise")
+    p_process_all.add_argument("--exposure-ev", type=float, default=0.0,
+                                help="Fixed EV pull-down applied after denoise, only with --denoise")
+    p_process_all.add_argument("--subject-boost-ev", type=float, default=0.0,
+                                help="Extra EV lift inside the subject only, only with --denoise")
+    p_process_all.add_argument("--min-free-gb", type=float, default=5.0)
+    p_process_all.add_argument("--skip-subject-check", action="store_true",
+                                help="Skip the DA-CLIP subject-consistency safety gate before "
+                                     "handing off to the stacking engine, for every folder")
 
     p_serve = sub.add_parser("serve", help="Start Topaz enhancement HTTP server")
     p_serve.add_argument("--host", default="0.0.0.0")
@@ -166,6 +226,23 @@ def cmd_cull(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_presort(args: argparse.Namespace) -> int:
+    """Run suggest_culling() and print a short human-readable summary.
+
+    Deliberately does not call reject/keep/cull -- see quality.py's module
+    docstring. Only reports what suggest_culling() found; applying the
+    suggestions is a separate, human-reviewed step via `bio reject`/`bio keep`.
+    """
+    folder = Path(args.folder)
+    result = suggest_culling(folder)
+    summary = result["summary"]
+    print(f"{summary['total']} ingested asset(s) scored: "
+          f"{summary['keep_candidates']} keep candidate(s), "
+          f"{summary['cull_candidates']} cull candidate(s)")
+    print(folder / PRESORT_FILENAME)
+    return 0
+
+
 def cmd_reject(args: argparse.Namespace) -> int:
     folder = Path(args.folder)
     set_asset_status(folder, args.files, "rejected", False)
@@ -197,6 +274,7 @@ def cmd_fetch_inat(args: argparse.Namespace) -> int:
 
 
 def cmd_stack(args: argparse.Namespace) -> int:
+    from .focus_stack import FocusStackError
     from .grouping import SubjectMismatchError
     from .zerene import ZereneError
 
@@ -213,7 +291,7 @@ def cmd_stack(args: argparse.Namespace) -> int:
             asset = stack_focus(Path(args.folder), method=args.method, timeout=args.timeout,
                                  min_free_gb=args.min_free_gb,
                                  check_subjects=check_subjects)
-    except (ZereneError, SubjectMismatchError) as exc:
+    except (FocusStackError, ZereneError, SubjectMismatchError) as exc:
         raise SystemExit(str(exc))
     print(Path(args.folder) / asset.file)
     return 0
@@ -265,6 +343,42 @@ def cmd_build_keywords(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_process(args: argparse.Namespace) -> int:
+    import json
+
+    from .focus_stack import FocusStackError
+    from .grouping import SubjectMismatchError
+    from .zerene import ZereneError
+
+    check_subjects = not args.skip_subject_check
+    try:
+        result = process_observation(
+            Path(args.folder), method=args.method, timeout=args.timeout,
+            min_free_gb=args.min_free_gb, check_subjects=check_subjects,
+            denoise=args.denoise, noise=args.noise, exposure_ev=args.exposure_ev,
+            subject_boost_ev=args.subject_boost_ev,
+        )
+    except (FocusStackError, ZereneError, SubjectMismatchError) as exc:
+        raise SystemExit(str(exc))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_process_all(args: argparse.Namespace) -> int:
+    base_dir = Path(args.base_dir)
+    check_subjects = not args.skip_subject_check
+    results = process_all(
+        base_dir, method=args.method, timeout=args.timeout, min_free_gb=args.min_free_gb,
+        check_subjects=check_subjects, denoise=args.denoise, noise=args.noise,
+        exposure_ev=args.exposure_ev, subject_boost_ev=args.subject_boost_ev,
+    )
+    ok = sum(1 for row in results if row["status"] == "ok")
+    failed = len(results) - ok
+    print(base_dir / "process_batch_manifest.json")
+    print(f"{ok} ok, {failed} failed")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import subprocess
 
@@ -285,6 +399,8 @@ def main() -> int:
         return cmd_ingest(args)
     if args.command == "cull":
         return cmd_cull(args)
+    if args.command == "presort":
+        return cmd_presort(args)
     if args.command == "reject":
         return cmd_reject(args)
     if args.command == "keep":
@@ -305,6 +421,10 @@ def main() -> int:
         return cmd_export_stock(args)
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
+    if args.command == "process":
+        return cmd_process(args)
+    if args.command == "process-all":
+        return cmd_process_all(args)
     if args.command == "serve":
         return cmd_serve(args)
     raise SystemExit(2)
