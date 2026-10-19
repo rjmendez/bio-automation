@@ -48,7 +48,7 @@ from pathlib import Path
 import numpy as np
 import rawpy
 import tifffile
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from .topaz import MODELS_DIR, ModelCache, _estimate_sharpen_params, _run_tiled
 
@@ -110,6 +110,119 @@ def apply_levels(img_chw_f32: np.ndarray, exposure_ev: float) -> np.ndarray:
     return np.clip(img_chw_f32 * ev_to_linear_gain(exposure_ev), 0.0, 1.0)
 
 
+def _rgb_to_hue_sat(img_chw_f32: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized RGB->(hue, saturation) over an HxW (or scalar-shaped)
+    array, matching colorsys.rgb_to_hsv's formula exactly (verified
+    against it on random colors and the black/white/pure-RGB edge cases
+    before this was used for anything). hue in [0,1) (fraction of 360deg),
+    saturation in [0,1]. Value is not computed -- callers only need hue/sat.
+    """
+    r, g, b = img_chw_f32[0], img_chw_f32[1], img_chw_f32[2]
+    maxc = np.maximum(np.maximum(r, g), b)
+    minc = np.minimum(np.minimum(r, g), b)
+    delta = maxc - minc
+    s = np.where(maxc > 0, delta / np.where(maxc > 0, maxc, 1), 0.0)
+    rc = np.where(delta > 0, (maxc - r) / np.where(delta > 0, delta, 1), 0.0)
+    gc = np.where(delta > 0, (maxc - g) / np.where(delta > 0, delta, 1), 0.0)
+    bc = np.where(delta > 0, (maxc - b) / np.where(delta > 0, delta, 1), 0.0)
+    is_r = (maxc == r) & (delta > 0)
+    is_g = (maxc == g) & (delta > 0) & ~is_r
+    is_b = (maxc == b) & (delta > 0) & ~is_r & ~is_g
+    h = np.zeros_like(r)
+    h = np.where(is_r, bc - gc, h)
+    h = np.where(is_g, 2.0 + rc - bc, h)
+    h = np.where(is_b, 4.0 + gc - rc, h)
+    h = (h / 6.0) % 1.0
+    return h, s
+
+
+def _hue_distance(h1, h2):
+    """Circular distance between two hues in [0,1) -- e.g. 0.99 and 0.01
+    are 0.02 apart, not 0.98."""
+    d = np.abs(h1 - h2)
+    return np.minimum(d, 1.0 - d)
+
+
+def _local_background_hue(img_chw_f32: np.ndarray, prob: np.ndarray,
+                           roi_prob_threshold: float = 0.3,
+                           bg_prob_threshold: float = 0.05,
+                           pad: int = 400) -> float | None:
+    """Mean hue of pixels the model is confident are background
+    (prob < bg_prob_threshold), sampled from a padded window around where
+    the model thinks the subject is -- local to the same lighting/wall,
+    not a whole-image average, since lighting varies across a frame.
+    Returns None if fewer than 200 such pixels exist nearby (e.g. the
+    subject fills the whole frame), so the caller can skip refinement
+    rather than refine against a meaningless reference.
+    """
+    _, H, W = img_chw_f32.shape
+    roi = prob > roi_prob_threshold
+    if not roi.any():
+        return None
+    ys, xs = np.where(roi)
+    y0, y1 = max(0, int(ys.min()) - pad), min(H, int(ys.max()) + pad)
+    x0, x1 = max(0, int(xs.min()) - pad), min(W, int(xs.max()) + pad)
+    region_img = img_chw_f32[:, y0:y1, x0:x1]
+    region_prob = prob[y0:y1, x0:x1]
+    bg_mask = region_prob < bg_prob_threshold
+    if bg_mask.sum() < 200:
+        return None
+    hue, _sat = _rgb_to_hue_sat(region_img)
+    return float(hue[bg_mask].mean())
+
+
+def refine_mask_by_color(img_chw_f32: np.ndarray, prob: np.ndarray,
+                          hue_ramp_low_deg: float = 6.0,
+                          hue_ramp_high_deg: float = 20.0,
+                          blur_radius: float = 10.0) -> np.ndarray:
+    """Attenuate mask confidence for pixels whose hue matches the local
+    background's hue, ramping smoothly from *hue_ramp_low_deg* (fully
+    gated out) to *hue_ramp_high_deg* (ungated) instead of a hard cut.
+
+    Built because the raw model mask (subject_mask()) includes the
+    subject's own cast shadow on the wall behind it -- verified live on
+    the real spider fixture: s_mask_l_flexible, smp_flexible, and sms_new
+    ALL give a real shadow pixel 62-98% subject confidence, so no amount
+    of threshold tuning or swapping between those three models fixes it
+    (confirmed, not assumed -- see git history). What does separate them,
+    measured on the same real fixture: a shadow falls on the same surface
+    as the background, so it keeps that surface's hue, just darker (hue
+    distance from wall ~2.5deg in the real measurement); the actual
+    subject's hue differs genuinely (~16deg in that same measurement, a
+    clear gap). This is pixel color, independent of the mask model's own
+    (unreliable, here) confidence.
+
+    A hard threshold forces a tradeoff measured live on the real fixture:
+    a tight threshold + large median filter cleans the shadow but erodes
+    thin leg tips (median replaces them outright, since they're narrower
+    than the filter window); a loose threshold + small median keeps the
+    legs but lets shadow speckle through. The soft ramp here keeps thin,
+    confidently-subject-colored structures like legs (hue distance already
+    past hue_ramp_high_deg before any attenuation applies) while still
+    knocking down near-background hues. A Gaussian blur (not a median
+    filter) then smooths the remaining per-pixel hue noise: unlike a
+    median filter, a blur averages rather than replaces, so it softens
+    speckle without erasing thin real structure.
+
+    Falls back to the unmodified *prob* if no reliable local background
+    reference can be found (_local_background_hue returns None).
+    """
+    ref_hue = _local_background_hue(img_chw_f32, prob)
+    if ref_hue is None:
+        return prob
+    hue, _sat = _rgb_to_hue_sat(img_chw_f32)
+    hue_dist_deg = _hue_distance(hue, ref_hue) * 360.0
+    soft_gate = np.clip(
+        (hue_dist_deg - hue_ramp_low_deg) / (hue_ramp_high_deg - hue_ramp_low_deg),
+        0.0, 1.0,
+    )
+    gated = prob * soft_gate
+
+    gate_img = Image.fromarray((gated * 255.0).clip(0, 255).astype(np.uint8), mode="L")
+    gate_blurred = gate_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    return np.array(gate_blurred, dtype=np.float32) / 255.0
+
+
 def subject_mask(img_chw_f32: np.ndarray, cache: ModelCache) -> np.ndarray:
     """Return a float32 [0,1] saliency mask, same H,W as *img_chw_f32*,
     from Topaz Photo AI's s_mask_l_flexible model (already installed
@@ -121,11 +234,14 @@ def subject_mask(img_chw_f32: np.ndarray, cache: ModelCache) -> np.ndarray:
     The model takes a single 320x320 RGB tile (whole-frame context, not
     tiled like _sharpen_f32) and returns raw logits, not a [0,1] mask --
     confirmed live against a real frame: output range was approximately
-    -9.9 to +2.8, not already bounded. A sigmoid is applied here before
-    the mask is usable as a blend weight. The 320x320 output is resized
-    back up to the input's full resolution with PIL's bilinear filter,
-    which also supplies the mask's edge feathering for free -- no separate
-    blur/feather step is applied.
+    -9.9 to +2.8, not already bounded. A sigmoid is applied before the
+    mask is usable as a blend weight. The 320x320 output is resized back
+    up to the input's full resolution with PIL's bilinear filter, then
+    refine_mask_by_color() removes pixels that match the local background
+    hue (the model's shadow-inclusion problem -- see its docstring); the
+    bilinear upsample's own smoothing still supplies the final mask's edge
+    feathering, now around a boundary the color gate has already tightened
+    onto the real subject.
     """
     _, h, w = img_chw_f32.shape
     hwc_u8 = (np.transpose(img_chw_f32, (1, 2, 0)) * 255.0).clip(0, 255).astype(np.uint8)
@@ -139,7 +255,8 @@ def subject_mask(img_chw_f32: np.ndarray, cache: ModelCache) -> np.ndarray:
 
     mask_img = Image.fromarray((sig * 255.0).clip(0, 255).astype(np.uint8), mode="L")
     mask_full = mask_img.resize((w, h), Image.BILINEAR)
-    return np.array(mask_full, dtype=np.float32) / 255.0
+    prob_full = np.array(mask_full, dtype=np.float32) / 255.0
+    return refine_mask_by_color(img_chw_f32, prob_full)
 
 
 def apply_levels_masked(img_chw_f32: np.ndarray, mask_hw: np.ndarray,

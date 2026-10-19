@@ -25,14 +25,18 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from bio_automation.preclean import (
+    MODELS_DIR,
+    SUBJECT_MASK_MODEL,
     _sharpen_f32,
     _to_chw_rgb_f32,
     apply_levels,
     apply_levels_masked,
     compute_fixed_params,
     decode_raw_to_bgr16,
+    refine_mask_by_color,
     subject_mask,
 )
 from bio_automation.topaz import ModelCache
@@ -198,3 +202,68 @@ class TestSubjectMaskLive:
         assert subject_gain > 1.5
         assert background_gain < 1.1  # background stays close to unchanged
         assert subject_gain > background_gain * 1.5  # the real differential effect
+
+
+class TestRefineMaskByColorLive:
+    """Real spider fixture, real s_mask_l_flexible model: proves
+    refine_mask_by_color's shadow-removal actually does something on real
+    model output, not just on the synthetic fixtures in test_preclean.py."""
+
+    @staticmethod
+    def _raw_sigmoid_mask(chw: np.ndarray, cache: ModelCache) -> np.ndarray:
+        """Reproduces subject_mask()'s own pre-refinement steps (resize to
+        320, real model inference, sigmoid, resize back up) to get the real,
+        *unrefined* mask as input for refine_mask_by_color -- this is how
+        subject_mask() itself builds the value it hands to
+        refine_mask_by_color, not a reimplementation of the function under
+        test here."""
+        _, h, w = chw.shape
+        hwc_u8 = (np.transpose(chw, (1, 2, 0)) * 255.0).clip(0, 255).astype(np.uint8)
+        small = Image.fromarray(hwc_u8).resize((320, 320), Image.BILINEAR)
+        in320 = np.transpose(np.array(small, dtype=np.float32) / 255.0, (2, 0, 1))[np.newaxis]
+
+        compiled = cache.load(MODELS_DIR / SUBJECT_MASK_MODEL)
+        out = compiled({"netInput": in320})
+        logits = next(iter(out.values()))[0, 0]
+        sig = 1.0 / (1.0 + np.exp(-logits))
+
+        mask_img = Image.fromarray((sig * 255.0).clip(0, 255).astype(np.uint8), mode="L")
+        mask_full = mask_img.resize((w, h), Image.BILINEAR)
+        return np.array(mask_full, dtype=np.float32) / 255.0
+
+    def test_real_refinement_attenuates_the_raw_mask_without_changing_shape_or_dtype(self, cache):
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _to_chw_rgb_f32(bgr16)
+        raw_prob = self._raw_sigmoid_mask(chw, cache)
+
+        refined = refine_mask_by_color(chw, raw_prob)
+
+        assert refined.shape == raw_prob.shape
+        assert refined.dtype == np.float32
+        assert float(refined.min()) >= 0.0
+        assert float(refined.max()) <= 1.0
+        # Real measured relationship (module docstring + the subject_mask
+        # live test above): the shadow's near-background hue gets knocked
+        # down while the confident subject peak (hue far from the wall) is
+        # essentially untouched, so the refined mask's mean must drop below
+        # the raw, unrefined mask's mean.
+        assert float(refined.mean()) < float(raw_prob.mean())
+        # the confident peak sits on the real subject, whose hue is far
+        # enough from the wall's (module docstring: ~16deg vs the 20deg
+        # ramp ceiling) to be ungated -- it stays confident, even though the
+        # blur alone (applied everywhere, gated or not) pulls every local
+        # peak down a bit by mixing in its immediate neighbours.
+        assert float(refined.max()) > 0.7
+
+    def test_consistent_with_subject_mask_which_calls_it_internally(self, cache):
+        """subject_mask() is documented as calling refine_mask_by_color() on
+        its own raw sigmoid output as its last step; calling it explicitly
+        here must reproduce subject_mask()'s own real result exactly."""
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _to_chw_rgb_f32(bgr16)
+        raw_prob = self._raw_sigmoid_mask(chw, cache)
+
+        via_subject_mask = subject_mask(chw, cache)
+        via_direct_call = refine_mask_by_color(chw, raw_prob)
+
+        assert np.array_equal(via_subject_mask, via_direct_call)

@@ -2,6 +2,7 @@
 no real OpenVINO models loaded)."""
 from __future__ import annotations
 
+import colorsys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -11,12 +12,16 @@ import tifffile
 
 from bio_automation import preclean
 from bio_automation.preclean import (
+    _hue_distance,
+    _local_background_hue,
+    _rgb_to_hue_sat,
     apply_levels,
     apply_levels_masked,
     compute_fixed_params,
     decode_raw_to_bgr16,
     denoise_stack_frames,
     ev_to_linear_gain,
+    refine_mask_by_color,
     subject_mask,
 )
 
@@ -414,3 +419,242 @@ class TestDenoiseStackFramesSubjectBoost:
         # in addition to compute_fixed_params' own representative-frame decode
         # and the per-frame loop's own decode of paths[2]
         assert decode_calls.count(paths[2]) == 3
+
+
+# ---------------------------------------------------------------------------
+# _rgb_to_hue_sat -- checked against colorsys.rgb_to_hsv, an independent
+# oracle, on known colors. Never against a hand copy of this function's own
+# formula.
+# ---------------------------------------------------------------------------
+
+class TestRgbToHueSat:
+    # (name, r, g, b): a spread of hues/saturations plus the black/white/gray
+    # edge cases where maxc==0 or delta==0, each checked against colorsys
+    # directly.
+    _COLORS = [
+        ("black", 0.0, 0.0, 0.0),
+        ("white", 1.0, 1.0, 1.0),
+        ("gray", 0.5, 0.5, 0.5),
+        ("red", 1.0, 0.0, 0.0),
+        ("green", 0.0, 1.0, 0.0),
+        ("blue", 0.0, 0.0, 1.0),
+        ("cyan", 0.0, 1.0, 1.0),
+        ("magenta", 1.0, 0.0, 1.0),
+        ("yellow", 1.0, 1.0, 0.0),
+        ("arbitrary_r_dominant", 0.8, 0.3, 0.5),
+        ("arbitrary_b_dominant", 0.1, 0.6, 0.9),
+    ]
+
+    def test_matches_colorsys_rgb_to_hsv_on_known_colors(self):
+        img = np.zeros((3, 1, len(self._COLORS)), dtype=np.float32)
+        for i, (_name, r, g, b) in enumerate(self._COLORS):
+            img[0, 0, i], img[1, 0, i], img[2, 0, i] = r, g, b
+
+        hue, sat = _rgb_to_hue_sat(img)
+
+        for i, (name, r, g, b) in enumerate(self._COLORS):
+            expected_h, expected_s, _v = colorsys.rgb_to_hsv(r, g, b)
+            assert float(hue[0, i]) == pytest.approx(expected_h, abs=1e-6), name
+            assert float(sat[0, i]) == pytest.approx(expected_s, abs=1e-6), name
+
+    def test_output_shape_matches_input_spatial_dims(self):
+        img = np.random.rand(3, 5, 7).astype(np.float32)
+        hue, sat = _rgb_to_hue_sat(img)
+        assert hue.shape == (5, 7)
+        assert sat.shape == (5, 7)
+
+
+# ---------------------------------------------------------------------------
+# _hue_distance
+# ---------------------------------------------------------------------------
+
+class TestHueDistance:
+    def test_direct_distance_no_wraparound(self):
+        assert _hue_distance(0.2, 0.5) == pytest.approx(0.3)
+
+    def test_wraparound_distance_is_the_shorter_path(self):
+        """0.99 and 0.01 are 0.02 apart going through the hue 0.0/1.0 seam,
+        not 0.98 apart measured the long way around."""
+        assert _hue_distance(0.99, 0.01) == pytest.approx(0.02)
+
+    def test_zero_distance_for_identical_hues(self):
+        assert _hue_distance(0.42, 0.42) == 0.0
+
+    def test_symmetric(self):
+        assert _hue_distance(0.1, 0.9) == pytest.approx(_hue_distance(0.9, 0.1))
+
+    def test_vectorized_over_arrays(self):
+        h1 = np.array([0.0, 0.99, 0.5], dtype=np.float32)
+        h2 = np.array([0.5, 0.01, 0.5], dtype=np.float32)
+        out = _hue_distance(h1, h2)
+        assert np.allclose(out, [0.5, 0.02, 0.0], atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# _local_background_hue
+# ---------------------------------------------------------------------------
+
+def _solid_hue_image(h: int, w: int, rgb: tuple) -> np.ndarray:
+    """CHW float32 image, every pixel the same RGB color."""
+    img = np.empty((3, h, w), dtype=np.float32)
+    img[0], img[1], img[2] = rgb
+    return img
+
+
+class TestLocalBackgroundHue:
+    def test_no_confident_roi_pixels_returns_none(self):
+        img = _solid_hue_image(50, 50, (0.0, 0.0, 1.0))
+        prob = np.full((50, 50), 0.1, dtype=np.float32)  # all below roi_prob_threshold=0.3
+
+        assert _local_background_hue(img, prob) is None
+
+    def test_confident_roi_with_enough_background_returns_mean_hue(self):
+        """Positive twin of the no-ROI case: an ROI exists and the local
+        window has plenty of confidently-background pixels, so a real mean
+        hue comes back instead of None."""
+        img = _solid_hue_image(50, 50, (0.0, 0.0, 1.0))  # blue everywhere
+        prob = np.full((50, 50), 0.01, dtype=np.float32)  # confidently background everywhere
+        prob[25, 25] = 0.9  # one confident ROI pixel
+
+        result = _local_background_hue(img, prob, pad=25)
+
+        expected_hue, _s, _v = colorsys.rgb_to_hsv(0.0, 0.0, 1.0)
+        assert result == pytest.approx(expected_hue, abs=1e-6)
+
+    def test_fewer_than_200_background_pixels_returns_none(self):
+        img = _solid_hue_image(50, 50, (1.0, 0.0, 0.0))
+        prob = np.full((50, 50), 0.5, dtype=np.float32)  # neutral: not bg, not ROI
+        prob.reshape(-1)[:199] = 0.02  # exactly 199 confidently-background pixels
+        prob[25, 25] = 0.9  # confident ROI pixel (outside the first 199 flat cells)
+
+        assert _local_background_hue(img, prob) is None
+
+    def test_at_least_200_background_pixels_returns_mean_hue(self):
+        """Positive twin of the <200 case: identical construction, but 200
+        background pixels crosses the threshold and a real hue comes back."""
+        img = _solid_hue_image(50, 50, (1.0, 0.0, 0.0))  # red everywhere
+        prob = np.full((50, 50), 0.5, dtype=np.float32)
+        prob.reshape(-1)[:200] = 0.02  # exactly 200 confidently-background pixels
+        prob[25, 25] = 0.9
+
+        result = _local_background_hue(img, prob)
+
+        expected_hue, _s, _v = colorsys.rgb_to_hsv(1.0, 0.0, 0.0)
+        assert result == pytest.approx(expected_hue, abs=1e-6)
+
+    def test_samples_only_the_local_window_around_the_roi_not_the_whole_image(self):
+        """The reference hue must come from pixels *near* the ROI (within
+        pad), not a whole-image average: a same-confidence background region
+        far from the ROI, with a genuinely different hue, must be excluded."""
+        h, w = 300, 300
+        img = _solid_hue_image(h, w, (0.0, 1.0, 0.0))  # local background: green
+        img[:, 0:20, 0:20] = np.array([0.0, 0.0, 1.0]).reshape(3, 1, 1)  # far corner: blue
+
+        prob = np.full((h, w), 0.2, dtype=np.float32)  # neutral baseline (below roi AND bg thresholds)
+        prob[110:190, 110:190] = 0.0   # local confidently-background ring (green)
+        prob[140:160, 140:160] = 0.9   # confident ROI, inside the local ring
+        prob[0:20, 0:20] = 0.0         # far confidently-background block (blue) -- must be excluded
+
+        result = _local_background_hue(img, prob, pad=30)
+
+        expected_hue, _s, _v = colorsys.rgb_to_hsv(0.0, 1.0, 0.0)
+        assert result == pytest.approx(expected_hue, abs=1e-6)
+
+    def test_default_thresholds_and_pad_on_a_small_frame(self):
+        """Sanity check with every keyword at its real default (no overrides)."""
+        img = _solid_hue_image(40, 40, (1.0, 1.0, 0.0))  # yellow
+        prob = np.full((40, 40), 0.01, dtype=np.float32)  # confidently background everywhere
+        prob[20, 20] = 0.9  # one confident ROI pixel; default pad=400 covers the whole frame
+
+        result = _local_background_hue(img, prob)
+
+        expected_hue, _s, _v = colorsys.rgb_to_hsv(1.0, 1.0, 0.0)
+        assert result == pytest.approx(expected_hue, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# refine_mask_by_color
+# ---------------------------------------------------------------------------
+
+def _three_region_fixture(h: int = 20, w: int = 300):
+    """Column bands: A (true background, blue, confidently-background prob)
+    | B ("shadow": same blue hue, but the model wrongly reads it as
+    maybe-subject) | C (genuine subject, red, confidently-subject prob)."""
+    img = np.empty((3, h, w), dtype=np.float32)
+    img[:, :, 0:100] = np.array([0.0, 0.0, 1.0]).reshape(3, 1, 1)
+    img[:, :, 100:200] = np.array([0.0, 0.0, 1.0]).reshape(3, 1, 1)
+    img[:, :, 200:300] = np.array([1.0, 0.0, 0.0]).reshape(3, 1, 1)
+
+    prob = np.empty((h, w), dtype=np.float32)
+    prob[:, 0:100] = 0.0
+    prob[:, 100:200] = 0.5
+    prob[:, 200:300] = 0.8
+    return img, prob
+
+
+class TestRefineMaskByColor:
+    def test_falls_back_to_unmodified_prob_when_no_background_reference(self):
+        img = _solid_hue_image(20, 20, (1.0, 0.0, 0.0))
+        prob = np.full((20, 20), 0.1, dtype=np.float32)  # below roi_prob_threshold -> None
+
+        result = refine_mask_by_color(img, prob)
+
+        assert result is prob
+        assert np.array_equal(result, prob)
+
+    def test_attenuates_background_hue_and_keeps_subject_hue(self):
+        """Positive twin of the fallback case: a real background reference is
+        found, so background-colored pixels (even where the model is
+        confident -- the shadow problem this function exists for) get
+        knocked down, while genuinely subject-colored pixels are not."""
+        img, prob = _three_region_fixture()
+
+        result = refine_mask_by_color(img, prob)
+
+        assert result.shape == prob.shape
+        assert result.dtype == np.float32
+        # deep interior samples, >= 50px from any region edge -- several
+        # blur radii (default 10) away, so blur can't mix them together
+        a_interior = float(result[10, 50])
+        b_interior = float(result[10, 150])
+        c_interior = float(result[10, 250])
+
+        assert a_interior == 0.0
+        assert b_interior == 0.0  # same hue as background -> fully gated out
+        assert c_interior == pytest.approx(0.8, abs=2 / 255)  # different hue -> ungated
+
+    def test_blur_softens_the_gate_transition(self):
+        """Proves the GaussianBlur step actually runs: right at the B/C seam
+        the result must be strictly between the fully-gated and ungated
+        interior values, not a hard step -- a hard step would mean the blur
+        was skipped."""
+        img, prob = _three_region_fixture()
+
+        result = refine_mask_by_color(img, prob)
+
+        boundary = float(result[10, 200])  # first column of region C
+        assert 0.0 < boundary < 0.8
+
+    def test_ramp_is_linear_between_low_and_high_hue_distance(self):
+        """A pixel whose hue distance from the background sits exactly
+        halfway between hue_ramp_low_deg and hue_ramp_high_deg must get
+        exactly half its confidence back, not the binary full-gate/no-gate
+        case covered by test_attenuates_background_hue_and_keeps_subject_hue."""
+        bg_rgb = (1.0, 0.0, 0.0)  # background hue = 0.0
+        target_hue = 13.0 / 360.0  # halfway between default low=6deg, high=20deg
+        r, g, b = colorsys.hsv_to_rgb(target_hue, 1.0, 1.0)
+
+        # 200 background columns (>= the 200-pixel floor _local_background_hue
+        # requires before it will trust a reference) plus one test column.
+        w = 201
+        img = np.empty((3, 1, w), dtype=np.float32)
+        img[:, 0, :200] = np.array(bg_rgb).reshape(3, 1)
+        img[:, 0, 200] = (r, g, b)  # the pixel under test
+
+        prob = np.full((1, w), 0.0, dtype=np.float32)  # background columns: confidently background
+        prob[0, 200] = 0.9  # the test column: confident ROI
+
+        result = refine_mask_by_color(img, prob, blur_radius=0.0)
+
+        # soft_gate = (13-6)/(20-6) = 0.5 -> gated = 0.9 * 0.5 = 0.45
+        assert float(result[0, 200]) == pytest.approx(0.45, abs=2 / 255)
