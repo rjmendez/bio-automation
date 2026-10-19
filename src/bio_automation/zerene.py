@@ -21,6 +21,7 @@ only stacking-method code the docs publish. DMap's code is undocumented.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -108,7 +109,8 @@ def run_batch(folder: Path, method: str = "pmax",
               output_name: str = OUTPUT_NAME_TEMPLATE,
               launch_command: str | None = None,
               timeout: float = 1800.0,
-              popen=subprocess.Popen) -> Path:
+              popen=subprocess.Popen,
+              min_free_gb: float = 5.0) -> Path:
     """Run Zerene Stacker headless against *folder* and return the output image path.
 
     Writes ZereneBatch.xml, launches Zerene via the captured launch command
@@ -118,12 +120,24 @@ def run_batch(folder: Path, method: str = "pmax",
     Zerene wrote for itself -- avoiding a hand-rolled Windows quoting parser
     for a line that mixes quoted and unquoted "-Dkey=value" segments.
 
+    Disk space at *folder* is checked before the subprocess is launched --
+    OutputImageDispositionCode=2 (see write_batch_script) has Zerene write
+    its merged output back into that same folder, so insufficient space
+    there dooms the run before it starts.
+
     The docs warn the caller must drain stdout/stderr while waiting or both
     processes can hang; ``communicate()`` does this. Raises ZereneError on a
-    non-zero exit, a timeout (the process is killed first), or a missing
-    output file after a clean exit.
+    non-zero exit, a timeout (the process is killed first), insufficient
+    disk space, or a missing output file after a clean exit.
     """
     folder = Path(folder)
+
+    free_gb = shutil.disk_usage(folder).free / 1e9
+    if free_gb < min_free_gb:
+        raise ZereneError(
+            f"Insufficient disk space: {free_gb:.1f} GB free < {min_free_gb:.1f} GB required"
+        )
+
     write_batch_script(folder, method=method, output_name=output_name)
 
     base = launch_command if launch_command is not None else locate_launch_command()

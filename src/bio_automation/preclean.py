@@ -42,6 +42,7 @@ the reason to decode raw at all for this step.
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -129,17 +130,30 @@ def compute_fixed_params(raw_paths: list[Path], cache: ModelCache,
 
 def denoise_stack_frames(raw_paths: list[Path], dest_dir: Path,
                           noise: float = 1.0, exposure_ev: float = 0.0,
-                          cache: ModelCache | None = None) -> list[Path]:
+                          cache: ModelCache | None = None,
+                          min_free_gb: float = 5.0) -> list[Path]:
     """Run the fixed pre-stack pipeline -- raw denoise, then levels -- over
     every raw in *raw_paths* with one shared (blur, noise, exposure_ev)
     triple, and write each result as a 16-bit RGB TIFF into *dest_dir*,
     named after the raw's stem. Returns the written paths in the same
     order as *raw_paths*. "Other processing" (sharpen/upscale) is not done
     here -- see module docstring.
+
+    Each written TIFF is one full-resolution 16-bit frame (hundreds of MB
+    for a modern raw), so disk space is checked against *dest_dir* before
+    any model loading or raw decoding happens, same as topaz.py's
+    enhance() -- a doomed batch fails fast and cheap instead of filling the
+    disk partway through.
     """
     raw_paths = [Path(p) for p in raw_paths]
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
+
+    free_gb = shutil.disk_usage(dest_dir).free / 1e9
+    if free_gb < min_free_gb:
+        raise OSError(
+            f"Insufficient disk space: {free_gb:.1f} GB free < {min_free_gb:.1f} GB required"
+        )
 
     own_cache = cache is None
     if own_cache:

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import subprocess
+from unittest.mock import MagicMock
 
 import pytest
 
+from bio_automation import zerene
 from bio_automation.zerene import (
     ZereneError,
     find_output,
@@ -191,3 +193,43 @@ class TestRunBatch:
         popen = _make_popen_factory(returncode=0, communicate_result=("done", None))
         with pytest.raises(ZereneError, match=r"produced no ZS-OutputImage\.\* in"):
             run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=popen)
+
+
+# ---------------------------------------------------------------------------
+# run_batch -- disk-space guard. Zerene's OutputImageDispositionCode=2 (see
+# write_batch_script) writes the merged output back into the source folder,
+# so insufficient space there must abort before the batch script is written
+# or the subprocess is launched.
+# ---------------------------------------------------------------------------
+
+class TestRunBatchDiskGuard:
+    def setup_method(self):
+        FakePopen.instances = []
+
+    def test_insufficient_space_raises_before_script_or_subprocess(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(zerene.shutil, "disk_usage",
+                             lambda _: MagicMock(free=int(0.5 * 1e9)))  # 0.5 GB free
+
+        with pytest.raises(ZereneError, match=r"(?i)insufficient disk space"):
+            run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD,
+                      popen=_make_popen_factory(), min_free_gb=5.0)
+
+        assert not (tmp_path / "ZereneBatch.xml").exists()
+        assert FakePopen.instances == []
+
+    def test_sufficient_space_proceeds_and_launches_subprocess(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(zerene.shutil, "disk_usage",
+                             lambda _: MagicMock(free=int(10 * 1e9)))  # 10 GB free
+        output = tmp_path / "ZS-OutputImage.tif"
+
+        def factory(cmd, **kwargs):
+            fake = FakePopen(cmd, returncode=0, **kwargs)
+            output.write_bytes(b"stacked")
+            return fake
+
+        result = run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=factory,
+                            min_free_gb=5.0)
+
+        assert (tmp_path / "ZereneBatch.xml").exists()
+        assert len(FakePopen.instances) == 1
+        assert result == output

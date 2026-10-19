@@ -223,3 +223,47 @@ class TestDenoiseStackFrames:
         expected_f32 = min((expected_input_u16 / 65535.0) * 2.0, 1.0)  # levels gain=2.0 (EV=1.0)
         expected_u16 = round(expected_f32 * 65535.0)
         assert int(result[0, 0, 0]) == expected_u16
+
+
+# ---------------------------------------------------------------------------
+# denoise_stack_frames -- disk-space guard. Each written frame is a
+# full-resolution 16-bit TIFF (hundreds of MB for a real raw -- see
+# tests/test_preclean_live.py and the git log around commit eaba9b5), so an
+# insufficient-space batch must fail before any decode or model work, not
+# partway through.
+# ---------------------------------------------------------------------------
+
+class TestDenoiseStackFramesDiskGuard:
+    def _setup(self, monkeypatch, free_bytes: int):
+        paths = [Path("f0.NEF")]
+        decode_calls: list[Path] = []
+
+        def fake_decode(p):
+            decode_calls.append(p)
+            return np.zeros((1, 1, 3), dtype=np.uint16)
+
+        monkeypatch.setattr(preclean, "decode_raw_to_bgr16", fake_decode)
+        monkeypatch.setattr(preclean, "_estimate_sharpen_params",
+                             lambda chw, cache: (0.1, 0.5, 0.3, 0.0))
+        monkeypatch.setattr(preclean, "_sharpen_f32", lambda chw, cache, blur, noise: chw)
+        monkeypatch.setattr(preclean.shutil, "disk_usage", lambda _: MagicMock(free=free_bytes))
+        return paths, decode_calls
+
+    def test_insufficient_space_raises_before_any_decode(self, tmp_path, monkeypatch):
+        paths, decode_calls = self._setup(monkeypatch, int(0.5 * 1e9))  # 0.5 GB free
+
+        with pytest.raises(OSError, match=r"(?i)insufficient disk space"):
+            denoise_stack_frames(paths, tmp_path, cache=MagicMock(), min_free_gb=5.0)
+
+        assert decode_calls == []  # must fail before any raw decode happens
+
+    def test_sufficient_space_proceeds_and_writes_output(self, tmp_path, monkeypatch):
+        paths, decode_calls = self._setup(monkeypatch, int(10 * 1e9))  # 10 GB free
+
+        written = denoise_stack_frames(paths, tmp_path, cache=MagicMock(), min_free_gb=5.0)
+
+        # decoded twice: once for compute_fixed_params' representative-frame
+        # estimate, once in the per-frame loop (n=1, so both are f0.NEF)
+        assert decode_calls == [paths[0], paths[0]]
+        assert [p.name for p in written] == ["f0.tif"]
+        assert written[0].exists()

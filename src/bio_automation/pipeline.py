@@ -130,7 +130,7 @@ def export_stock(folder: Path) -> list[Path]:
 
 
 def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
-                 source_dir: Path | None = None) -> Asset:
+                 source_dir: Path | None = None, min_free_gb: float = 5.0) -> Asset:
     """Run Zerene Stacker (headless batch) over *source_dir* (default:
     source/raw/), move the merged output into work/, and append a
     stack_output Asset row.
@@ -149,7 +149,7 @@ def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
     """
     folder = Path(folder)
     raw_dir = Path(source_dir) if source_dir is not None else source_raw_dir(folder)
-    output_path = zerene_run_batch(raw_dir, method=method, timeout=timeout)
+    output_path = zerene_run_batch(raw_dir, method=method, timeout=timeout, min_free_gb=min_free_gb)
 
     dest_dir = work_dir(folder)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -173,7 +173,8 @@ def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
 
 
 def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
-                     method: str = "pmax", timeout: float = 1800.0) -> Asset:
+                     method: str = "pmax", timeout: float = 1800.0,
+                     min_free_gb: float = 5.0) -> Asset:
     """Denoise every raw in source/raw/ with one shared parameter set (see
     preclean.denoise_stack_frames: raw denoise, then levels, in that fixed
     order) into work/denoised/, then run Zerene against that denoised set
@@ -187,8 +188,10 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     raw_dir = source_raw_dir(folder)
     raw_paths = sorted(p for p in raw_dir.iterdir() if p.is_file())
     denoised_dir = work_dir(folder) / "denoised"
-    denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev)
-    return stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir)
+    denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev,
+                          min_free_gb=min_free_gb)
+    return stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir,
+                        min_free_gb=min_free_gb)
 
 
 def build_and_save_keywords(folder: Path) -> dict:

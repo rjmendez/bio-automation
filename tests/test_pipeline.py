@@ -24,8 +24,9 @@ class RecordingBatchRun:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def __call__(self, folder, method="pmax", timeout=1800.0):
-        self.calls.append({"folder": Path(folder), "method": method, "timeout": timeout})
+    def __call__(self, folder, method="pmax", timeout=1800.0, min_free_gb=5.0):
+        self.calls.append({"folder": Path(folder), "method": method, "timeout": timeout,
+                            "min_free_gb": min_free_gb})
         out = Path(folder) / "ZS-OutputImage.tif"
         out.write_bytes(b"stacked")
         return out
@@ -48,7 +49,16 @@ class TestStackFocus:
         fake_run, _ = self._prep(tmp_path, monkeypatch)
         stack_focus(tmp_path, method="pmax", timeout=42.0)
         assert fake_run.calls == [
-            {"folder": source_raw_dir(tmp_path), "method": "pmax", "timeout": 42.0}
+            {"folder": source_raw_dir(tmp_path), "method": "pmax", "timeout": 42.0,
+             "min_free_gb": 5.0}
+        ]
+
+    def test_passes_through_non_default_min_free_gb(self, tmp_path, monkeypatch):
+        fake_run, _ = self._prep(tmp_path, monkeypatch)
+        stack_focus(tmp_path, min_free_gb=12.5)
+        assert fake_run.calls == [
+            {"folder": source_raw_dir(tmp_path), "method": "pmax", "timeout": 1800.0,
+             "min_free_gb": 12.5}
         ]
 
     def test_moves_output_into_work_dir_not_raw_dir(self, tmp_path, monkeypatch):
@@ -81,10 +91,11 @@ class RecordingDenoise:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def __call__(self, raw_paths, dest_dir, noise=1.0, exposure_ev=0.0, cache=None):
+    def __call__(self, raw_paths, dest_dir, noise=1.0, exposure_ev=0.0, cache=None,
+                 min_free_gb=5.0):
         self.calls.append({
             "raw_paths": list(raw_paths), "dest_dir": Path(dest_dir),
-            "noise": noise, "exposure_ev": exposure_ev,
+            "noise": noise, "exposure_ev": exposure_ev, "min_free_gb": min_free_gb,
         })
         dest_dir = Path(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -130,7 +141,18 @@ class TestCleanAndStack:
         clean_and_stack(tmp_path)
 
         assert fake_run.calls == [
-            {"folder": work_dir(tmp_path) / "denoised", "method": "pmax", "timeout": 1800.0}
+            {"folder": work_dir(tmp_path) / "denoised", "method": "pmax", "timeout": 1800.0,
+             "min_free_gb": 5.0}
+        ]
+
+    def test_passes_non_default_min_free_gb_to_both_denoise_and_zerene(self, tmp_path, monkeypatch):
+        _, _, fake_denoise, fake_run = self._prep(tmp_path, monkeypatch)
+        clean_and_stack(tmp_path, min_free_gb=9.0)
+
+        assert fake_denoise.calls[0]["min_free_gb"] == 9.0
+        assert fake_run.calls == [
+            {"folder": work_dir(tmp_path) / "denoised", "method": "pmax", "timeout": 1800.0,
+             "min_free_gb": 9.0}
         ]
 
     def test_appends_stack_output_asset_from_denoised_output(self, tmp_path, monkeypatch):

@@ -63,6 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_stack.add_argument("--exposure-ev", type=float, default=0.0,
                           help="Fixed EV pull-down applied after denoise, only with --denoise "
                                "(negative leaves headroom under clipping for specular highlights)")
+    p_stack.add_argument("--min-free-gb", type=float, default=5.0,
+                          help="Abort before any work if free disk space at the "
+                               "destination/source folder is below this many GB")
 
     p_write_sidecars = sub.add_parser("write-sidecars")
     p_write_sidecars.add_argument("folder")
@@ -163,9 +166,11 @@ def cmd_stack(args: argparse.Namespace) -> int:
         if args.denoise:
             asset = clean_and_stack(Path(args.folder), noise=args.noise,
                                      exposure_ev=args.exposure_ev,
-                                     method=args.method, timeout=args.timeout)
+                                     method=args.method, timeout=args.timeout,
+                                     min_free_gb=args.min_free_gb)
         else:
-            asset = stack_focus(Path(args.folder), method=args.method, timeout=args.timeout)
+            asset = stack_focus(Path(args.folder), method=args.method, timeout=args.timeout,
+                                 min_free_gb=args.min_free_gb)
     except ZereneError as exc:
         raise SystemExit(str(exc))
     print(Path(args.folder) / asset.file)
