@@ -28,6 +28,7 @@ from .pipeline import (
     write_sidecars,
 )
 from .quality import PRESORT_FILENAME, suggest_culling
+from .stack_sync import process_synced_stacks
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +51,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_auto_ingest.add_argument("volume_path")
     p_auto_ingest.add_argument("--base-dir", default=r"F:\Bio")
+
+    p_sync_stacks = sub.add_parser(
+        "sync-stacks",
+        help="Ingest focus-stacks synced in from the NikonStacker Pi (nikon-z7ii-tools/"
+             "stack_buffer.py) and auto-process each one (stack/sidecars/review/export) "
+             "on arrival. Idempotent: a stack already ingested is skipped on rerun. "
+             "See bio_automation.stack_sync.",
+    )
+    p_sync_stacks.add_argument("--sync-dir", default=r"D:\nikon_stack_sync")
+    p_sync_stacks.add_argument("--base-dir", default=r"F:\Bio")
+    p_sync_stacks.add_argument("--no-cleanup", action="store_true",
+                                help="Keep the D:\\ landing copy after a successful "
+                                     "ingest+process instead of deleting it.")
 
     p_cull = sub.add_parser("cull")
     p_cull.add_argument("folder")
@@ -246,6 +260,20 @@ def cmd_auto_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync_stacks(args: argparse.Namespace) -> int:
+    results = process_synced_stacks(
+        Path(args.sync_dir), Path(args.base_dir), cleanup=not args.no_cleanup,
+    )
+    ok = [r for r in results if r["status"] == "ok"]
+    errors = [r for r in results if r["status"] == "error"]
+    for r in ok:
+        print(r["observation_dir"])
+    for r in errors:
+        print(f"FAILED {r['stack_dir']}: {r['error']}")
+    print(f"{len(ok)} stack(s) ingested and processed, {len(errors)} failed")
+    return 1 if errors else 0
+
+
 def cmd_cull(args: argparse.Namespace) -> int:
     folder = Path(args.folder)
     deleted = delete_rejected_raws(folder)
@@ -427,6 +455,8 @@ def main() -> int:
         return cmd_ingest(args)
     if args.command == "auto-ingest":
         return cmd_auto_ingest(args)
+    if args.command == "sync-stacks":
+        return cmd_sync_stacks(args)
     if args.command == "cull":
         return cmd_cull(args)
     if args.command == "presort":
