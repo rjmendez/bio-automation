@@ -166,14 +166,42 @@ class TestRunBatch:
         assert (tmp_path / "ZereneBatch.xml").exists()
         assert len(FakePopen.instances) == 1
         proc = FakePopen.instances[0]
+        script_path = tmp_path / "ZereneBatch.xml"
         assert proc.cmd == (
             FAKE_LAUNCH_CMD + " -noSplashScreen -exitOnBatchScriptCompletion "
-            f'-runMinimized "{tmp_path}"'
+            f'-runMinimized -batchScript "{script_path}" "{tmp_path}"'
         )
         assert proc.kwargs["stdout"] == subprocess.PIPE
         assert proc.kwargs["stderr"] == subprocess.STDOUT
         assert proc.kwargs["text"] is True
         assert result == output
+
+    def test_batch_script_flag_uses_the_path_write_batch_script_actually_returned(
+        self, tmp_path, monkeypatch
+    ):
+        """run_batch's -batchScript flag must name the exact path
+        write_batch_script() returned, not a path run_batch reconstructs by
+        hand from *folder* and an assumed filename. Stubs only the
+        dependency (write_batch_script), not run_batch itself, and gives
+        back a deliberately distinctive path so a hand-rolled
+        f"{folder}/ZereneBatch.xml" reconstruction -- which would look right
+        in the test above, since that IS the real default name -- fails
+        here instead."""
+        distinctive_path = tmp_path / "not-the-default-name.xml"
+        monkeypatch.setattr(zerene, "write_batch_script", lambda *a, **k: distinctive_path)
+
+        output = tmp_path / "ZS-OutputImage.tif"
+
+        def factory(cmd, **kwargs):
+            fake = FakePopen(cmd, returncode=0, **kwargs)
+            output.write_bytes(b"stacked")
+            return fake
+
+        run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=factory)
+
+        proc = FakePopen.instances[0]
+        assert f'-batchScript "{distinctive_path}"' in proc.cmd
+        assert f'-batchScript "{tmp_path / "ZereneBatch.xml"}"' not in proc.cmd
 
     def test_nonzero_exit_raises_and_does_not_return(self, tmp_path):
         (tmp_path / "ZS-OutputImage.tif").write_bytes(b"stale")

@@ -4,9 +4,38 @@ Zerene Stacker has no public API or MCP server, but it does have a
 documented Batch API (https://www.zerenesystems.com/cms/stacker/docs/batchapi):
 launch the bundled JRE directly -- not zerenstk.exe, which returns before
 stacking finishes and leaves the GUI running -- with
--noSplashScreen -exitOnBatchScriptCompletion -runMinimized and the source
-image folder as the final argument. The batch script is implicitly
-ZereneBatch.xml, read from that same folder.
+-noSplashScreen -exitOnBatchScriptCompletion -runMinimized, an explicit
+-batchScript pointing at the written ZereneBatch.xml, and the source image
+folder as the final argument (loading the folder's images into a new
+project is what gives the batch script's %CurrentProject% Source something
+to operate on).
+
+2026-10-19: passing only the folder (relying on Zerene's *other*,
+undocumented-interaction "implicit ZereneBatch.xml in the same folder"
+discovery) was confirmed broken by decompiling the installed
+ZereneStacker.jar (1.04 Build T2026-05-04-0750), not just by reading logs:
+- The implicit discovery genuinely fires (MainFrame's CLI-folder-opening
+  thread does scan for a file literally named "ZereneBatch.xml" and loads
+  it), and loading it *does* spawn a watcher thread that auto-runs the
+  whole batch queue once Zerene's internal "busy" flag clears -- so the
+  documented mechanism is not simply dead code.
+- But the multi-file loader that same thread drives only ever opens the
+  *first* accepted image before the shared busy counter returns to zero;
+  a second (or later) frame is accepted into the list but never actually
+  read. The busy flag then only clears ~100ms before the process exits --
+  far faster than the watcher's 1s poll interval. So the batch queue is
+  loaded but the auto-run watcher never gets a turn to see the folder
+  (ad-hoc project-open) path, and PMax never starts.
+Explicitly passing -batchScript here does not fix that loader/race bug (it
+is inside Zerene, not in anything this module's CLI arguments control), but
+it is the documented, independent way to load the script (see the docs'
+"-batchScript pathname" alternative), gives a real "Batch file cannot be
+read" error instead of silence if the written XML is ever missing/corrupt,
+and does not depend on an exact-filename match in a directory scan whose
+interaction with the folder-of-images loading the docs admit they do not
+specify. Confirming PMax actually runs end-to-end still requires either a
+fixed/different Zerene build or contacting support@zerenesystems.com, per
+the docs' own guidance for this class of problem.
 
 The exact launch command (javaw.exe path, -Xmx sizing, classpath,
 -Dlaunchcmddir) is machine- and install-specific, so it is not
@@ -182,11 +211,15 @@ def run_batch(folder: Path, method: str = "pmax",
     """Run Zerene Stacker headless against *folder* and return the output image path.
 
     Writes ZereneBatch.xml, launches Zerene via the captured launch command
-    plus -noSplashScreen -exitOnBatchScriptCompletion -runMinimized "<folder>",
-    passed as a single command-line string (not a pre-split arg list) so
-    Windows' own CreateProcess parses it exactly as it parsed the string
-    Zerene wrote for itself -- avoiding a hand-rolled Windows quoting parser
-    for a line that mixes quoted and unquoted "-Dkey=value" segments.
+    plus -noSplashScreen -exitOnBatchScriptCompletion -runMinimized
+    -batchScript "<folder>/ZereneBatch.xml" "<folder>", passed as a single
+    command-line string (not a pre-split arg list) so Windows' own
+    CreateProcess parses it exactly as it parsed the string Zerene wrote for
+    itself -- avoiding a hand-rolled Windows quoting parser for a line that
+    mixes quoted and unquoted "-Dkey=value" segments. The explicit
+    -batchScript flag (rather than relying only on Zerene's implicit
+    same-folder ZereneBatch.xml discovery) is deliberate -- see the module
+    docstring for the confirmed, decompiled reason.
 
     Disk space at *folder* is checked before the subprocess is launched --
     OutputImageDispositionCode=2 (see write_batch_script) has Zerene write
@@ -218,10 +251,13 @@ def run_batch(folder: Path, method: str = "pmax",
                 f"Insufficient disk space: {free_gb:.1f} GB free < {min_free_gb:.1f} GB required"
             )
 
-        write_batch_script(folder, method=method, output_name=output_name)
+        script_path = write_batch_script(folder, method=method, output_name=output_name)
 
         base = launch_command if launch_command is not None else locate_launch_command()
-        full_cmd = f'{base} -noSplashScreen -exitOnBatchScriptCompletion -runMinimized "{folder}"'
+        full_cmd = (
+            f'{base} -noSplashScreen -exitOnBatchScriptCompletion -runMinimized '
+            f'-batchScript "{script_path}" "{folder}"'
+        )
 
         proc = popen(full_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
