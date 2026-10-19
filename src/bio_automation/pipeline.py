@@ -10,6 +10,7 @@ from .io import read_json, read_jsonl, write_json, write_jsonl
 from .models import Asset, Observation
 from .paths import export_dir, metadata_dir, review_dir, source_raw_dir, work_dir
 from .preclean import denoise_stack_frames
+from .topaz import ModelCache
 from .zerene import run_batch as zerene_run_batch
 
 
@@ -225,7 +226,8 @@ def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
 
 def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
                      method: str = "pmax", timeout: float = 1800.0,
-                     min_free_gb: float = 5.0, check_subjects: bool = True) -> Asset:
+                     min_free_gb: float = 5.0, check_subjects: bool = True,
+                     cache: ModelCache | None = None) -> Asset:
     """Denoise every raw in source/raw/ with one shared parameter set (see
     preclean.denoise_stack_frames: raw denoise, then levels, in that fixed
     order) into work/denoised/, then run Zerene against that denoised set
@@ -239,15 +241,42 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     gate runs against work/denoised/ (the files actually handed to Zerene),
     not the pre-denoise raws, since denoising does not change which
     subject is in frame. See stack_focus()'s docstring.
+
+    *cache* is forwarded to preclean.denoise_stack_frames() as-is. Left at
+    the default None, behavior is unchanged from before this parameter
+    existed: denoise_stack_frames() builds its own ModelCache for this call
+    and tears it down when done. Passing a ModelCache built by the caller
+    is purely additive -- it lets a future batch orchestrator share one
+    already-loaded ModelCache across many clean_and_stack() calls (e.g. one
+    per observation folder) instead of reloading the denoise models from
+    disk every time.
+
+    work/denoised/ holds the per-frame denoised TIFFs fed to Zerene -- large,
+    disposable intermediates once stacking is done. On a successful stack
+    (stack_focus() returns its Asset without raising), that directory and
+    its contents are deleted; only the final stack_output asset in work/ is
+    kept. On failure -- an exception from denoise_stack_frames() or from
+    stack_focus()/zerene_run_batch() -- any partial work/denoised/ output is
+    cleaned up the same way before the original exception propagates
+    unchanged, so a failed batch item does not leave large orphaned files
+    behind either.
     """
     folder = Path(folder)
     raw_dir = source_raw_dir(folder)
     raw_paths = sorted(p for p in raw_dir.iterdir() if p.is_file())
     denoised_dir = work_dir(folder) / "denoised"
-    denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev,
-                          min_free_gb=min_free_gb)
-    return stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir,
-                        min_free_gb=min_free_gb, check_subjects=check_subjects)
+    try:
+        denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev,
+                              cache=cache, min_free_gb=min_free_gb)
+        asset = stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir,
+                             min_free_gb=min_free_gb, check_subjects=check_subjects)
+    except Exception:
+        if denoised_dir.exists():
+            shutil.rmtree(denoised_dir)
+        raise
+    if denoised_dir.exists():
+        shutil.rmtree(denoised_dir)
+    return asset
 
 
 def build_and_save_keywords(folder: Path) -> dict:

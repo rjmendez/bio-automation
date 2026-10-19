@@ -5,12 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
+from bio_automation import preclean
 from bio_automation.grouping import SubjectMismatchError
 from bio_automation.models import Asset
 from bio_automation.pipeline import clean_and_stack, ensure_layout, save_assets, scan_assets, stack_focus
 from bio_automation.paths import source_raw_dir, work_dir
+from bio_automation.zerene import ZereneError
 
 
 class TestEnsureLayout:
@@ -317,3 +320,125 @@ class TestSubjectConsistencyGate:
 
         assert fake_check.calls == []
         assert len(fake_run.calls) == 1
+
+
+class TestCleanAndStackCleanup:
+    """Covers clean_and_stack()'s own disposable-intermediate cleanup:
+    work/denoised/ (the per-frame denoised TIFFs that fed Zerene) must be
+    gone once stacking is done, whether it succeeded or failed. These tests
+    stub clean_and_stack()'s own direct dependencies (denoise_stack_frames,
+    zerene_run_batch, the subject-consistency gate) so clean_and_stack()'s
+    own cleanup logic is what's exercised, not theirs."""
+
+    def _prep(self, tmp_path, monkeypatch):
+        ensure_layout(tmp_path)
+        raw_dir = source_raw_dir(tmp_path)
+        raw_a = raw_dir / "DSC_0001.NEF"
+        raw_b = raw_dir / "DSC_0002.NEF"
+        raw_a.write_bytes(b"a")
+        raw_b.write_bytes(b"b")
+        save_assets(tmp_path, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+            Asset(file="source/raw/DSC_0002.NEF", role="original", status="kept", selected=True),
+        ])
+        monkeypatch.setattr("bio_automation.pipeline.denoise_stack_frames", RecordingDenoise())
+        monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", RecordingSubjectCheck())
+        monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: MagicMock(name="daclip-session"))
+
+    def test_success_deletes_denoised_dir_but_keeps_stack_output(self, tmp_path, monkeypatch):
+        """Positive twin to the two failure tests below, on the same
+        fixture: a clean run must still leave the final stack_output asset
+        in work/ in place even though work/denoised/ (the disposable
+        per-frame intermediates) is removed."""
+        self._prep(tmp_path, monkeypatch)
+        monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", RecordingBatchRun())
+
+        clean_and_stack(tmp_path)
+
+        assert not (work_dir(tmp_path) / "denoised").exists()
+        assert (work_dir(tmp_path) / "ZS-OutputImage.tif").exists()
+
+    def test_failure_from_zerene_deletes_denoised_dir_and_reraises_exact_exception(self, tmp_path, monkeypatch):
+        """Negative twin to the test above, same fixture: zerene_run_batch
+        failing (inside stack_focus) must still clean up work/denoised/,
+        and the original ZereneError -- exact type and message -- must
+        propagate unchanged, not be swallowed or replaced."""
+        self._prep(tmp_path, monkeypatch)
+
+        def failing_run(folder, method="pmax", timeout=1800.0, min_free_gb=5.0):
+            raise ZereneError("Zerene exited with code 1: disk full")
+
+        monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", failing_run)
+
+        with pytest.raises(ZereneError, match=r"^Zerene exited with code 1: disk full$") as exc_info:
+            clean_and_stack(tmp_path)
+
+        assert str(exc_info.value) == "Zerene exited with code 1: disk full"
+        assert not (work_dir(tmp_path) / "denoised").exists()
+
+    def test_failure_from_denoise_deletes_partial_denoised_dir_and_reraises_exact_exception(self, tmp_path, monkeypatch):
+        """Second negative twin, same fixture: a failure inside
+        denoise_stack_frames itself (before stack_focus ever runs, so
+        work/denoised/ may hold only some of the frames) must also leave no
+        partial output behind, and must propagate the exact original
+        exception -- stack_focus/zerene never even run."""
+        self._prep(tmp_path, monkeypatch)
+        monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", RecordingBatchRun())
+
+        def failing_denoise(raw_paths, dest_dir, noise=1.0, exposure_ev=0.0, cache=None,
+                             min_free_gb=5.0):
+            dest_dir = Path(dest_dir)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / "DSC_0001.tif").write_bytes(b"partial")  # frame 1 written...
+            raise OSError("Insufficient disk space: 1.0 GB free < 5.0 GB required")  # ...frame 2 fails
+
+        monkeypatch.setattr("bio_automation.pipeline.denoise_stack_frames", failing_denoise)
+
+        with pytest.raises(OSError, match=r"^Insufficient disk space: 1\.0 GB free < 5\.0 GB required$") as exc_info:
+            clean_and_stack(tmp_path)
+
+        assert str(exc_info.value) == "Insufficient disk space: 1.0 GB free < 5.0 GB required"
+        assert not (work_dir(tmp_path) / "denoised").exists()
+
+
+class TestCleanAndStackCacheReuse:
+    """Proves the cache param is real reuse, not just accepted-and-ignored:
+    when the caller passes an explicit ModelCache through clean_and_stack(),
+    denoise_stack_frames() must never construct its own. Runs the *real*
+    denoise_stack_frames() (only its own dependencies -- rawpy decode and
+    the OpenVINO-backed model estimate/apply calls -- are stubbed, same
+    pattern as tests/test_preclean.py), so the "own_cache = cache is None"
+    branch in preclean.py is genuinely exercised, not assumed."""
+
+    def test_explicit_cache_means_denoise_stack_frames_never_builds_its_own(self, tmp_path, monkeypatch):
+        ensure_layout(tmp_path)
+        raw_dir = source_raw_dir(tmp_path)
+        (raw_dir / "DSC_0001.NEF").write_bytes(b"a")
+        save_assets(tmp_path, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+        ])
+
+        monkeypatch.setattr(preclean, "decode_raw_to_bgr16",
+                             lambda p: np.zeros((1, 1, 3), dtype=np.uint16))
+        monkeypatch.setattr(preclean, "_estimate_sharpen_params",
+                             lambda chw, cache: (0.1, 0.5, 0.3, 0.0))
+        monkeypatch.setattr(preclean, "_sharpen_f32", lambda chw, cache, blur, noise: chw)
+
+        construct_calls: list[tuple] = []
+
+        class RecordingModelCache:
+            def __init__(self, *args, **kwargs):
+                construct_calls.append((args, kwargs))
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(preclean, "ModelCache", RecordingModelCache)
+        monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", RecordingBatchRun())
+        monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", RecordingSubjectCheck())
+        monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: MagicMock(name="daclip-session"))
+
+        explicit_cache = MagicMock(name="shared-model-cache")
+        clean_and_stack(tmp_path, cache=explicit_cache)
+
+        assert construct_calls == []
