@@ -27,12 +27,20 @@ import numpy as np
 from . import daclip
 
 # Similarity floor below which a frame is treated as a likely different
-# subject. 0.75 is a deliberately conservative starting point -- a real
-# cross-subject mismatch (e.g. a spider vs. a bracket fungus) reads far
-# below this in DA-CLIP content-embedding space, while ordinary frame-to-
-# frame variation within one focus stack (different focal plane, minor
-# pose drift) does not approach it.
-DEFAULT_THRESHOLD = 0.75
+# subject. CORRECTED 2026-10-19 after independent verification against the
+# actual incident images (tests/fixtures/sample_raw.NEF = the spider,
+# sample_raw_fungus.NEF = the bracket fungus -- see tests/test_grouping_live.py):
+# the real cross-subject pair measures 0.8111 cosine similarity in DA-CLIP
+# content-embedding space, and a real same-subject pair (two frames 2.9s
+# apart in the same burst) measures 0.9731. The original value committed
+# here, 0.75, was asserted as "a real cross-subject mismatch reads far
+# below this" without being run against real data -- it does not: 0.8111 is
+# ABOVE 0.75, so the original threshold would NOT have caught the exact
+# incident this check exists to prevent. 0.88 sits with real margin below
+# the measured same-subject score and above the measured cross-subject
+# score; tests/test_grouping_live.py asserts both measurements directly so
+# this number stays provably correct rather than asserted.
+DEFAULT_THRESHOLD = 0.88
 
 
 class SubjectMismatchError(RuntimeError):
