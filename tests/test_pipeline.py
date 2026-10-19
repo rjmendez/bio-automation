@@ -10,9 +10,18 @@ import pytest
 
 from bio_automation import preclean
 from bio_automation.grouping import SubjectMismatchError
+from bio_automation.io import read_json
 from bio_automation.models import Asset
-from bio_automation.pipeline import clean_and_stack, ensure_layout, save_assets, scan_assets, stack_focus
-from bio_automation.paths import source_raw_dir, work_dir
+from bio_automation.pipeline import (
+    clean_and_stack,
+    discover_observation_folders,
+    ensure_layout,
+    save_assets,
+    scan_assets,
+    stack_all,
+    stack_focus,
+)
+from bio_automation.paths import make_observation_path, source_raw_dir, work_dir
 from bio_automation.zerene import ZereneError
 
 
@@ -442,3 +451,189 @@ class TestCleanAndStackCacheReuse:
         clean_and_stack(tmp_path, cache=explicit_cache)
 
         assert construct_calls == []
+
+
+class TestDiscoverObservationFolders:
+    def test_finds_only_folders_that_hold_metadata_assets_jsonl(self, tmp_path):
+        """Positive case (the two real observation folders) and negative
+        case (a stray directory with no metadata/assets.jsonl) on the same
+        fixture, since both must be told apart by one call."""
+        folder_a = make_observation_path(tmp_path, "2026-01-05", "spider")
+        folder_b = make_observation_path(tmp_path, "2026-02-09", "fungus")
+        ensure_layout(folder_a)
+        ensure_layout(folder_b)
+        save_assets(folder_a, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+        ])
+        save_assets(folder_b, [
+            Asset(file="source/raw/DSC_0002.NEF", role="original", status="kept", selected=True),
+        ])
+        # A directory that merely looks like it could be one (same tree,
+        # similar name) but has no metadata/assets.jsonl must not count.
+        stray = tmp_path / "2026" / "not-an-observation"
+        stray.mkdir(parents=True)
+
+        found = discover_observation_folders(tmp_path)
+
+        assert found == sorted([folder_a, folder_b])
+
+
+class RecordingCleanAndStack:
+    """Stands in for pipeline.clean_and_stack: records every call (folder
+    and the cache object it was given) in call order, and raises or
+    succeeds per folder according to *behaviors* (keyed by folder name)."""
+
+    def __init__(self, behaviors: dict[str, Exception | None]):
+        self.calls: list[dict] = []
+        self.behaviors = behaviors
+
+    def __call__(self, folder, noise=1.0, exposure_ev=0.0, method="pmax", timeout=1800.0,
+                 min_free_gb=5.0, check_subjects=True, cache=None):
+        folder = Path(folder)
+        self.calls.append({
+            "folder": folder, "noise": noise, "exposure_ev": exposure_ev, "method": method,
+            "timeout": timeout, "min_free_gb": min_free_gb, "check_subjects": check_subjects,
+            "cache": cache,
+        })
+        behavior = self.behaviors[folder.name]
+        if behavior is not None:
+            raise behavior
+        return Asset(file="work/ZS-OutputImage.tif", role="stack_output",
+                      status="ready", selected=True)
+
+
+class RecordingModelCache:
+    """Stands in for topaz.ModelCache: records every construction so tests
+    can prove exactly one was built for a whole stack_all() batch."""
+
+    instances_built: list["RecordingModelCache"] = []
+
+    def __init__(self, *args, **kwargs):
+        RecordingModelCache.instances_built.append(self)
+        self.exited = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.exited = True
+        return False
+
+
+class TestStackAll:
+    """stack_all() orchestrates cull + clean_and_stack() over every
+    observation folder under a base_dir, sharing one ModelCache and
+    surviving per-folder failures. clean_and_stack() itself is stubbed
+    (its own behavior is covered by TestCleanAndStack above); these tests
+    isolate the *batch orchestration* -- discovery, cache sharing, cull,
+    per-folder exception handling, and the manifest it writes."""
+
+    def _prep(self, tmp_path, monkeypatch, behaviors):
+        RecordingModelCache.instances_built = []
+        folder_ok = tmp_path / "obs-a"
+        folder_zerene_fail = tmp_path / "obs-b"
+        folder_other_fail = tmp_path / "obs-c"
+        for folder in (folder_ok, folder_zerene_fail, folder_other_fail):
+            ensure_layout(folder)
+            save_assets(folder, [
+                Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+            ])
+        # A rejected raw actually on disk in the folder that succeeds, to
+        # prove cull (delete_rejected_raws) really ran per folder rather
+        # than being skipped -- not stubbed, so this is real deletion.
+        rejected_raw = source_raw_dir(folder_ok) / "DSC_bad.NEF"
+        rejected_raw.write_bytes(b"bad frame")
+        save_assets(folder_ok, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+            Asset(file="source/raw/DSC_bad.NEF", role="original", status="rejected", selected=False),
+        ])
+
+        fake_clean_and_stack = RecordingCleanAndStack(behaviors)
+        monkeypatch.setattr("bio_automation.pipeline.clean_and_stack", fake_clean_and_stack)
+        monkeypatch.setattr("bio_automation.pipeline.ModelCache", RecordingModelCache)
+        return folder_ok, folder_zerene_fail, folder_other_fail, fake_clean_and_stack, rejected_raw
+
+    def test_continues_past_failures_and_records_each_folders_outcome(self, tmp_path, monkeypatch):
+        zerene_error = ZereneError("Zerene exited with code 1: disk full")
+        other_error = OSError("Insufficient disk space: 1.0 GB free < 5.0 GB required")
+        folder_ok, folder_zerene_fail, folder_other_fail, fake_clean_and_stack, rejected_raw = self._prep(
+            tmp_path, monkeypatch,
+            behaviors={"obs-a": None, "obs-b": zerene_error, "obs-c": other_error},
+        )
+
+        results = stack_all(tmp_path)
+
+        # Processing continued past both failures: all three folders were
+        # actually called, in discovery (sorted) order, with obs-c called
+        # *after* obs-b raised -- proof the batch did not abort.
+        assert [call["folder"] for call in fake_clean_and_stack.calls] == [
+            folder_ok, folder_zerene_fail, folder_other_fail,
+        ]
+
+        assert results == [
+            {"folder": str(folder_ok), "status": "ok", "error": None,
+             "asset": "work/ZS-OutputImage.tif"},
+            {"folder": str(folder_zerene_fail), "status": "failed",
+             "error": "Zerene exited with code 1: disk full", "asset": None},
+            {"folder": str(folder_other_fail), "status": "failed",
+             "error": "Insufficient disk space: 1.0 GB free < 5.0 GB required", "asset": None},
+        ]
+
+        # Real cull: the rejected raw in the successful folder is gone.
+        assert not rejected_raw.exists()
+
+    def test_writes_exact_manifest_json_to_base_dir(self, tmp_path, monkeypatch):
+        folder_ok, folder_zerene_fail, folder_other_fail, _, _ = self._prep(
+            tmp_path, monkeypatch,
+            behaviors={"obs-a": None, "obs-b": ZereneError("boom"), "obs-c": None},
+        )
+
+        results = stack_all(tmp_path)
+
+        manifest_path = tmp_path / "stack_batch_manifest.json"
+        assert manifest_path.exists()
+        assert read_json(manifest_path) == results
+        assert read_json(manifest_path) == [
+            {"folder": str(folder_ok), "status": "ok", "error": None,
+             "asset": "work/ZS-OutputImage.tif"},
+            {"folder": str(folder_zerene_fail), "status": "failed", "error": "boom", "asset": None},
+            {"folder": str(folder_other_fail), "status": "ok", "error": None,
+             "asset": "work/ZS-OutputImage.tif"},
+        ]
+
+    def test_builds_exactly_one_shared_model_cache_for_the_whole_batch(self, tmp_path, monkeypatch):
+        _, _, _, fake_clean_and_stack, _ = self._prep(
+            tmp_path, monkeypatch,
+            behaviors={"obs-a": None, "obs-b": ZereneError("boom"), "obs-c": OSError("disk")},
+        )
+
+        stack_all(tmp_path)
+
+        assert len(RecordingModelCache.instances_built) == 1
+        shared_cache = RecordingModelCache.instances_built[0]
+        assert shared_cache.exited is True
+        # Every clean_and_stack() call -- including the two that then
+        # raised -- got the *same* cache object, not one each.
+        assert len(fake_clean_and_stack.calls) == 3
+        assert all(call["cache"] is shared_cache for call in fake_clean_and_stack.calls)
+
+    def test_passes_through_non_default_params_to_every_folder(self, tmp_path, monkeypatch):
+        folder_ok, folder_b, folder_c, fake_clean_and_stack, _ = self._prep(
+            tmp_path, monkeypatch,
+            behaviors={"obs-a": None, "obs-b": None, "obs-c": None},
+        )
+
+        stack_all(tmp_path, noise=0.3, exposure_ev=-1.0, method="pmax", timeout=99.0,
+                  min_free_gb=7.5, check_subjects=False)
+
+        expected_common = {"noise": 0.3, "exposure_ev": -1.0, "method": "pmax", "timeout": 99.0,
+                            "min_free_gb": 7.5, "check_subjects": False}
+        shared_cache = RecordingModelCache.instances_built[0]
+        assert [
+            {k: v for k, v in call.items() if k != "cache"} for call in fake_clean_and_stack.calls
+        ] == [
+            {"folder": folder_ok, **expected_common},
+            {"folder": folder_b, **expected_common},
+            {"folder": folder_c, **expected_common},
+        ]
+        assert all(call["cache"] is shared_cache for call in fake_clean_and_stack.calls)

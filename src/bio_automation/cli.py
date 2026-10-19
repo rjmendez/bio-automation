@@ -20,6 +20,7 @@ from .pipeline import (
     save_observation,
     set_asset_status,
     clean_and_stack,
+    stack_all,
     stack_focus,
     write_sidecars,
 )
@@ -72,6 +73,26 @@ def build_parser() -> argparse.ArgumentParser:
                                "SubjectMismatchError if any frame looks like a different "
                                "subject (see bio_automation.grouping); pass this flag only "
                                "for a deliberate override.")
+
+    p_stack_all = sub.add_parser("stack-all")
+    p_stack_all.add_argument("base_dir")
+    p_stack_all.add_argument("--method", default="pmax", choices=["pmax"])
+    p_stack_all.add_argument("--timeout", type=float, default=1800.0)
+    p_stack_all.add_argument("--noise", type=float, default=1.0,
+                              help="Fixed denoise strength 0..1 applied to every folder's stack")
+    p_stack_all.add_argument("--exposure-ev", type=float, default=0.0,
+                              help="Fixed EV pull-down applied after denoise to every folder's "
+                                   "stack (negative leaves headroom under clipping for specular "
+                                   "highlights)")
+    p_stack_all.add_argument("--min-free-gb", type=float, default=5.0,
+                              help="Abort before any work if free disk space at the "
+                                   "destination/source folder is below this many GB")
+    p_stack_all.add_argument("--skip-subject-check", action="store_true",
+                              help="Skip the DA-CLIP subject-consistency safety gate before "
+                                   "handing off to Zerene, for every folder. Runs by default "
+                                   "and raises SubjectMismatchError if any frame looks like a "
+                                   "different subject (see bio_automation.grouping); pass this "
+                                   "flag only for a deliberate override.")
 
     p_write_sidecars = sub.add_parser("write-sidecars")
     p_write_sidecars.add_argument("folder")
@@ -187,6 +208,20 @@ def cmd_stack(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stack_all(args: argparse.Namespace) -> int:
+    base_dir = Path(args.base_dir)
+    check_subjects = not args.skip_subject_check
+    results = stack_all(
+        base_dir, noise=args.noise, exposure_ev=args.exposure_ev, method=args.method,
+        timeout=args.timeout, min_free_gb=args.min_free_gb, check_subjects=check_subjects,
+    )
+    ok = sum(1 for row in results if row["status"] == "ok")
+    failed = len(results) - ok
+    print(base_dir / "stack_batch_manifest.json")
+    print(f"{ok} ok, {failed} failed")
+    return 0
+
+
 def cmd_write_sidecars(args: argparse.Namespace) -> int:
     for path in write_sidecars(Path(args.folder)):
         print(path)
@@ -246,6 +281,8 @@ def main() -> int:
         return cmd_fetch_inat(args)
     if args.command == "stack":
         return cmd_stack(args)
+    if args.command == "stack-all":
+        return cmd_stack_all(args)
     if args.command == "write-sidecars":
         return cmd_write_sidecars(args)
     if args.command == "render-review":

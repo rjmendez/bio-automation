@@ -50,6 +50,25 @@ def discover_source_files(source: Path) -> list[Path]:
     return sorted(files)
 
 
+def discover_observation_folders(base_dir: Path) -> list[Path]:
+    """Find every observation folder under *base_dir*.
+
+    An observation folder is, by this repo's layout convention (see
+    make_observation_path()/metadata_dir() in paths.py), any directory that
+    holds a metadata/assets.jsonl -- that file's parent's parent, found by
+    walking the whole tree rather than assuming a fixed nesting depth, since
+    make_observation_path() nests by base_dir/<year>/<obsdate>/obs-....
+    """
+    base_dir = Path(base_dir)
+    return sorted(
+        {
+            assets_file.parent.parent
+            for assets_file in base_dir.rglob("assets.jsonl")
+            if assets_file.parent.name == "metadata"
+        }
+    )
+
+
 def copy_into_raw(folder: Path, source: Path) -> list[Path]:
     raw_dir = source_raw_dir(folder)
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -277,6 +296,57 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     if denoised_dir.exists():
         shutil.rmtree(denoised_dir)
     return asset
+
+
+def stack_all(base_dir: Path, noise: float = 1.0, exposure_ev: float = 0.0,
+              method: str = "pmax", timeout: float = 1800.0,
+              min_free_gb: float = 5.0, check_subjects: bool = True) -> list[dict]:
+    """Run cull + clean_and_stack() over every observation folder under
+    *base_dir* (see discover_observation_folders()), sharing one ModelCache
+    across the whole batch so denoise models load once instead of once per
+    folder.
+
+    One bad folder (a Zerene failure, a subject-consistency mismatch, a
+    disk-space guard tripping, or anything else clean_and_stack() can raise)
+    does not abort the batch: the exception is caught per folder and
+    recorded, and the next folder still runs.
+
+    Returns a list of one dict per folder --
+    {folder, status: "ok"|"failed", error: str|None, asset: str|None} -- in
+    the same order discover_observation_folders() returned them. The same
+    list is also written as indented, human-readable JSON to
+    base_dir/"stack_batch_manifest.json" so a batch run leaves a durable,
+    inspectable record of which folders failed without the caller having to
+    track that itself.
+    """
+    base_dir = Path(base_dir)
+    folders = discover_observation_folders(base_dir)
+    results: list[dict] = []
+    with ModelCache() as cache:
+        for folder in folders:
+            try:
+                delete_rejected_raws(folder)
+                asset = clean_and_stack(
+                    folder, noise=noise, exposure_ev=exposure_ev, method=method,
+                    timeout=timeout, min_free_gb=min_free_gb,
+                    check_subjects=check_subjects, cache=cache,
+                )
+            except Exception as exc:
+                results.append({
+                    "folder": str(folder),
+                    "status": "failed",
+                    "error": str(exc),
+                    "asset": None,
+                })
+            else:
+                results.append({
+                    "folder": str(folder),
+                    "status": "ok",
+                    "error": None,
+                    "asset": asset.file,
+                })
+    write_json(base_dir / "stack_batch_manifest.json", results)
+    return results
 
 
 def build_and_save_keywords(folder: Path) -> dict:
