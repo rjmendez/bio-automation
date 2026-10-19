@@ -12,10 +12,12 @@ import tifffile
 from bio_automation import preclean
 from bio_automation.preclean import (
     apply_levels,
+    apply_levels_masked,
     compute_fixed_params,
     decode_raw_to_bgr16,
     denoise_stack_frames,
     ev_to_linear_gain,
+    subject_mask,
 )
 
 
@@ -267,3 +269,148 @@ class TestDenoiseStackFramesDiskGuard:
         assert decode_calls == [paths[0], paths[0]]
         assert [p.name for p in written] == ["f0.tif"]
         assert written[0].exists()
+
+
+# ---------------------------------------------------------------------------
+# subject_mask
+# ---------------------------------------------------------------------------
+
+class TestSubjectMask:
+    def test_applies_sigmoid_and_resizes_to_input_resolution(self, monkeypatch):
+        """Real finding (live, 2026-10-19): s_mask_l_flexible's raw output is
+        logits (-9.9..2.8 on a real frame), not an already-bounded [0,1]
+        mask -- this test pins the sigmoid step with an exact, hand-computed
+        value, not just 'result is in range'."""
+        logits = np.zeros((1, 1, 320, 320), dtype=np.float32)
+        logits[0, 0, 160, 160] = 2.0  # one known, non-zero logit to check sigmoid math on
+
+        fake_compiled = MagicMock(return_value={"netOutput": logits})
+        fake_cache = MagicMock()
+        fake_cache.load.return_value = fake_compiled
+
+        img = np.random.rand(3, 64, 48).astype(np.float32)  # non-square, H != W
+        result = subject_mask(img, fake_cache)
+
+        assert result.shape == (64, 48)
+        assert result.dtype == np.float32
+        # background logit=0.0 -> sigmoid(0.0)=0.5 everywhere except the one
+        # modified source pixel -- after two resizes (320->downsample source,
+        # then 320->64x48 upsample of the mask) the exact 2.0 peak is
+        # smoothed, but the flat background must land near 0.5. Tolerance
+        # reflects the real uint8 round-trip the mask is encoded through
+        # (0.5*255=127.5 truncates to 127, i.e. up to ~1/255 error) --
+        # confirmed by running this exact case: actual error was 0.00196.
+        assert abs(float(result[0, 0]) - 0.5) < 1.0 / 255
+
+    def test_loads_the_correct_model_file(self, monkeypatch):
+        fake_compiled = MagicMock(return_value={"netOutput": np.zeros((1, 1, 320, 320), dtype=np.float32)})
+        fake_cache = MagicMock()
+        fake_cache.load.return_value = fake_compiled
+
+        subject_mask(np.zeros((3, 32, 32), dtype=np.float32), fake_cache)
+
+        loaded_path = fake_cache.load.call_args[0][0]
+        assert loaded_path.name == "s_mask_l_flexible-v2-fp16-320x320-ov.tz2"
+
+
+# ---------------------------------------------------------------------------
+# apply_levels_masked
+# ---------------------------------------------------------------------------
+
+class TestApplyLevelsMasked:
+    def test_zero_boost_is_exact_identity_with_apply_levels_regardless_of_mask(self):
+        img = np.random.rand(3, 4, 4).astype(np.float32) * 0.5
+        mask = np.random.rand(4, 4).astype(np.float32)  # arbitrary, non-trivial mask
+
+        result = apply_levels_masked(img, mask, exposure_ev=-0.3, subject_boost_ev=0.0)
+        expected = apply_levels(img, -0.3)
+
+        assert np.array_equal(result, expected)
+
+    def test_full_mask_uses_boosted_gain_everywhere(self):
+        img = np.full((1, 2, 2), 0.1, dtype=np.float32)
+        mask = np.ones((2, 2), dtype=np.float32)
+
+        result = apply_levels_masked(img, mask, exposure_ev=0.0, subject_boost_ev=1.0)
+        # mask=1 everywhere -> pure subject gain: ev_to_linear_gain(0.0+1.0)=2.0
+        assert np.allclose(result, 0.2)
+
+    def test_empty_mask_uses_global_gain_everywhere(self):
+        img = np.full((1, 2, 2), 0.1, dtype=np.float32)
+        mask = np.zeros((2, 2), dtype=np.float32)
+
+        result = apply_levels_masked(img, mask, exposure_ev=-1.0, subject_boost_ev=2.0)
+        # mask=0 everywhere -> pure global gain: ev_to_linear_gain(-1.0)=0.5
+        assert np.allclose(result, 0.05)
+
+    def test_half_mask_blends_exactly(self):
+        img = np.full((1, 1, 1), 0.1, dtype=np.float32)
+        mask = np.full((1, 1), 0.5, dtype=np.float32)
+
+        result = apply_levels_masked(img, mask, exposure_ev=0.0, subject_boost_ev=1.0)
+        # global gain=1.0 -> 0.1; subject gain=2.0 -> 0.2; 0.5 blend -> 0.15
+        assert abs(float(result[0, 0, 0]) - 0.15) < 1e-6
+
+    def test_clips_to_one(self):
+        img = np.full((1, 1, 1), 0.9, dtype=np.float32)
+        mask = np.ones((1, 1), dtype=np.float32)
+
+        result = apply_levels_masked(img, mask, exposure_ev=0.0, subject_boost_ev=3.0)
+        assert float(result[0, 0, 0]) == 1.0
+
+
+# ---------------------------------------------------------------------------
+# denoise_stack_frames + subject_boost_ev wiring
+# ---------------------------------------------------------------------------
+
+class TestDenoiseStackFramesSubjectBoost:
+    def _setup(self, monkeypatch, n=3):
+        paths = [Path(f"f{i}.NEF") for i in range(n)]
+        decode_calls: list[Path] = []
+
+        def fake_decode(p):
+            decode_calls.append(p)
+            idx = paths.index(p)
+            return np.full((2, 2, 3), int((idx + 1) / 10 * 65535), dtype=np.uint16)
+
+        monkeypatch.setattr(preclean, "decode_raw_to_bgr16", fake_decode)
+        monkeypatch.setattr(preclean, "_estimate_sharpen_params",
+                             lambda chw, cache: (0.1, 0.6, 0.3, 0.0))
+        monkeypatch.setattr(preclean, "_sharpen_f32", lambda chw, cache, blur, noise: chw)
+        return paths, decode_calls
+
+    def test_zero_boost_never_calls_subject_mask(self, tmp_path, monkeypatch):
+        paths, _ = self._setup(monkeypatch)
+        spy = MagicMock(side_effect=AssertionError("subject_mask must not be called when boost=0.0"))
+        monkeypatch.setattr(preclean, "subject_mask", spy)
+
+        denoise_stack_frames(paths, tmp_path, subject_boost_ev=0.0, cache=MagicMock())
+        spy.assert_not_called()
+
+    def test_nonzero_boost_computes_mask_once_from_middle_frame_and_reuses_it(self, tmp_path, monkeypatch):
+        paths, decode_calls = self._setup(monkeypatch, n=5)
+        fixed_mask = np.full((2, 2), 0.7, dtype=np.float32)
+        mask_calls = []
+
+        def fake_subject_mask(chw, cache):
+            mask_calls.append(chw.copy())
+            return fixed_mask
+
+        masked_calls = []
+
+        def fake_apply_levels_masked(chw, mask, exposure_ev, subject_boost_ev):
+            masked_calls.append(mask)
+            return chw
+
+        monkeypatch.setattr(preclean, "subject_mask", fake_subject_mask)
+        monkeypatch.setattr(preclean, "apply_levels_masked", fake_apply_levels_masked)
+
+        denoise_stack_frames(paths, tmp_path, subject_boost_ev=0.5, cache=MagicMock())
+
+        assert len(mask_calls) == 1  # computed exactly once for the whole stack
+        assert len(masked_calls) == 5  # reused for every one of the 5 frames
+        assert all(m is fixed_mask for m in masked_calls)  # the SAME mask object every time
+        # representative frame = middle index (5//2=2) -> decoded for the mask
+        # in addition to compute_fixed_params' own representative-frame decode
+        # and the per-frame loop's own decode of paths[2]
+        assert decode_calls.count(paths[2]) == 3

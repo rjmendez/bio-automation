@@ -30,8 +30,10 @@ from bio_automation.preclean import (
     _sharpen_f32,
     _to_chw_rgb_f32,
     apply_levels,
+    apply_levels_masked,
     compute_fixed_params,
     decode_raw_to_bgr16,
+    subject_mask,
 )
 from bio_automation.topaz import ModelCache
 
@@ -137,3 +139,62 @@ class TestEndToEndLive:
         assert float(leveled.min()) >= 0.0
         # levels is a gain < 1.0 here (negative EV): leveled must be <= denoised everywhere
         assert bool(np.all(leveled <= denoised + 1e-6))
+
+
+class TestSubjectMaskLive:
+    """Real s_mask_l_flexible (Topaz Photo AI's own masked-sharpen model,
+    not Meta's SAM/samenc/samdec) against the real spider fixture.
+    Grounds the values measured live 2026-10-19 before this feature was
+    built: max confidence 0.943, mean 0.0123 (a small subject against a
+    mostly-empty wall)."""
+
+    def test_real_mask_confidently_isolates_a_small_subject(self, cache):
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _to_chw_rgb_f32(bgr16)
+
+        mask = subject_mask(chw, cache)
+
+        assert mask.shape == chw.shape[1:]
+        assert mask.dtype == np.float32
+        assert float(mask.min()) >= 0.0
+        assert float(mask.max()) <= 1.0
+        # a confident peak on the spider...
+        assert float(mask.max()) > 0.8
+        # ...against a mostly-empty wall, so the mean stays low
+        assert float(mask.mean()) < 0.05
+
+    def test_real_mask_is_reproducible(self, cache):
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _to_chw_rgb_f32(bgr16)
+
+        first = subject_mask(chw, cache)
+        second = subject_mask(chw, cache)
+        assert np.array_equal(first, second)
+
+    def test_real_masked_levels_lifts_subject_without_lifting_background(self, cache):
+        """End-to-end through the real public function on real data: a
+        positive subject_boost_ev must brighten the (small, dark) subject
+        region far more than the mean of the rest of the frame."""
+        bgr16 = decode_raw_to_bgr16(FIXTURE)
+        chw = _to_chw_rgb_f32(bgr16)
+        mask = subject_mask(chw, cache)
+
+        baseline = apply_levels(chw, exposure_ev=0.0)
+        boosted = apply_levels_masked(chw, mask, exposure_ev=0.0, subject_boost_ev=1.0)
+
+        subject_region = mask > 0.5
+        background_region = mask < 0.1
+
+        subject_gain = float(boosted[:, subject_region].mean() / (baseline[:, subject_region].mean() + 1e-6))
+        background_gain = float(
+            boosted[:, background_region].mean() / (baseline[:, background_region].mean() + 1e-6)
+        )
+
+        # Real measured value 2026-10-19: 1.695x (mask>0.5 includes partial-
+        # blend pixels near the 0.5 boundary, and some near-peak subject
+        # pixels clip at 1.0, both pulling the mean below the idealized
+        # 2.0x boost) -- well above the near-unchanged background, which is
+        # the actual property being proven, not a specific ideal ratio.
+        assert subject_gain > 1.5
+        assert background_gain < 1.1  # background stays close to unchanged
+        assert subject_gain > background_gain * 1.5  # the real differential effect

@@ -48,8 +48,11 @@ from pathlib import Path
 import numpy as np
 import rawpy
 import tifffile
+from PIL import Image
 
 from .topaz import MODELS_DIR, ModelCache, _estimate_sharpen_params, _run_tiled
+
+SUBJECT_MASK_MODEL = "s_mask_l_flexible-v2-fp16-320x320-ov.tz2"
 
 
 def ev_to_linear_gain(exposure_ev: float) -> float:
@@ -107,6 +110,63 @@ def apply_levels(img_chw_f32: np.ndarray, exposure_ev: float) -> np.ndarray:
     return np.clip(img_chw_f32 * ev_to_linear_gain(exposure_ev), 0.0, 1.0)
 
 
+def subject_mask(img_chw_f32: np.ndarray, cache: ModelCache) -> np.ndarray:
+    """Return a float32 [0,1] saliency mask, same H,W as *img_chw_f32*,
+    from Topaz Photo AI's s_mask_l_flexible model (already installed
+    locally for Photo AI's own masked-sharpen feature -- see
+    sharpen-subject-masking-new.json in the same models directory -- not
+    Meta's SAM; this codebase explicitly does not use the samenc/samdec
+    pair also present there).
+
+    The model takes a single 320x320 RGB tile (whole-frame context, not
+    tiled like _sharpen_f32) and returns raw logits, not a [0,1] mask --
+    confirmed live against a real frame: output range was approximately
+    -9.9 to +2.8, not already bounded. A sigmoid is applied here before
+    the mask is usable as a blend weight. The 320x320 output is resized
+    back up to the input's full resolution with PIL's bilinear filter,
+    which also supplies the mask's edge feathering for free -- no separate
+    blur/feather step is applied.
+    """
+    _, h, w = img_chw_f32.shape
+    hwc_u8 = (np.transpose(img_chw_f32, (1, 2, 0)) * 255.0).clip(0, 255).astype(np.uint8)
+    small = Image.fromarray(hwc_u8).resize((320, 320), Image.BILINEAR)
+    in320 = np.transpose(np.array(small, dtype=np.float32) / 255.0, (2, 0, 1))[np.newaxis]
+
+    compiled = cache.load(MODELS_DIR / SUBJECT_MASK_MODEL)
+    out = compiled({"netInput": in320})
+    logits = next(iter(out.values()))[0, 0]
+    sig = 1.0 / (1.0 + np.exp(-logits))
+
+    mask_img = Image.fromarray((sig * 255.0).clip(0, 255).astype(np.uint8), mode="L")
+    mask_full = mask_img.resize((w, h), Image.BILINEAR)
+    return np.array(mask_full, dtype=np.float32) / 255.0
+
+
+def apply_levels_masked(img_chw_f32: np.ndarray, mask_hw: np.ndarray,
+                         exposure_ev: float, subject_boost_ev: float) -> np.ndarray:
+    """Like apply_levels(), but blends two exposures by *mask_hw*: the
+    normal (possibly highlight-protecting, negative) *exposure_ev* gain
+    outside the subject, and exposure_ev + subject_boost_ev inside it --
+    so a dark subject can be lifted without also lifting (and clipping)
+    bright background/highlights the global exposure_ev exists to protect.
+
+    subject_boost_ev=0.0 short-circuits to a bit-exact call to
+    apply_levels() -- not just a blend that happens to be mathematically
+    equal -- since float32's x*(1-m) + x*m is not bit-identical to x for
+    an arbitrary mask (non-associative rounding), and the point of this
+    being a documented identity is that the mask genuinely has zero effect
+    when there's no boost to apply, not an effect smaller than 1 ULP.
+    mask_hw must already be the image's full H,W (see subject_mask()) and
+    is applied identically per RGB channel.
+    """
+    if subject_boost_ev == 0.0:
+        return apply_levels(img_chw_f32, exposure_ev)
+    global_result = apply_levels(img_chw_f32, exposure_ev)
+    subject_result = apply_levels(img_chw_f32, exposure_ev + subject_boost_ev)
+    mask = mask_hw[np.newaxis, :, :]  # broadcast over the 3 channels
+    return np.clip(global_result * (1.0 - mask) + subject_result * mask, 0.0, 1.0)
+
+
 def compute_fixed_params(raw_paths: list[Path], cache: ModelCache,
                           noise: float = 1.0) -> tuple[float, float]:
     """Estimate (blur, noise) once from the middle frame of *raw_paths* and
@@ -130,14 +190,26 @@ def compute_fixed_params(raw_paths: list[Path], cache: ModelCache,
 
 def denoise_stack_frames(raw_paths: list[Path], dest_dir: Path,
                           noise: float = 1.0, exposure_ev: float = 0.0,
+                          subject_boost_ev: float = 0.0,
                           cache: ModelCache | None = None,
                           min_free_gb: float = 5.0) -> list[Path]:
     """Run the fixed pre-stack pipeline -- raw denoise, then levels -- over
-    every raw in *raw_paths* with one shared (blur, noise, exposure_ev)
-    triple, and write each result as a 16-bit RGB TIFF into *dest_dir*,
-    named after the raw's stem. Returns the written paths in the same
-    order as *raw_paths*. "Other processing" (sharpen/upscale) is not done
-    here -- see module docstring.
+    every raw in *raw_paths* with one shared (blur, noise, exposure_ev,
+    subject mask) set, and write each result as a 16-bit RGB TIFF into
+    *dest_dir*, named after the raw's stem. Returns the written paths in
+    the same order as *raw_paths*. "Other processing" (sharpen/upscale) is
+    not done here -- see module docstring.
+
+    *subject_boost_ev* (default 0.0, no-op) adds an extra EV lift inside
+    the subject only, on top of *exposure_ev*, via subject_mask()/
+    apply_levels_masked() -- see their docstrings. Like blur/noise/
+    exposure_ev, the mask is computed ONCE, from the same representative
+    (middle-index) frame compute_fixed_params() uses, and reused for every
+    frame: a mask that shifts frame to frame would reintroduce exactly the
+    inconsistency this module exists to keep out of Zerene's cross-frame
+    contrast comparison. Skipped entirely (no mask model call) when
+    subject_boost_ev is 0.0, since it would be a no-op per
+    apply_levels_masked()'s identity property anyway.
 
     Each written TIFF is one full-resolution 16-bit frame (hundreds of MB
     for a modern raw), so disk space is checked against *dest_dir* before
@@ -161,11 +233,22 @@ def denoise_stack_frames(raw_paths: list[Path], dest_dir: Path,
 
     try:
         blur, fixed_noise = compute_fixed_params(raw_paths, cache, noise=noise)
+
+        mask_hw = None
+        if subject_boost_ev != 0.0:
+            representative = Path(raw_paths[len(raw_paths) // 2])
+            rep_chw = _to_chw_rgb_f32(decode_raw_to_bgr16(representative))
+            mask_hw = subject_mask(rep_chw, cache)
+
         written: list[Path] = []
         for raw_path in raw_paths:
             chw = _to_chw_rgb_f32(decode_raw_to_bgr16(raw_path))
             denoised_chw = _sharpen_f32(chw, cache, blur=blur, noise=fixed_noise)  # 1. raw denoise
-            leveled_chw = apply_levels(denoised_chw, exposure_ev)                  # 2. levels
+            if mask_hw is not None:
+                leveled_chw = apply_levels_masked(denoised_chw, mask_hw, exposure_ev,
+                                                   subject_boost_ev)                # 2. levels (masked)
+            else:
+                leveled_chw = apply_levels(denoised_chw, exposure_ev)              # 2. levels
             result_hwc = np.transpose(leveled_chw, (1, 2, 0))
             result_u16 = (result_hwc * 65535.0).round().clip(0, 65535).astype(np.uint16)
             out_path = dest_dir / f"{raw_path.stem}.tif"
