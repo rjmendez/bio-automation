@@ -79,6 +79,34 @@ def decode_raw_to_bgr16(raw_path: Path) -> np.ndarray:
     return rgb16[:, :, ::-1]
 
 
+def decode_raw_frames_to_tiff(raw_paths: list[Path], dest_dir: Path) -> list[Path]:
+    """Demosaic each of *raw_paths* via decode_raw_to_bgr16 (no denoise, no
+    levels -- just the raw decode) into 16-bit RGB TIFFs in *dest_dir*, named
+    after each raw's stem. Returns the written paths in the same order as
+    *raw_paths*.
+
+    This is the decode-only sibling of denoise_stack_frames(): a stacking
+    engine (focus-stack, Zerene) is a general-purpose image tool, not a raw
+    decoder -- handed a .NEF directly, focus-stack silently reads whatever
+    its own image-loading library makes of the raw container (confirmed
+    2026-10-19: a real backfilled stack fed raw NEFs straight through
+    produced a 158x118 degenerate output, vs. the sensor's real 8256x5504,
+    with no error) instead of failing loudly. pipeline.stack_focus() calls
+    this first whenever it is about to hand the engine a raw source
+    directory, so the engine only ever sees real decoded pixel data.
+    """
+    raw_paths = [Path(p) for p in raw_paths]
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for raw_path in raw_paths:
+        rgb16 = decode_raw_to_bgr16(raw_path)[:, :, ::-1]
+        out_path = dest_dir / f"{raw_path.stem}.tif"
+        tifffile.imwrite(str(out_path), rgb16)
+        written.append(out_path)
+    return written
+
+
 def _to_chw_rgb_f32(img_bgr_hwc_u16: np.ndarray) -> np.ndarray:
     img_rgb = img_bgr_hwc_u16[:, :, ::-1].astype(np.float32) / 65535.0
     return np.transpose(img_rgb, (2, 0, 1))

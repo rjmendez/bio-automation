@@ -67,6 +67,27 @@ class RecordingFocusStackRun:
         return out
 
 
+class RecordingDecode:
+    """Stands in for preclean.decode_raw_frames_to_tiff: records calls,
+    writes fake TIFFs (so the engine fakes that then read *their* folder's
+    contents, e.g. RecordingFocusStackRun via _discover_input_images in the
+    real module, see real output files in dest_dir)."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def __call__(self, raw_paths, dest_dir):
+        self.calls.append({"raw_paths": list(raw_paths), "dest_dir": Path(dest_dir)})
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        written = []
+        for p in raw_paths:
+            out = dest_dir / f"{Path(p).stem}.tif"
+            out.write_bytes(b"decoded")
+            written.append(out)
+        return written
+
+
 class RecordingSubjectCheck:
     """Stands in for grouping.check_subject_consistency: records calls and
     returns a configured (default: empty) outlier list."""
@@ -91,54 +112,110 @@ class TestStackFocus:
         leftover_script.write_text("<leftover/>", encoding="utf-8")
         fake_zerene = RecordingBatchRun()
         fake_focus_stack = RecordingFocusStackRun()
+        fake_decode = RecordingDecode()
         monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", fake_zerene)
         monkeypatch.setattr("bio_automation.pipeline.focus_stack_run_batch", fake_focus_stack)
+        monkeypatch.setattr("bio_automation.pipeline.decode_raw_frames_to_tiff", fake_decode)
         # The subject-consistency gate is a separate concern (see
         # TestSubjectConsistencyGate below); stub it out here so these
         # stacking-engine-wiring tests are unaffected by the gate being on
         # by default.
         monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", RecordingSubjectCheck())
         monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: MagicMock(name="daclip-session"))
-        return fake_zerene, fake_focus_stack, leftover_script
+        return fake_zerene, fake_focus_stack, leftover_script, fake_decode
 
-    def test_calls_focus_stack_with_raw_dir_and_timeout_by_default(self, tmp_path, monkeypatch):
+    def test_calls_focus_stack_with_decoded_dir_and_timeout_by_default(self, tmp_path, monkeypatch):
         """focus-stack is the default engine (2026-10-19) -- see
-        pipeline.STACK_ENGINES."""
-        fake_zerene, fake_focus_stack, _ = self._prep(tmp_path, monkeypatch)
+        pipeline.STACK_ENGINES. The default raw source is decoded to TIFF
+        first (2026-10-19 fix -- see decode_raw_frames_to_tiff's docstring
+        for why the engine never gets raw NEFs directly), so the engine sees
+        work/stack_decoded/, not source/raw/ itself."""
+        fake_zerene, fake_focus_stack, _, fake_decode = self._prep(tmp_path, monkeypatch)
         stack_focus(tmp_path, timeout=42.0)
+        decoded_dir = work_dir(tmp_path) / "stack_decoded"
         assert fake_focus_stack.calls == [
-            {"folder": source_raw_dir(tmp_path), "timeout": 42.0, "min_free_gb": 5.0}
+            {"folder": decoded_dir, "timeout": 42.0, "min_free_gb": 5.0}
         ]
+        # _prep only registers DSC_0001.NEF in assets.jsonl, never writes it
+        # to disk (the stacking engines are fully mocked here and never read
+        # folder contents) -- so raw_dir's real directory listing is empty
+        # apart from the leftover ZereneBatch.xml, which is filtered out.
+        assert fake_decode.calls == [{"raw_paths": [], "dest_dir": decoded_dir}]
         assert fake_zerene.calls == []
 
-    def test_calls_zerene_with_raw_dir_and_pmax_task_code_when_method_is_zerene(self, tmp_path, monkeypatch):
+    def test_calls_zerene_with_decoded_dir_and_pmax_task_code_when_method_is_zerene(self, tmp_path, monkeypatch):
         """Positive twin to the default-engine test above: the explicit
         alternate engine must still be reachable, and its *internal* task
         code stays fixed at "pmax" (the only one zerene.py documents) --
         pipeline's own 'method' is now an engine selector, not that task
-        code, so it must not leak "zerene" through as a bogus task code."""
-        fake_zerene, fake_focus_stack, _ = self._prep(tmp_path, monkeypatch)
+        code, so it must not leak "zerene" through as a bogus task code.
+        Also gets the decoded dir, same as the default engine."""
+        fake_zerene, fake_focus_stack, _, fake_decode = self._prep(tmp_path, monkeypatch)
         stack_focus(tmp_path, method="zerene", timeout=42.0)
+        decoded_dir = work_dir(tmp_path) / "stack_decoded"
         assert fake_zerene.calls == [
-            {"folder": source_raw_dir(tmp_path), "method": "pmax", "timeout": 42.0,
+            {"folder": decoded_dir, "method": "pmax", "timeout": 42.0,
              "min_free_gb": 5.0}
         ]
+        assert fake_decode.calls == [{"raw_paths": [], "dest_dir": decoded_dir}]
         assert fake_focus_stack.calls == []
 
     def test_unknown_method_raises_before_touching_either_engine(self, tmp_path, monkeypatch):
-        fake_zerene, fake_focus_stack, _ = self._prep(tmp_path, monkeypatch)
+        fake_zerene, fake_focus_stack, _, fake_decode = self._prep(tmp_path, monkeypatch)
         with pytest.raises(ValueError, match=r"Unknown stacking method 'dmap'"):
             stack_focus(tmp_path, method="dmap")
         assert fake_zerene.calls == []
         assert fake_focus_stack.calls == []
+        assert fake_decode.calls == []
 
     def test_passes_through_non_default_min_free_gb(self, tmp_path, monkeypatch):
-        fake_zerene, fake_focus_stack, _ = self._prep(tmp_path, monkeypatch)
+        fake_zerene, fake_focus_stack, _, fake_decode = self._prep(tmp_path, monkeypatch)
         stack_focus(tmp_path, min_free_gb=12.5)
+        decoded_dir = work_dir(tmp_path) / "stack_decoded"
         assert fake_focus_stack.calls == [
-            {"folder": source_raw_dir(tmp_path), "timeout": 1800.0, "min_free_gb": 12.5}
+            {"folder": decoded_dir, "timeout": 1800.0, "min_free_gb": 12.5}
         ]
         assert fake_zerene.calls == []
+
+    def test_decoded_dir_is_removed_after_a_successful_stack(self, tmp_path, monkeypatch):
+        """The disposable work/stack_decoded/ intermediate must not survive a
+        successful run -- same cleanup contract clean_and_stack() already
+        has for work/denoised/ (see TestCleanAndStackCleanup)."""
+        self._prep(tmp_path, monkeypatch)
+        stack_focus(tmp_path)
+        assert not (work_dir(tmp_path) / "stack_decoded").exists()
+
+    def test_decoded_dir_is_removed_when_the_engine_fails(self, tmp_path, monkeypatch):
+        """Negative twin to the cleanup test above: a failing engine must
+        not leave work/stack_decoded/ behind, and the original exception
+        must propagate unchanged."""
+        self._prep(tmp_path, monkeypatch)
+
+        def failing_run(folder, timeout=1800.0, min_free_gb=5.0):
+            raise FocusStackError("focus-stack exited 1 on folder: disk full")
+
+        monkeypatch.setattr("bio_automation.pipeline.focus_stack_run_batch", failing_run)
+
+        with pytest.raises(FocusStackError, match=r"^focus-stack exited 1 on folder: disk full$"):
+            stack_focus(tmp_path)
+
+        assert not (work_dir(tmp_path) / "stack_decoded").exists()
+
+    def test_explicit_source_dir_skips_the_decode_step(self, tmp_path, monkeypatch):
+        """Positive twin proving the decode step is specific to the default
+        raw source, not unconditional: an explicit source_dir (clean_and_stack's
+        own contract) is trusted as already-decoded, same as before this fix."""
+        _, fake_focus_stack, _, fake_decode = self._prep(tmp_path, monkeypatch)
+        already_decoded = work_dir(tmp_path) / "denoised"
+        already_decoded.mkdir(parents=True)
+        (already_decoded / "DSC_0001.tif").write_bytes(b"denoised")
+
+        stack_focus(tmp_path, source_dir=already_decoded)
+
+        assert fake_decode.calls == []
+        assert fake_focus_stack.calls == [
+            {"folder": already_decoded, "timeout": 1800.0, "min_free_gb": 5.0}
+        ]
 
     def test_moves_output_into_work_dir_not_raw_dir(self, tmp_path, monkeypatch):
         self._prep(tmp_path, monkeypatch)
@@ -147,7 +224,7 @@ class TestStackFocus:
         assert not (source_raw_dir(tmp_path) / "FS-OutputImage.tiff").exists()
 
     def test_removes_leftover_batch_script_from_raw_dir(self, tmp_path, monkeypatch):
-        _, _, leftover_script = self._prep(tmp_path, monkeypatch)
+        _, _, leftover_script, _ = self._prep(tmp_path, monkeypatch)
         stack_focus(tmp_path)
         assert not leftover_script.exists()
 
@@ -295,19 +372,21 @@ class TestSubjectConsistencyGate:
         ])
         fake_zerene = RecordingBatchRun()
         fake_focus_stack = RecordingFocusStackRun()
+        fake_decode = RecordingDecode()
         fake_check = RecordingSubjectCheck(outliers=outliers)
         fake_session = MagicMock(name="daclip-session")
         monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", fake_zerene)
         monkeypatch.setattr("bio_automation.pipeline.focus_stack_run_batch", fake_focus_stack)
+        monkeypatch.setattr("bio_automation.pipeline.decode_raw_frames_to_tiff", fake_decode)
         monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", fake_check)
         monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: fake_session)
-        return raw_a, raw_b, fake_zerene, fake_focus_stack, fake_check, fake_session
+        return raw_a, raw_b, fake_zerene, fake_focus_stack, fake_check, fake_session, fake_decode
 
     def test_proceeds_to_the_stacking_engine_when_no_outliers_found(self, tmp_path, monkeypatch):
         """Positive twin to test_raises_before_touching_either_engine_when_outliers_found
         below: the empty-outliers case must let the real work (the default
         focus-stack engine) run."""
-        raw_a, raw_b, fake_zerene, fake_focus_stack, fake_check, fake_session = self._prep(
+        raw_a, raw_b, fake_zerene, fake_focus_stack, fake_check, fake_session, fake_decode = self._prep(
             tmp_path, monkeypatch, outliers=[]
         )
 
@@ -317,11 +396,12 @@ class TestSubjectConsistencyGate:
         assert sorted(fake_check.calls[0]["raw_paths"]) == sorted([raw_a, raw_b])
         assert fake_check.calls[0]["session"] is fake_session
         assert len(fake_focus_stack.calls) == 1
+        assert len(fake_decode.calls) == 1
         assert fake_zerene.calls == []
 
     def test_raises_before_touching_either_engine_when_outliers_found(self, tmp_path, monkeypatch):
         outliers = [(Path("source/raw/DSC_0001.NEF"), 0.2)]
-        _, _, fake_zerene, fake_focus_stack, fake_check, _ = self._prep(
+        _, _, fake_zerene, fake_focus_stack, fake_check, _, fake_decode = self._prep(
             tmp_path, monkeypatch, outliers=outliers
         )
 
@@ -330,11 +410,12 @@ class TestSubjectConsistencyGate:
 
         assert fake_zerene.calls == []
         assert fake_focus_stack.calls == []
+        assert fake_decode.calls == []
 
     def test_check_subjects_false_skips_gate_entirely(self, tmp_path, monkeypatch):
         """Negative twin to the two tests above: even outliers that would
         normally raise must never be consulted when check_subjects=False."""
-        _, _, fake_zerene, fake_focus_stack, fake_check, _ = self._prep(
+        _, _, fake_zerene, fake_focus_stack, fake_check, _, fake_decode = self._prep(
             tmp_path, monkeypatch, outliers=[(Path("whatever.NEF"), 0.0)]
         )
 
@@ -342,13 +423,16 @@ class TestSubjectConsistencyGate:
 
         assert fake_check.calls == []
         assert len(fake_focus_stack.calls) == 1
+        assert len(fake_decode.calls) == 1
         assert fake_zerene.calls == []
 
     def test_missing_model_raises_clear_error_before_either_engine(self, tmp_path, monkeypatch):
         """Design decision: a missing DA-CLIP model fails loudly (wrapped
         FileNotFoundError naming the check) rather than silently skipping
         the safety gate and proceeding to a stacking engine anyway."""
-        _, _, fake_zerene, fake_focus_stack, fake_check, _ = self._prep(tmp_path, monkeypatch, outliers=[])
+        _, _, fake_zerene, fake_focus_stack, fake_check, _, fake_decode = self._prep(
+            tmp_path, monkeypatch, outliers=[]
+        )
         model_path = r"C:\TopazModels\daclip-v2-fp32-224x224-1x-ox\daclip-v2-fp32-224x224-1x.onnx"
 
         def _raise_missing():
@@ -362,6 +446,7 @@ class TestSubjectConsistencyGate:
         assert fake_zerene.calls == []
         assert fake_focus_stack.calls == []
         assert fake_check.calls == []
+        assert fake_decode.calls == []
 
     def test_clean_and_stack_forwards_check_subjects_true_and_raises(self, tmp_path, monkeypatch):
         """clean_and_stack() must thread its own check_subjects through to

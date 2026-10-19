@@ -12,7 +12,7 @@ from .grouping import DEFAULT_THRESHOLD, SubjectMismatchError, check_subject_con
 from .io import read_json, read_jsonl, write_json, write_jsonl
 from .models import Asset, Observation
 from .paths import export_dir, metadata_dir, review_dir, source_raw_dir, work_dir
-from .preclean import denoise_stack_frames
+from .preclean import decode_raw_frames_to_tiff, denoise_stack_frames
 from .render import export_inat_jpeg, export_stock_jpeg, render_review_jpeg
 from .stock import build_keywords
 from .topaz import ModelCache
@@ -280,31 +280,56 @@ def stack_focus(folder: Path, method: str = "focus-stack", timeout: float = 1800
     defaults on and fails loud rather than open. Pass False only to
     explicitly bypass it for a deliberate override; there is no separate
     flag to silently skip just the "model missing" case.
+
+    With the default *source_dir* (None, i.e. source/raw/ itself), the raw
+    frames are decoded to 16-bit TIFFs first (preclean.decode_raw_frames_to_tiff,
+    into a disposable work/stack_decoded/) before either engine ever sees
+    them -- neither focus-stack nor Zerene is a raw decoder, and handing one
+    a .NEF directly was confirmed (2026-10-19) to silently produce a tiny,
+    wrong output instead of erroring. When *source_dir* is passed explicitly
+    (clean_and_stack()'s denoised intermediate), it is assumed already
+    decoded and is used as-is, same as before.
     """
     folder = Path(folder)
+    using_raw_source = source_dir is None
     raw_dir = Path(source_dir) if source_dir is not None else source_raw_dir(folder)
 
     if method not in STACK_ENGINES:
         raise ValueError(f"Unknown stacking method {method!r}; choose from {STACK_ENGINES}")
 
+    # Excludes a leftover ZereneBatch.xml from a prior crashed Zerene run
+    # (see the cleanup below) -- it is that engine's own bookkeeping file,
+    # never a frame, so it must not be fed to the DA-CLIP embedder or the
+    # raw decoder.
+    raw_paths = sorted(
+        p for p in raw_dir.iterdir() if p.is_file() and p.name != "ZereneBatch.xml"
+    )
     if check_subjects:
-        # Excludes a leftover ZereneBatch.xml from a prior crashed Zerene run
-        # (see the cleanup below) -- it is that engine's own bookkeeping
-        # file, never a frame, so it must not be fed to the DA-CLIP embedder.
-        raw_paths = sorted(
-            p for p in raw_dir.iterdir() if p.is_file() and p.name != "ZereneBatch.xml"
-        )
         _run_subject_consistency_gate(raw_paths)
 
-    if method == "focus-stack":
-        output_path = focus_stack_run_batch(raw_dir, timeout=timeout, min_free_gb=min_free_gb)
-    else:
-        output_path = zerene_run_batch(raw_dir, method="pmax", timeout=timeout, min_free_gb=min_free_gb)
+    decoded_dir = work_dir(folder) / "stack_decoded" if using_raw_source else None
+    engine_dir = raw_dir
+    if decoded_dir is not None:
+        decode_raw_frames_to_tiff(raw_paths, decoded_dir)
+        engine_dir = decoded_dir
+
+    try:
+        if method == "focus-stack":
+            output_path = focus_stack_run_batch(engine_dir, timeout=timeout, min_free_gb=min_free_gb)
+        else:
+            output_path = zerene_run_batch(engine_dir, method="pmax", timeout=timeout, min_free_gb=min_free_gb)
+    except Exception:
+        if decoded_dir is not None and decoded_dir.exists():
+            shutil.rmtree(decoded_dir)
+        raise
 
     dest_dir = work_dir(folder)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / output_path.name
     output_path.replace(dest_path)
+
+    if decoded_dir is not None and decoded_dir.exists():
+        shutil.rmtree(decoded_dir)
 
     batch_script = raw_dir / "ZereneBatch.xml"
     if batch_script.exists():
