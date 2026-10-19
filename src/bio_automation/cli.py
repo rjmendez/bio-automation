@@ -66,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_stack.add_argument("--min-free-gb", type=float, default=5.0,
                           help="Abort before any work if free disk space at the "
                                "destination/source folder is below this many GB")
+    p_stack.add_argument("--skip-subject-check", action="store_true",
+                          help="Skip the DA-CLIP subject-consistency safety gate before "
+                               "handing off to Zerene. Runs by default and raises "
+                               "SubjectMismatchError if any frame looks like a different "
+                               "subject (see bio_automation.grouping); pass this flag only "
+                               "for a deliberate override.")
 
     p_write_sidecars = sub.add_parser("write-sidecars")
     p_write_sidecars.add_argument("folder")
@@ -160,18 +166,22 @@ def cmd_fetch_inat(args: argparse.Namespace) -> int:
 
 
 def cmd_stack(args: argparse.Namespace) -> int:
+    from .grouping import SubjectMismatchError
     from .zerene import ZereneError
 
+    check_subjects = not args.skip_subject_check
     try:
         if args.denoise:
             asset = clean_and_stack(Path(args.folder), noise=args.noise,
                                      exposure_ev=args.exposure_ev,
                                      method=args.method, timeout=args.timeout,
-                                     min_free_gb=args.min_free_gb)
+                                     min_free_gb=args.min_free_gb,
+                                     check_subjects=check_subjects)
         else:
             asset = stack_focus(Path(args.folder), method=args.method, timeout=args.timeout,
-                                 min_free_gb=args.min_free_gb)
-    except ZereneError as exc:
+                                 min_free_gb=args.min_free_gb,
+                                 check_subjects=check_subjects)
+    except (ZereneError, SubjectMismatchError) as exc:
         raise SystemExit(str(exc))
     print(Path(args.folder) / asset.file)
     return 0

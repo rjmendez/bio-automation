@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
+from bio_automation.grouping import SubjectMismatchError
 from bio_automation.models import Asset
 from bio_automation.pipeline import clean_and_stack, ensure_layout, save_assets, scan_assets, stack_focus
 from bio_automation.paths import source_raw_dir, work_dir
@@ -32,6 +34,19 @@ class RecordingBatchRun:
         return out
 
 
+class RecordingSubjectCheck:
+    """Stands in for grouping.check_subject_consistency: records calls and
+    returns a configured (default: empty) outlier list."""
+
+    def __init__(self, outliers: list[tuple[Path, float]] | None = None):
+        self.calls: list[dict] = []
+        self.outliers = outliers if outliers is not None else []
+
+    def __call__(self, raw_paths, session, threshold=0.75):
+        self.calls.append({"raw_paths": list(raw_paths), "session": session, "threshold": threshold})
+        return self.outliers
+
+
 class TestStackFocus:
     def _prep(self, tmp_path, monkeypatch):
         ensure_layout(tmp_path)
@@ -43,6 +58,11 @@ class TestStackFocus:
         leftover_script.write_text("<leftover/>", encoding="utf-8")
         fake_run = RecordingBatchRun()
         monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", fake_run)
+        # The subject-consistency gate is a separate concern (see
+        # TestSubjectConsistencyGate below); stub it out here so these
+        # Zerene-wiring tests are unaffected by the gate being on by default.
+        monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", RecordingSubjectCheck())
+        monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: MagicMock(name="daclip-session"))
         return fake_run, leftover_script
 
     def test_calls_zerene_with_raw_dir_method_and_timeout(self, tmp_path, monkeypatch):
@@ -123,6 +143,10 @@ class TestCleanAndStack:
         fake_run = RecordingBatchRun()
         monkeypatch.setattr("bio_automation.pipeline.denoise_stack_frames", fake_denoise)
         monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", fake_run)
+        # See TestStackFocus._prep: the subject-consistency gate is a separate
+        # concern (TestSubjectConsistencyGate below), stubbed out here too.
+        monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", RecordingSubjectCheck())
+        monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: MagicMock(name="daclip-session"))
         return raw_a, raw_b, fake_denoise, fake_run
 
     def test_denoises_all_raw_dir_files_into_work_denoised_with_exact_params(self, tmp_path, monkeypatch):
@@ -161,3 +185,135 @@ class TestCleanAndStack:
         assert asset == Asset(file="work/ZS-OutputImage.tif", role="stack_output",
                                status="ready", selected=True)
         assert (work_dir(tmp_path) / "ZS-OutputImage.tif").exists()
+
+
+class TestSubjectConsistencyGate:
+    """Covers the hard safety gate stack_focus()/clean_and_stack() run before
+    handing off to Zerene (see bio_automation.grouping.check_subject_consistency).
+    check_subject_consistency and load_session are both monkeypatched to
+    controlled stubs -- never a real ONNX session or real images -- so these
+    tests isolate the *wiring* (did the gate run, in the right order, with
+    the right inputs, and did it actually block Zerene) from the gate's own
+    embedding logic, which tests/test_grouping.py covers."""
+
+    def _prep(self, tmp_path, monkeypatch, outliers=None):
+        ensure_layout(tmp_path)
+        raw_dir = source_raw_dir(tmp_path)
+        raw_a = raw_dir / "DSC_0001.NEF"
+        raw_b = raw_dir / "DSC_0002.NEF"
+        raw_a.write_bytes(b"a")
+        raw_b.write_bytes(b"b")
+        save_assets(tmp_path, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+            Asset(file="source/raw/DSC_0002.NEF", role="original", status="kept", selected=True),
+        ])
+        fake_run = RecordingBatchRun()
+        fake_check = RecordingSubjectCheck(outliers=outliers)
+        fake_session = MagicMock(name="daclip-session")
+        monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", fake_run)
+        monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", fake_check)
+        monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: fake_session)
+        return raw_a, raw_b, fake_run, fake_check, fake_session
+
+    def test_proceeds_to_zerene_when_no_outliers_found(self, tmp_path, monkeypatch):
+        """Positive twin to test_raises_before_touching_zerene_when_outliers_found
+        below: the empty-outliers case must let the real work (Zerene) run."""
+        raw_a, raw_b, fake_run, fake_check, fake_session = self._prep(
+            tmp_path, monkeypatch, outliers=[]
+        )
+
+        stack_focus(tmp_path)
+
+        assert len(fake_check.calls) == 1
+        assert sorted(fake_check.calls[0]["raw_paths"]) == sorted([raw_a, raw_b])
+        assert fake_check.calls[0]["session"] is fake_session
+        assert len(fake_run.calls) == 1
+
+    def test_raises_before_touching_zerene_when_outliers_found(self, tmp_path, monkeypatch):
+        outliers = [(Path("source/raw/DSC_0001.NEF"), 0.2)]
+        _, _, fake_run, fake_check, _ = self._prep(tmp_path, monkeypatch, outliers=outliers)
+
+        with pytest.raises(SubjectMismatchError, match=r"1 frame\(s\) fall below"):
+            stack_focus(tmp_path)
+
+        assert fake_run.calls == []
+
+    def test_check_subjects_false_skips_gate_entirely(self, tmp_path, monkeypatch):
+        """Negative twin to the two tests above: even outliers that would
+        normally raise must never be consulted when check_subjects=False."""
+        _, _, fake_run, fake_check, _ = self._prep(
+            tmp_path, monkeypatch, outliers=[(Path("whatever.NEF"), 0.0)]
+        )
+
+        stack_focus(tmp_path, check_subjects=False)
+
+        assert fake_check.calls == []
+        assert len(fake_run.calls) == 1
+
+    def test_missing_model_raises_clear_error_before_zerene(self, tmp_path, monkeypatch):
+        """Design decision: a missing DA-CLIP model fails loudly (wrapped
+        FileNotFoundError naming the check) rather than silently skipping
+        the safety gate and proceeding to Zerene anyway."""
+        _, _, fake_run, fake_check, _ = self._prep(tmp_path, monkeypatch, outliers=[])
+        model_path = r"C:\TopazModels\daclip-v2-fp32-224x224-1x-ox\daclip-v2-fp32-224x224-1x.onnx"
+
+        def _raise_missing():
+            raise FileNotFoundError(f"DA-CLIP model not found: {model_path}")
+
+        monkeypatch.setattr("bio_automation.pipeline.load_session", _raise_missing)
+
+        with pytest.raises(FileNotFoundError, match="Subject-consistency check unavailable"):
+            stack_focus(tmp_path)
+
+        assert fake_run.calls == []
+        assert fake_check.calls == []
+
+    def test_clean_and_stack_forwards_check_subjects_true_and_raises(self, tmp_path, monkeypatch):
+        """clean_and_stack() must thread its own check_subjects through to
+        stack_focus() rather than always running (or always skipping) the
+        gate regardless of what the caller asked for."""
+        ensure_layout(tmp_path)
+        raw_dir = source_raw_dir(tmp_path)
+        (raw_dir / "DSC_0001.NEF").write_bytes(b"a")
+        (raw_dir / "DSC_0002.NEF").write_bytes(b"b")
+        save_assets(tmp_path, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+            Asset(file="source/raw/DSC_0002.NEF", role="original", status="kept", selected=True),
+        ])
+        fake_denoise = RecordingDenoise()
+        fake_run = RecordingBatchRun()
+        fake_check = RecordingSubjectCheck(outliers=[(Path("DSC_0001.NEF"), 0.1)])
+        monkeypatch.setattr("bio_automation.pipeline.denoise_stack_frames", fake_denoise)
+        monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", fake_run)
+        monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", fake_check)
+        monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: MagicMock(name="daclip-session"))
+
+        with pytest.raises(SubjectMismatchError, match=r"1 frame\(s\) fall below"):
+            clean_and_stack(tmp_path)
+
+        assert fake_run.calls == []
+        assert len(fake_check.calls) == 1
+
+    def test_clean_and_stack_forwards_check_subjects_false(self, tmp_path, monkeypatch):
+        """Positive twin to the test above: the same outliers must not
+        block anything when the caller explicitly disabled the gate."""
+        ensure_layout(tmp_path)
+        raw_dir = source_raw_dir(tmp_path)
+        (raw_dir / "DSC_0001.NEF").write_bytes(b"a")
+        (raw_dir / "DSC_0002.NEF").write_bytes(b"b")
+        save_assets(tmp_path, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True),
+            Asset(file="source/raw/DSC_0002.NEF", role="original", status="kept", selected=True),
+        ])
+        fake_denoise = RecordingDenoise()
+        fake_run = RecordingBatchRun()
+        fake_check = RecordingSubjectCheck(outliers=[(Path("DSC_0001.NEF"), 0.1)])
+        monkeypatch.setattr("bio_automation.pipeline.denoise_stack_frames", fake_denoise)
+        monkeypatch.setattr("bio_automation.pipeline.zerene_run_batch", fake_run)
+        monkeypatch.setattr("bio_automation.pipeline.check_subject_consistency", fake_check)
+        monkeypatch.setattr("bio_automation.pipeline.load_session", lambda: MagicMock(name="daclip-session"))
+
+        clean_and_stack(tmp_path, check_subjects=False)
+
+        assert fake_check.calls == []
+        assert len(fake_run.calls) == 1

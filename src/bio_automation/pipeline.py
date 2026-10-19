@@ -4,6 +4,8 @@ import shutil
 from dataclasses import asdict
 from pathlib import Path
 
+from .daclip import load_session
+from .grouping import DEFAULT_THRESHOLD, SubjectMismatchError, check_subject_consistency
 from .io import read_json, read_jsonl, write_json, write_jsonl
 from .models import Asset, Observation
 from .paths import export_dir, metadata_dir, review_dir, source_raw_dir, work_dir
@@ -129,8 +131,39 @@ def export_stock(folder: Path) -> list[Path]:
     raise NotImplementedError("export_stock will be added next.")
 
 
+def _run_subject_consistency_gate(raw_paths: list[Path], threshold: float = DEFAULT_THRESHOLD) -> None:
+    """Hard safety gate: refuse to hand *raw_paths* to Zerene unless every
+    frame's DA-CLIP content embedding is close enough to the batch's
+    reference frame (see grouping.check_subject_consistency). Called from
+    stack_focus() when check_subjects=True (the default); see its
+    docstring for the incident that motivated this.
+
+    Design decision: if the DA-CLIP model itself is missing,
+    daclip.load_session() raises FileNotFoundError -- a real possibility
+    on a machine that has not downloaded the model. This re-raises that as
+    a clearer, loud failure instead of silently skipping the safety check:
+    a machine that cannot run the gate must not launch an expensive,
+    possibly disk-filling Zerene run as if the gate had passed.
+    check_subjects=False on stack_focus()/clean_and_stack() is the
+    explicit, opt-in-to-disable override for a deliberate bypass of this
+    whole gate (including the "model missing" case).
+    """
+    try:
+        session = load_session()
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Subject-consistency check unavailable: {exc}. Refusing to proceed "
+            "to Zerene without it -- pass check_subjects=False to explicitly "
+            "skip this safety gate."
+        ) from exc
+    outliers = check_subject_consistency(raw_paths, session, threshold=threshold)
+    if outliers:
+        raise SubjectMismatchError(outliers, threshold)
+
+
 def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
-                 source_dir: Path | None = None, min_free_gb: float = 5.0) -> Asset:
+                 source_dir: Path | None = None, min_free_gb: float = 5.0,
+                 check_subjects: bool = True) -> Asset:
     """Run Zerene Stacker (headless batch) over *source_dir* (default:
     source/raw/), move the merged output into work/, and append a
     stack_output Asset row.
@@ -146,9 +179,27 @@ def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
     originals, per the "originals stay immutable" principle in
     docs/folder-metadata-schema.md. The batch script Zerene reads from (and
     leaves behind in) *source_dir* is removed once the run succeeds.
+
+    *check_subjects* (default True) runs grouping.check_subject_consistency()
+    over the files in *source_dir* before handing off to Zerene, and raises
+    SubjectMismatchError if any frame looks like a different subject --
+    see _run_subject_consistency_gate for why this defaults on and fails
+    loud rather than open. Pass False only to explicitly bypass it for a
+    deliberate override; there is no separate flag to silently skip just
+    the "model missing" case.
     """
     folder = Path(folder)
     raw_dir = Path(source_dir) if source_dir is not None else source_raw_dir(folder)
+
+    if check_subjects:
+        # Excludes a leftover ZereneBatch.xml from a prior crashed run (see
+        # the cleanup below) -- it is this module's own bookkeeping file,
+        # never a frame, so it must not be fed to the DA-CLIP embedder.
+        raw_paths = sorted(
+            p for p in raw_dir.iterdir() if p.is_file() and p.name != "ZereneBatch.xml"
+        )
+        _run_subject_consistency_gate(raw_paths)
+
     output_path = zerene_run_batch(raw_dir, method=method, timeout=timeout, min_free_gb=min_free_gb)
 
     dest_dir = work_dir(folder)
@@ -174,7 +225,7 @@ def stack_focus(folder: Path, method: str = "pmax", timeout: float = 1800.0,
 
 def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
                      method: str = "pmax", timeout: float = 1800.0,
-                     min_free_gb: float = 5.0) -> Asset:
+                     min_free_gb: float = 5.0, check_subjects: bool = True) -> Asset:
     """Denoise every raw in source/raw/ with one shared parameter set (see
     preclean.denoise_stack_frames: raw denoise, then levels, in that fixed
     order) into work/denoised/, then run Zerene against that denoised set
@@ -183,6 +234,11 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     differences, not per-frame cleanup variance.
 
     Assumes cull/delete_rejected_raws already ran, like stack_focus().
+
+    *check_subjects* is forwarded to stack_focus(): the subject-consistency
+    gate runs against work/denoised/ (the files actually handed to Zerene),
+    not the pre-denoise raws, since denoising does not change which
+    subject is in frame. See stack_focus()'s docstring.
     """
     folder = Path(folder)
     raw_dir = source_raw_dir(folder)
@@ -191,7 +247,7 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     denoise_stack_frames(raw_paths, denoised_dir, noise=noise, exposure_ev=exposure_ev,
                           min_free_gb=min_free_gb)
     return stack_focus(folder, method=method, timeout=timeout, source_dir=denoised_dir,
-                        min_free_gb=min_free_gb)
+                        min_free_gb=min_free_gb, check_subjects=check_subjects)
 
 
 def build_and_save_keywords(folder: Path) -> dict:
