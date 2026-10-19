@@ -260,6 +260,24 @@ class TestRunBatchLock:
     def setup_method(self):
         FakePopen.instances = []
 
+    def test_lock_parent_dir_missing_is_created_not_a_crash(self, tmp_path):
+        """A fresh machine where Zerene's prefs dir (the default lock
+        location) doesn't exist yet must not raise a raw FileNotFoundError
+        -- the lock's parent dir is created, same as any other first run."""
+        lock_path = tmp_path / "does" / "not" / "exist" / "zerene.lock"
+        output = tmp_path / "ZS-OutputImage.tif"
+
+        def factory(cmd, **kwargs):
+            fake = FakePopen(cmd, returncode=0, **kwargs)
+            output.write_bytes(b"stacked")
+            return fake
+
+        result = run_batch(tmp_path, launch_command=FAKE_LAUNCH_CMD, popen=factory,
+                            lock_path=lock_path)
+
+        assert result == output
+        assert not lock_path.exists()  # released after success
+
     def test_lock_already_held_raises_without_calling_popen(self, tmp_path):
         lock_path = tmp_path / "zerene.lock"
         lock_path.write_text("424242", encoding="utf-8")

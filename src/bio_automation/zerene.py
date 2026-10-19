@@ -143,6 +143,8 @@ def _acquire_lock(lock_path: Path) -> None:
     would let two Zerene instances fight over the same output folder --
     worse than the manual-cleanup inconvenience being traded away here.
     """
+    lock_path = Path(lock_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
