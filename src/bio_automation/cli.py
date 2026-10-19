@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
 from .inat import fetch_inat_observation
 from .models import Asset, Observation
 from .paths import make_observation_path
@@ -38,6 +39,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("--base-dir", default=r"F:\Bio")
     p_ingest.add_argument("--obsdate", required=True)
     p_ingest.add_argument("--slug", required=True)
+
+    p_auto_ingest = sub.add_parser(
+        "auto-ingest",
+        help="Detect whether volume_path looks like a camera/card source, group its raw "
+             "files by real EXIF (capture date, camera model), and ingest each group into "
+             "its own observation folder under --base-dir -- idempotently: re-running "
+             "against the same card never resets an existing asset's kept/rejected status "
+             "or an already-linked iNat observation. See bio_automation.auto_ingest.",
+    )
+    p_auto_ingest.add_argument("volume_path")
+    p_auto_ingest.add_argument("--base-dir", default=r"F:\Bio")
 
     p_cull = sub.add_parser("cull")
     p_cull.add_argument("folder")
@@ -215,6 +227,22 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         ],
     )
     print(observation_dir)
+    return 0
+
+
+def cmd_auto_ingest(args: argparse.Namespace) -> int:
+    try:
+        result = auto_ingest_volume(Path(args.volume_path), Path(args.base_dir))
+    except NotACameraVolumeError as exc:
+        raise SystemExit(str(exc))
+    for group in result["groups"]:
+        print(group["folder"])
+    print(
+        f"{result['observation_folders_created']} observation folder(s) created, "
+        f"{result['observation_folders_updated']} updated, "
+        f"{result['files_ingested']} new file(s) ingested, "
+        f"{result['files_already_present']} already present (skipped)"
+    )
     return 0
 
 
@@ -397,6 +425,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "ingest":
         return cmd_ingest(args)
+    if args.command == "auto-ingest":
+        return cmd_auto_ingest(args)
     if args.command == "cull":
         return cmd_cull(args)
     if args.command == "presort":
