@@ -69,8 +69,13 @@ shortlist-A files (`F:/bio-automation-data/build_gallery.py`): research grade, s
 JPEG quality >= q93, >= 24 MP, not tentative. Originals download unchanged (byte-identical,
 verified). Listens on 127.0.0.1:8781 ONLY (the tailscale serve entry was removed at the
 owner's request); app login `owner` (password in `F:/services/bio-gallery/password.txt`; the
-default admin/admin was deleted by `gallery_secure.py`). Supervisor
-`F:/services/bio-gallery/run-gallery.ps1` (not registered as a task). **LAN access (applied
+default admin/admin was deleted by `gallery_secure.py`). **Persistent:** scheduled task
+`Bio-Gallery` (S4U, startup + logon, restart on failure) runs the supervisor
+`F:/services/bio-gallery/run-gallery.ps1`, which waits for the photo folder, kills an orphaned
+PiGallery2 `node.exe` before each start (Stop-ScheduledTask ends the supervisor but NOT its
+child) and logs to `D:/apps/pigallery2-data/server.log` via `cmd` redirection. Runs with
+`--Server-trustProxy=loopback`, so failed logins log the real client address and the session
+cookie is `Secure`. Reboot survival not tested. **LAN access (applied
 2026-10-20 with the owner's yes):** https://photos.lab.floppydicks.net:4443/ . The name
 resolves to the LAN IP 172.16.100.11; the front-door Caddy block of that name now binds ONLY
 172.16.100.11, answers 403 unless the client is in 172.16.100.0/24 or loopback, and proxies
