@@ -51,13 +51,14 @@ inat|stock SRC...` validates every JPEG against the standard first and writes ON
 stored zip + `.sha256` into `D:/bio-cache/downloads`; nothing is written when any file
 violates it. **The owner does NOT want anything on the tailnet (2026-10-20).** Fetch zips
 with `scp user@host:D:/bio-cache/downloads/<name>.zip .` (key auth over the existing sshd).
-`bio serve-downloads` (tailnet-identity auth) is DISABLED (task Bio-Downloads stopped): its
-`Tailscale-User-Login` trust is only safe when `tailscale serve` is the ONLY thing that can
+A `bio serve-downloads` HTTP server (tailnet-identity auth) existed briefly and was REMOVED:
+its `Tailscale-User-Login` trust is only safe when `tailscale serve` is the ONLY thing that can
 reach the port. It was NOT: the front-door Caddy site `photos.lab.floppydicks.net:4443`
 (LAN + tailnet) proxied the same port 8780 and passed a forged header through, so any LAN
 client got the zips (reproduced, then closed). Before trusting a header from a loopback
 upstream, enumerate every proxy that can forward to that port (`Caddyfile`, `tailscale serve
-status`). Never reuse `render._check_export_bounds` for validation: it deletes the file it
+status`); better, do not hand-roll an HTTP file server at all (the gallery is PiGallery2).
+Never reuse `render._check_export_bounds` for validation: it deletes the file it
 checks. Persistent services and scheduled tasks need the owner's explicit grant (the
 permission classifier blocks them); write the script and hand it over.
 

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
 from .bundle import DEFAULT_DOWNLOAD_DIR, BundleError, build_bundle
-from .download_server import make_server
 from .inat import fetch_inat_observation
 from .models import Asset, Observation
 from .paths import make_observation_path
@@ -167,15 +166,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_export_zip.add_argument("--out-dir", default=None,
                               help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
     p_export_zip.add_argument("--name", default=None, help="zip name (default: <kind>-<n>photos-<timestamp>.zip)")
-
-    p_serve_dl = sub.add_parser(
-        "serve-downloads",
-        help="Serve the zips in the download folder over HTTP on 127.0.0.1, for `tailscale serve` to publish. Read-only; the caller "
-             "is authenticated by the tailnet (Tailscale-User-Login must match --tailscale-login); no passwords.")
-    p_serve_dl.add_argument("--dir", default=None, help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
-    p_serve_dl.add_argument("--port", type=int, default=8780)
-    p_serve_dl.add_argument("--tailscale-login", action="append", required=True, metavar="LOGIN",
-                            help="tailnet login allowed to download (repeatable), e.g. you@example.com")
 
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
@@ -425,17 +415,6 @@ def cmd_export_stock(args: argparse.Namespace) -> int:
     return 0
 
 
-def _tailnet_dns_name() -> str | None:
-    """This machine's tailnet DNS name (best effort; None when tailscale is missing or not logged in)."""
-    import json
-    import subprocess
-    try:
-        out = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10).stdout
-        return json.loads(out)["Self"]["DNSName"].rstrip(".") or None
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-        return None
-
-
 def cmd_export_zip(args: argparse.Namespace) -> int:
     import getpass
     import os
@@ -449,30 +428,8 @@ def cmd_export_zip(args: argparse.Namespace) -> int:
     print(f"{result.path}")
     print(f"  {result.photos} photos + {len(result.extras)} extra file(s) {list(result.extras)}, "
           f"{result.size_bytes / 1e6:.1f} MB, sha256 {result.sha256}")
-    print("  fetch from any of your tailnet devices (no password; the tailnet identifies you):")
-    name = _tailnet_dns_name()
-    if name:
-        print(f"    curl -C - -O https://{name}:8780/{result.path.name}      (or open that URL in a browser)")
-    print(f"  or over ssh: scp {getpass.getuser()}@{socket.gethostname()}:{result.path.as_posix()} .")
-    return 0
-
-
-def cmd_serve_downloads(args: argparse.Namespace) -> int:
-    import os
-    directory = Path(args.dir or os.environ.get("BIO_DOWNLOAD_DIR") or DEFAULT_DOWNLOAD_DIR)
-    try:
-        server = make_server(directory, args.port, args.tailscale_login)
-    except (OSError, ValueError) as e:
-        print(f"serve-downloads failed: {e}", file=sys.stderr)
-        return 1
-    print(f"serving {directory} on http://127.0.0.1:{args.port}/ for tailnet login(s) {sorted(server.logins)}", flush=True)
-    print(f"  publish it with: tailscale serve --bg --https={args.port} http://127.0.0.1:{args.port}", flush=True)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    print("  fetch over ssh (key auth via the existing sshd; nothing is served over HTTP from here):")
+    print(f"    scp {getpass.getuser()}@{socket.gethostname()}:{result.path.as_posix()} .")
     return 0
 
 
@@ -572,8 +529,6 @@ def main() -> int:
         return cmd_export_stock(args)
     if args.command == "export-zip":
         return cmd_export_zip(args)
-    if args.command == "serve-downloads":
-        return cmd_serve_downloads(args)
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
     if args.command == "process":
