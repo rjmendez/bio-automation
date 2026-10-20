@@ -162,3 +162,34 @@ class TestAdobeCsv:
         rows = list(csv.DictReader(open(tmp_path / "a.csv", newline="", encoding="utf-8-sig")))
         assert rows == [{"Filename": "one.jpg", "Title": "T", "Keywords": "a,b,c", "Category": "14", "Releases": ""}]
         assert os.path.getsize(tmp_path / "a.csv") < 1_000_000
+
+
+class TestVisualCheck:
+    def test_photo_urls_use_the_requested_size(self):
+        rec = {"photos": [{"id": 5, "url": "https://x/photos/5/square.jpg"}, {"id": None, "url": "https://x/photos/6/square.jpg"}, {"id": 7, "url": ""}]}
+        assert inat_stock.observation_photo_urls(rec) == [("5", "https://x/photos/5/medium.jpg")]
+        assert inat_stock.observation_photo_urls(rec, "large") == [("5", "https://x/photos/5/large.jpg")]
+        assert inat_stock.observation_photo_urls({}) == []
+
+    def test_photo_is_downloaded_once_politely_and_then_served_from_the_cache(self, tmp_path):
+        slept, got = [], []
+        kw = {"get_bytes": lambda url: got.append(url) or b"JPEGDATA", "sleep": slept.append, "delay": 0.4}
+        p1 = inat_stock.cached_photo("5", "https://x/photos/5/medium.jpg", tmp_path / "c", **kw)
+        p2 = inat_stock.cached_photo("5", "https://x/photos/5/medium.jpg", tmp_path / "c", **kw)
+        assert p1 == p2 == tmp_path / "c" / "5.jpg" and p1.read_bytes() == b"JPEGDATA"
+        assert got == ["https://x/photos/5/medium.jpg"] and slept == [0.4]
+
+    def test_empty_cached_file_is_downloaded_again(self, tmp_path):
+        (tmp_path / "5.jpg").write_bytes(b"")
+        inat_stock.cached_photo("5", "u", tmp_path, get_bytes=lambda url: b"x", sleep=lambda d: None)
+        assert (tmp_path / "5.jpg").read_bytes() == b"x"
+
+    def test_similarity_is_the_best_cosine_over_the_photos(self, tmp_path):
+        vec = {"f": np.array([1.0, 0.0]), "a": np.array([0.0, 1.0]), "b": np.array([0.8, 0.6])}
+        assert inat_stock.frame_similarity(tmp_path / "f", [tmp_path / "a", tmp_path / "b"], lambda p: vec[p.name]) == pytest.approx(0.8)
+
+    def test_no_photos_means_no_similarity(self, tmp_path):
+        assert inat_stock.frame_similarity(tmp_path / "f", [], lambda p: np.array([1.0])) is None
+
+    def test_threshold_is_the_measured_one(self):
+        assert inat_stock.FRAME_MATCH_MIN_SIMILARITY == 0.90
