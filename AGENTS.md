@@ -2,6 +2,57 @@
 
 Instructions for coding agents working in this repository.
 
+## Standing rules (owner decisions; do not re-ask, do not forget)
+
+Ground first: search Loci (`investigation_search`, `rag_context_search`) before
+starting work, then verify against live code and data.
+
+**Before processing photos, check what is already on iNat.** Pull the owner's
+live observations (public API, read-only, 1 req/s, identifying User-Agent) and
+match by capture time. Local snapshots go stale (`inat_observations.json` lacked
+113 observations created after it was built). Never re-upload a frame that is on iNat.
+
+**Export standards** (`render.py`): real raw decode to sRGB, never the embedded
+preview. iNat: long edge 2048 px, JPEG quality 95, at most 20 MB per photo
+(forum-confirmed, no official page). Adobe Stock: full sensor resolution, quality
+95, 4-100 MP, at most 45 MB (Adobe helpx). A q90 or 2048 px file is not Stock-ready
+(below the 4 MP floor). Re-encoding an existing JPEG never fixes quality: re-export
+from the RAW.
+
+**Where files go.** Photo working files and intermediates (enhanced frames, trial
+output) go under `D:\bio-cache\photos`. Final renders stay on F:. Nothing heavy on
+C:. The Topaz models and their extracted cache stay on C: where they are
+(`MODELS_DIR`/`CACHE_DIR` in `topaz.py`); the photo cache is not the model cache.
+
+**Enhancement.** `lce` (github.com/rjmendez/lce) is the LightCraft enhancement
+plugin; its public registry is open weights only. The owner's Topaz models on C:
+are used through `bio_automation.topaz` (OpenVINO), never committed or shipped in
+`lce`. `enhance()` must keep the source EXIF and ICC profile. Always compare a
+100% crop before and after on a real frame and measure; never assume a model helps.
+Measured 2026-10-20 (hardening audit, 9 real frames): `slb` is Topaz *Sharpen
+Refocus*, not Lens Blur; its `t_param1` is a second sharpening amplitude, not a
+denoiser; the auto-param `lensblur` value is about 0.00-0.10 so default
+auto-sharpen is a no-op; stronger settings add halos and invented texture. Do not
+sharpen iNat 2048 px uploads. The real denoise models (`dnt_beta`, `isoa`, `isob`)
+and detail models (`ghqv2`) are the ones to test, against synthetic ground truth.
+
+**No CPU processing (owner, 2026-10-20).** Model inference runs on the GPU only
+(onnxruntime CUDA); a missing CUDA/cuDNN setup must fail loudly, never fall back
+to CPU. OpenVINO CPU inference and CPU denoise are not allowed.
+
+**LightCraft batch work runs headless** (`BIO_LC_HEADLESS=1`, GUI closed, one
+process on the library). Do not drive the live GUI session.
+
+**iNat posting is human-approved per observation**; locations and taxa are chosen
+by the owner in iNat. Build upload sets (files + CSV), never auto-post.
+
+**No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
+are shelved: do not build, extend, audit or fix them. The focus is bulk photo
+processing from the command line (render, tag, validate, build upload sets).
+Rebuilds of derived data and restarts of local services are pre-authorized only
+with a backup, a verification step and a rollback noted; posting, DNS/Caddy,
+deleting originals and pushing stay ask-first.
+
 ## Test-writing rules
 
 These apply to every test added or edited in this repo, no exceptions:
