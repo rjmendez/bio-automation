@@ -201,6 +201,15 @@ class TestDecide:
         assert [i for i, r in rows.items() if r["stock_candidate"]] == [2]
         assert rows[1]["reasons"] == ["ISO 6400 > 3200"] and rows[1]["tech_pass"] is False
 
+    def test_flagged_group_is_excluded_even_when_its_frames_are_the_sharpest(self):
+        frames = [frame(1, "a"), frame(2, "a"), frame(3, "b"), frame(4, "b")]
+        scores = {1: FrameScore(400, 0), 2: FrameScore(300, 0), 3: FrameScore(30, 0), 4: FrameScore(25, 0)}
+        rows = {r["id"]: r for r in stock_select.decide(frames, scores, FLOOR, excluded_groups={"a": "flagged people_visible, sign_or_text"})}
+        assert [i for i, r in rows.items() if r["stock_candidate"]] == [3, 4]
+        assert rows[1]["reasons"] == ["group excluded: flagged people_visible, sign_or_text"] and rows[1]["tech_pass"] is False
+        unflagged = {r["id"]: r for r in stock_select.decide(frames, scores, FLOOR)}
+        assert [i for i, r in unflagged.items() if r["stock_candidate"]] == [1, 2, 3, 4]       # positive twin: without the exclusion they win
+
     def test_every_row_is_marked_release_unscreened_and_scores_are_rounded(self):
         rows = stock_select.decide([frame(1, "a")], {1: FrameScore(50.126, 0.012345678)}, FLOOR)
         assert (rows[0]["release"], rows[0]["sharp"], rows[0]["clip"], rows[0]["mp"]) == ("unscreened", 50.13, 0.01235, 45.4)
@@ -336,6 +345,14 @@ class TestTagQueue:
         with open(tmp_path / "out.csv", newline="", encoding="utf-8") as f:
             written = list(csv.DictReader(f))
         assert [(r["id"], r["stock_candidate"], r["day"], r["raw"]) for r in written][1] == ("2", "True", "2026-07-31", "2026/d/DSC_2.NEF")
+
+    def test_excluded_group_never_becomes_a_candidate(self, tmp_path, monkeypatch):
+        self.seed(tmp_path)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", floor_path=tmp_path / "floor.json", workers=1,
+                                      excluded_groups={1: "flagged pet"})
+        by = {r["id"]: r for r in rows}
+        assert by[2]["stock_candidate"] is False and by[2]["reasons"] == "group excluded: flagged pet"
 
     def test_rerun_uses_the_cache_and_does_not_rescore(self, tmp_path, monkeypatch):
         self.seed(tmp_path)
@@ -478,6 +495,15 @@ class TestCli:
         args = cli.build_parser().parse_args(["stock-tag-queue", str(tmp_path / "q.json"), "--raw-root", str(tmp_path), "--out", str(tmp_path / "o.csv")])
         with pytest.raises(SystemExit, match=r"no sharpness floor at .*none\.json; run `bio stock-calibrate"):
             cli.cmd_stock_tag_queue(args)
+
+    def test_tag_queue_passes_the_notes_groups_as_exclusions(self, tmp_path, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(stock_select, "tag_queue", lambda *a, **k: seen.update(k) or [{"stock_candidate": False, "group": 1}])
+        notes = tmp_path / "n.json"
+        notes.write_text('{"92": {"flags": ["not_wildlife", "electronics"], "note": "board"}}', encoding="utf-8")
+        args = cli.build_parser().parse_args(["stock-tag-queue", "q.json", "--raw-root", "r", "--out", "o.csv", "--notes", str(notes)])
+        cli.cmd_stock_tag_queue(args)
+        assert seen["excluded_groups"] == {92: "flagged not_wildlife, electronics"}
 
     def test_tag_queue_prints_the_counts(self, tmp_path, monkeypatch, capsys):
         rows = [{"stock_candidate": True, "group": 1}, {"stock_candidate": False, "group": 1}, {"stock_candidate": True, "group": 2},

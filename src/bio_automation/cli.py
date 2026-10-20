@@ -189,6 +189,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stock_queue.add_argument("--out", required=True, help="csv with one row per frame, reasons included")
     p_stock_queue.add_argument("--floor", default=None)
     p_stock_queue.add_argument("--workers", type=int, default=3)
+    p_stock_queue.add_argument("--notes", default=None,
+                               help="the upload set's manual flag notes json (see flag-upload-set): every group named in it is excluded from the candidates")
 
     p_stock_pub = sub.add_parser(
         "stock-publish",
@@ -501,10 +503,14 @@ def cmd_stock_calibrate(args: argparse.Namespace) -> int:
 def cmd_stock_tag_queue(args: argparse.Namespace) -> int:
     from .stock_select import StockFloorMissing, tag_queue
 
+    from .upload_flags import load_manual_notes
+
     try:
+        notes = load_manual_notes(Path(args.notes) if args.notes else None)
         rows = tag_queue(Path(args.queue_json), Path(args.raw_root), Path(args.out),
-                         floor_path=Path(args.floor) if args.floor else None, workers=args.workers)
-    except StockFloorMissing as exc:
+                         floor_path=Path(args.floor) if args.floor else None, workers=args.workers,
+                         excluded_groups={g: "flagged " + ", ".join(v["flags"]) for g, v in notes.items()})
+    except (StockFloorMissing, ValueError) as exc:
         raise SystemExit(str(exc))
     picked = [r for r in rows if r["stock_candidate"]]
     print(f"{len(picked)} Stock candidates of {len(rows)} frames in {len({r['group'] for r in picked})} of "

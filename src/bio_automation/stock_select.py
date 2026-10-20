@@ -173,12 +173,19 @@ def pick_top_per_group(rows: list[dict], top: int = DEFAULT_TOP_PER_GROUP) -> se
 
 
 def decide(frames: list[dict], scores: dict, floor: dict, *, max_iso: int = DEFAULT_MAX_ISO,
-           top_per_group: int = DEFAULT_TOP_PER_GROUP) -> list[dict]:
-    """frames: dicts with id, group, mp, iso, located. scores: id -> FrameScore | None. Returns one row per frame with tech_pass, stock_candidate, reasons."""
+           top_per_group: int = DEFAULT_TOP_PER_GROUP, excluded_groups: dict | None = None) -> list[dict]:
+    """frames: dicts with id, group, mp, iso, located. scores: id -> FrameScore | None. Returns one row per frame with tech_pass, stock_candidate, reasons.
+
+    excluded_groups maps a group to the reason a person flagged it (people, signs, not wildlife, ...): none of its frames can be a candidate,
+    however sharp -- Stock needs releases for identifiable people and property, and the measurements cannot see either.
+    """
+    excluded_groups = excluded_groups or {}
     rows = []
     for f in frames:
         s = scores.get(f["id"])
         reasons = technical_reasons(mp=f["mp"], iso=f["iso"], score=s, floor=floor, max_iso=max_iso, located=f.get("located", False))
+        if f["group"] in excluded_groups:
+            reasons.append(f"group excluded: {excluded_groups[f['group']]}")
         rows.append({"id": f["id"], "group": f["group"], "mp": round(f["mp"], 1), "iso": f["iso"],
                      "sharp": round(s.sharp, 2) if s else None, "clip": round(s.clip, 5) if s else None,
                      "tech_pass": not reasons, "reasons": reasons, "release": RELEASE_UNSCREENED})
@@ -223,8 +230,10 @@ def _score_item(item: dict) -> dict:
 
 
 def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, floor_path: Path | None = None, workers: int = 3,
-              max_iso: int = DEFAULT_MAX_ISO, top_per_group: int = DEFAULT_TOP_PER_GROUP, limit: int | None = None) -> list[dict]:
-    """Score every frame of a LightCraft queue (items with lc_id, raw, group, w, h, copy, loc_source). Resumable via out_csv + '.raw'."""
+              max_iso: int = DEFAULT_MAX_ISO, top_per_group: int = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
+              excluded_groups: dict | None = None) -> list[dict]:
+    """Score every frame of a LightCraft queue (items with lc_id, raw, group, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
+    excluded_groups: see decide()."""
     from PIL import Image
 
     floor = load_floor(floor_path)
@@ -262,7 +271,7 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, floor_path: Pa
         iso = c["iso"] if c else ""
         frames.append({"id": x["lc_id"], "group": x["group"], "mp": x["w"] * x["h"] / 1e6,
                        "iso": int(float(iso)) if iso not in ("", "None", None) else None, "located": x.get("loc_source", "none") != "none"})
-    rows = decide(frames, scores, floor, max_iso=max_iso, top_per_group=top_per_group)
+    rows = decide(frames, scores, floor, max_iso=max_iso, top_per_group=top_per_group, excluded_groups=excluded_groups)
     by_id = {x["lc_id"]: x for x in queue}
     for r in rows:
         r["day"], r["raw"] = by_id[r["id"]]["day"], by_id[r["id"]]["raw"]
