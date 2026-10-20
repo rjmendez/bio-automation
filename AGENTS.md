@@ -61,6 +61,12 @@ ISO, tile sharpness vs a floor from already-approved exports, top 2 per burst), 
 quality or release verdict: every row is `release: unscreened` and the owner's look in the
 gallery is the gate. The 2048 px iNat renders can never be Stock files.
 
+**Upload-set flags (2026-10-20).** `bio flag-upload-set <set folder> [--notes json]` appends
+`flags`/`flag_notes` columns to the set's `observations.csv` (CRLF kept, re-run replaces them):
+`black_frame` is measured (median luma < 2); anything else (not_wildlife, people_visible,
+pet, sign_or_text, label_visible, ...) comes from the manual notes file because only a look
+at the picture tells. Nothing is removed or reordered -- the owner never culls.
+
 **Remote download (owner works over the LAN, 2026-10-20).** `bio export-zip --kind
 inat|stock SRC...` validates every JPEG against the standard first and writes ONE flat
 stored zip + `.sha256` into `D:/bio-cache/downloads`; nothing is written when any file
