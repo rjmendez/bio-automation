@@ -1,54 +1,36 @@
-"""Read-only HTTP download endpoint for the flat zips built by ``bio export-zip``.
+"""Read-only HTTP download endpoint for the flat zips built by ``bio export-zip``, meant to sit behind ``tailscale serve``.
 
-Scope is deliberately tiny: it serves ``*.zip`` and ``*.zip.sha256`` files that sit directly in ONE folder, and nothing else (no listing of
-other files, no sub-folders, no uploads, no CGI). Guardrails:
-  * HTTP Basic auth, constant-time compare, password read from a file the operator controls (created on first start, 24 random bytes);
-  * a source-address allowlist (default: loopback, RFC1918 private ranges and the Tailscale 100.64.0.0/10 range), checked BEFORE auth;
-  * file names must match a strict pattern, so ``..``, slashes and anything that is not a zip cannot be requested;
-  * single-range ``Range`` requests, so a 1 GB+ download can resume after a dropped Wi-Fi link;
-  * binds to the address you give it (default 127.0.0.1): LAN exposure is an explicit ``--bind``.
-Not provided: TLS. Basic auth over plain HTTP is readable by anyone who can sniff the LAN segment; put it behind a TLS front door if that matters.
+Authentication is the tailnet, not a password: ``tailscale serve`` terminates TLS, authenticates the calling device through WireGuard, strips any
+client-supplied ``Tailscale-User-Login`` header and sets it to the real login of the caller. This server therefore
+  * listens on loopback ONLY (it refuses to bind anything else, because the header is only trustworthy behind the local proxy),
+  * accepts a connection only from a loopback peer (the proxy), and
+  * serves a request only when ``Tailscale-User-Login`` is one of the allowed logins (nothing else is accepted: no cookies, no Basic auth).
+Anyone who can already run code on this machine can forge the header from loopback; that is inside the machine's trust boundary.
+
+Scope is deliberately tiny: ``*.zip`` and ``*.zip.sha256`` files directly in ONE folder, nothing else (no other files, no sub-folders, no uploads).
+File names must match a strict pattern (no ``..``, no slashes). Single-range ``Range`` requests let a 1 GB+ download resume. GET/HEAD only.
 """
 from __future__ import annotations
 
-import base64
-import hmac
 import ipaddress
 import re
-import secrets
 import sys
-import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-DEFAULT_ALLOW = ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+IDENTITY_HEADER = "Tailscale-User-Login"
 _SERVABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.zip(\.sha256)?$")
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 _CHUNK = 1 << 20
-_FAIL_DELAY_S = 0.5
 
 
-def is_allowed(ip: str, cidrs) -> bool:
-    """True when *ip* falls inside one of *cidrs* (IPv4-mapped IPv6 addresses are unwrapped first)."""
+def is_loopback(ip: str) -> bool:
+    """True for 127.0.0.0/8, ::1 and IPv4-mapped loopback (::ffff:127.x)."""
     addr = ipaddress.ip_address(ip)
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
         addr = addr.ipv4_mapped
-    return any(addr in ipaddress.ip_network(c, strict=False) for c in cidrs)
-
-
-def load_or_create_password(path: Path) -> str:
-    """The password stored in *path*; created with 24 random bytes (urlsafe) when the file does not exist. An empty file is an error."""
-    path = Path(path)
-    if path.exists():
-        pw = path.read_text(encoding="utf-8").strip()
-        if not pw:
-            raise ValueError(f"{path} is empty: refusing to serve with an empty password")
-        return pw
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pw = secrets.token_urlsafe(24)
-    path.write_text(pw + "\n", encoding="utf-8")
-    return pw
+    return addr.is_loopback
 
 
 def _sha_of(zip_path: Path) -> str:
@@ -78,13 +60,14 @@ def parse_range(header: str, size: int):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "bio-downloads/1"
+    server_version = "bio-downloads/2"
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):            # never log the Authorization header; one line per request on stderr
-        sys.stderr.write("%s %s\n" % (self.client_address[0], fmt % args))
+    def log_message(self, fmt, *args):            # one line per request on stderr, with the authenticated login when there is one
+        who = self.headers.get(IDENTITY_HEADER, "-")
+        sys.stderr.write("%s %s %s\n" % (self.client_address[0], who, fmt % args))
 
-    def _deny(self, status: HTTPStatus, extra: dict | None = None, body: bytes = b""):
+    def _deny(self, status: HTTPStatus, body: bytes = b"", extra: dict | None = None):
         self.send_response(status)
         for k, v in (extra or {}).items():
             self.send_header(k, v)
@@ -95,37 +78,28 @@ class _Handler(BaseHTTPRequestHandler):
         if body and self.command != "HEAD":
             self.wfile.write(body)
 
-    def _authorised(self) -> bool:
-        hdr = self.headers.get("Authorization", "")
-        if not hdr.startswith("Basic "):
-            return False
-        try:
-            given = base64.b64decode(hdr[6:], validate=True)
-        except Exception:
-            return False
-        want = f"{self.server.user}:{self.server.password}".encode()
-        return hmac.compare_digest(given, want)
-
     def _serve(self):
-        if not is_allowed(self.client_address[0], self.server.allow):
-            return self._deny(HTTPStatus.FORBIDDEN, body=b"forbidden\n")
-        if not self._authorised():
-            time.sleep(_FAIL_DELAY_S)
-            return self._deny(HTTPStatus.UNAUTHORIZED, {"WWW-Authenticate": 'Basic realm="bio-downloads"'}, b"authentication required\n")
+        if not is_loopback(self.client_address[0]):
+            return self._deny(HTTPStatus.FORBIDDEN, b"forbidden: not the local tailscale proxy\n")
+        login = self.headers.get(IDENTITY_HEADER, "").strip().lower()
+        if not login:
+            return self._deny(HTTPStatus.UNAUTHORIZED, b"authentication required: open this through your tailnet address\n")
+        if login not in self.server.logins:
+            return self._deny(HTTPStatus.FORBIDDEN, b"forbidden: this tailnet user is not allowed\n")
         path = self.path.split("?", 1)[0]
         if path == "/":
             return self._index()
         name = path[1:]
         if not _SERVABLE.match(name):
-            return self._deny(HTTPStatus.NOT_FOUND, body=b"not found\n")
+            return self._deny(HTTPStatus.NOT_FOUND, b"not found\n")
         f = self.server.directory / name
         if not f.is_file():
-            return self._deny(HTTPStatus.NOT_FOUND, body=b"not found\n")
+            return self._deny(HTTPStatus.NOT_FOUND, b"not found\n")
         size = f.stat().st_size
         try:
             rng = parse_range(self.headers.get("Range", ""), size)
         except ValueError:
-            return self._deny(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, {"Content-Range": f"bytes */{size}"})
+            return self._deny(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, extra={"Content-Range": f"bytes */{size}"})
         start, end = rng if rng else (0, size - 1)
         length = end - start + 1 if size else 0
         self.send_response(HTTPStatus.PARTIAL_CONTENT if rng else HTTPStatus.OK)
@@ -167,7 +141,7 @@ class _Handler(BaseHTTPRequestHandler):
     do_GET = do_HEAD = _serve
 
     def _no(self):
-        self._deny(HTTPStatus.METHOD_NOT_ALLOWED, {"Allow": "GET, HEAD"}, b"read-only\n")
+        self._deny(HTTPStatus.METHOD_NOT_ALLOWED, b"read-only\n", {"Allow": "GET, HEAD"})
 
     do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _no
 
@@ -175,20 +149,20 @@ class _Handler(BaseHTTPRequestHandler):
 class DownloadServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr, directory: Path, password: str, allow, user: str):
+    def __init__(self, addr, directory: Path, logins):
         super().__init__(addr, _Handler)
         self.directory = Path(directory)
-        self.password = password
-        self.allow = tuple(allow)
-        self.user = user
+        self.logins = frozenset(x.strip().lower() for x in logins)
 
 
-def make_server(directory: Path, bind: str, port: int, password: str, allow=DEFAULT_ALLOW, user: str = "owner") -> DownloadServer:
+def make_server(directory: Path, port: int, logins, bind: str = "127.0.0.1") -> DownloadServer:
+    """A loopback-only server. Refuses a non-loopback *bind* and an empty login list."""
     directory = Path(directory)
     if not directory.is_dir():
         raise FileNotFoundError(f"download folder does not exist: {directory}")
-    if not password:
-        raise ValueError("refusing to serve with an empty password")
-    for c in allow:
-        ipaddress.ip_network(c, strict=False)          # fail at start-up on a typo, not at the first request
-    return DownloadServer((bind, port), directory, password, allow, user)
+    logins = [x for x in (logins or []) if x and x.strip()]
+    if not logins:
+        raise ValueError("refusing to start without at least one allowed tailnet login")
+    if not is_loopback(bind):
+        raise ValueError(f"refusing to bind {bind}: the identity header is only trustworthy behind the local tailscale proxy, so this server listens on loopback only")
+    return DownloadServer((bind, port), directory, logins)

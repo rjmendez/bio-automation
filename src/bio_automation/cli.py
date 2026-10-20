@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
 from .bundle import DEFAULT_DOWNLOAD_DIR, BundleError, build_bundle
-from .download_server import DEFAULT_ALLOW, load_or_create_password, make_server
+from .download_server import make_server
 from .inat import fetch_inat_observation
 from .models import Asset, Observation
 from .paths import make_observation_path
@@ -170,16 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve_dl = sub.add_parser(
         "serve-downloads",
-        help="Serve the zips in the download folder over HTTP (read-only, Basic auth, source-address allowlist, resumable). "
-             "Binds to 127.0.0.1 unless you pass --bind.")
+        help="Serve the zips in the download folder over HTTP on 127.0.0.1, for `tailscale serve` to publish. Read-only; the caller "
+             "is authenticated by the tailnet (Tailscale-User-Login must match --tailscale-login); no passwords.")
     p_serve_dl.add_argument("--dir", default=None, help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
-    p_serve_dl.add_argument("--bind", default="127.0.0.1", help="address to listen on; LAN exposure is an explicit choice")
     p_serve_dl.add_argument("--port", type=int, default=8780)
-    p_serve_dl.add_argument("--allow", action="append", default=None, metavar="CIDR",
-                            help="allowed client network (repeatable); default: loopback, RFC1918 and 100.64.0.0/10")
-    p_serve_dl.add_argument("--password-file", default="F:/services/bio-downloads/password.txt",
-                            help="created on first start with a random password; read it from there")
-    p_serve_dl.add_argument("--user", default="owner")
+    p_serve_dl.add_argument("--tailscale-login", action="append", required=True, metavar="LOGIN",
+                            help="tailnet login allowed to download (repeatable), e.g. you@example.com")
 
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
@@ -429,6 +425,17 @@ def cmd_export_stock(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tailnet_dns_name() -> str | None:
+    """This machine's tailnet DNS name (best effort; None when tailscale is missing or not logged in)."""
+    import json
+    import subprocess
+    try:
+        out = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10).stdout
+        return json.loads(out)["Self"]["DNSName"].rstrip(".") or None
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return None
+
+
 def cmd_export_zip(args: argparse.Namespace) -> int:
     import getpass
     import os
@@ -442,31 +449,24 @@ def cmd_export_zip(args: argparse.Namespace) -> int:
     print(f"{result.path}")
     print(f"  {result.photos} photos + {len(result.extras)} extra file(s) {list(result.extras)}, "
           f"{result.size_bytes / 1e6:.1f} MB, sha256 {result.sha256}")
-    print("  fetch from your remote machine (key auth over the existing sshd, no new service):")
-    print(f"    scp {getpass.getuser()}@{socket.gethostname()}:{result.path.as_posix()} .")
+    print("  fetch from any of your tailnet devices (no password; the tailnet identifies you):")
+    name = _tailnet_dns_name()
+    if name:
+        print(f"    curl -C - -O https://{name}:8780/{result.path.name}      (or open that URL in a browser)")
+    print(f"  or over ssh: scp {getpass.getuser()}@{socket.gethostname()}:{result.path.as_posix()} .")
     return 0
 
 
 def cmd_serve_downloads(args: argparse.Namespace) -> int:
-    import getpass
     import os
-    import subprocess
     directory = Path(args.dir or os.environ.get("BIO_DOWNLOAD_DIR") or DEFAULT_DOWNLOAD_DIR)
-    pw_file = Path(args.password_file)
-    created = not pw_file.exists()
     try:
-        password = load_or_create_password(pw_file)
-        server = make_server(directory, args.bind, args.port, password, allow=tuple(args.allow or DEFAULT_ALLOW), user=args.user)
+        server = make_server(directory, args.port, args.tailscale_login)
     except (OSError, ValueError) as e:
         print(f"serve-downloads failed: {e}", file=sys.stderr)
         return 1
-    if created and os.name == "nt":                      # lock the new password file to this account + SYSTEM
-        acl = subprocess.run(["icacls", str(pw_file), "/inheritance:r", "/grant:r", f"{getpass.getuser()}:F", "SYSTEM:F"],
-                             capture_output=True, text=True)
-        print(f"password file created: {pw_file} (acl {'restricted' if acl.returncode == 0 else 'NOT restricted: ' + acl.stderr.strip()})")
-    print(f"serving {directory} on http://{args.bind}:{args.port}/  user={args.user}  allow={list(args.allow or DEFAULT_ALLOW)}")
-    print(f"  index:    curl -u {args.user}:<password from {pw_file}> http://{args.bind}:{args.port}/")
-    print(f"  download: curl -u {args.user}:<password> -C - -O http://{args.bind}:{args.port}/<name>.zip   (-C - resumes)")
+    print(f"serving {directory} on http://127.0.0.1:{args.port}/ for tailnet login(s) {sorted(server.logins)}", flush=True)
+    print(f"  publish it with: tailscale serve --bg --https={args.port} http://127.0.0.1:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
