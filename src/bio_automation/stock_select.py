@@ -315,12 +315,17 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
             cached = {int(r["lc_id"]): r for r in csv.DictReader(f)}
     todo = [dict(x, raw_abs=str(Path(raw_root) / x["raw"])) for x in queue
             if x["lc_id"] not in cached and x["lc_id"] in matches and matches[x["lc_id"]] not in exclusions][:limit]       # only frames that can still be candidates are measured
-    for x in todo:                                   # ISO is read from the item's own render, which carries the raw's EXIF
+    for x in todo:                                   # ISO is read from the item's own picture when it carries EXIF, else from the raw itself
         try:
             with Image.open(x["copy"]) as im:
                 x["iso"] = im.getexif().get_ifd(0x8769).get(0x8827, "")
         except Exception:
             x["iso"] = ""
+        if x["iso"] == "":
+            try:
+                x["iso"] = raw_iso(Path(x["raw_abs"])) or ""
+            except Exception:
+                x["iso"] = ""
     new = not cache_path.exists()
     with open(cache_path, "a", newline="") as f, contextlib.ExitStack() as stack:
         if workers > 1:
