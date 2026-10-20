@@ -1,0 +1,307 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>bio-automation review console</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; font: 13px/1.4 -apple-system, Segoe UI, sans-serif; background: #15171a; color: #ddd; display: flex; height: 100vh; overflow: hidden; }
+  #sidebarToggle { display: none; }
+  #sidebar { width: 260px; flex: none; overflow-y: auto; background: #1b1d21; border-right: 1px solid #2a2d31; }
+  #sidebar h1 { font-size: 13px; padding: 10px 12px; margin: 0; color: #9ab; border-bottom: 1px solid #2a2d31; display: flex; justify-content: space-between; align-items: center; }
+  .folder { padding: 10px 12px; cursor: pointer; border-bottom: 1px solid #222; }
+  .folder:hover, .folder:active { background: #22252a; }
+  .folder.active { background: #2b3a4a; }
+  .folder .path { display: block; word-break: break-all; font-size: 12px; }
+  .folder .counts { display: block; margin-top: 2px; font-size: 11px; color: #888; }
+  .folder .counts b.kept { color: #6c6; } .folder .counts b.rejected { color: #c66; } .folder .counts b.ingested { color: #aa8; }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #toolbar { padding: 8px 12px; border-bottom: 1px solid #2a2d31; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #toolbar button { background: #2a2d31; color: #ddd; border: 1px solid #3a3d41; border-radius: 4px; padding: 8px 12px; cursor: pointer; min-height: 38px; }
+  #toolbar button:hover { background: #34383d; }
+  #toolbar .hint { color: #777; font-size: 12px; }
+  #toolbar .hint .desktop-only { }
+  #grid { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; align-content: start; }
+  .card { background: #1f2227; border: 2px solid #333; border-radius: 6px; overflow: hidden; cursor: pointer; }
+  .card.sel { border-color: #58a; }
+  .card.kept { border-color: #3a6; } .card.rejected { border-color: #a33; opacity: .55; }
+  /* aspect-ratio instead of a fixed px/vh height: scales with the card's
+     own width at any column count or screen size, no viewport-height
+     quirks on mobile browsers (dynamic address-bar vh resolution, etc). */
+  .card img { width: 100%; aspect-ratio: 4 / 3; height: auto; object-fit: cover; display: block; background: #000; }
+  .card .name { padding: 5px 6px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+  .card .badge.crop { background: #574; }
+  .card .cardbar { display: flex; }
+  .card .cardbar button { flex: 1; border: none; background: #262a2f; color: #ddd; padding: 8px 0; font-size: 15px; min-height: 38px; }
+  .card .cardbar button.keepBtn { color: #6c6; } .card .cardbar button.rejectBtn { color: #c66; } .card .cardbar button.cropBtn { color: #9ab; }
+
+  /* Editor: Cropper.js (cropperjs.org) owns pinch-zoom, pan and the crop
+     box -- #editorHost is just the sized box its canvas fills; see the
+     script at the bottom for the real element-level wiring
+     (CropperImage.scalable/translatable, CropperSelection.movable/
+     resizable/zoomable), confirmed against the real v2 API docs. */
+  #editor { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: none; align-items: center; justify-content: center; flex-direction: column; z-index: 10; }
+  #editor.open { display: flex; }
+  #editorHost { width: 94vw; height: 72vh; background: #000; touch-action: none; }
+  #editorHost cropper-canvas { width: 100%; height: 100%; display: block; }
+  #editor .bar { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  #editor .bar button { background: #2a2d31; color: #ddd; border: 1px solid #3a3d41; border-radius: 4px; padding: 8px 14px; cursor: pointer; min-height: 38px; }
+  #status { padding: 6px 12px; font-size: 12px; color: #999; border-top: 1px solid #2a2d31; min-height: 18px; }
+
+  /* Narrow viewports (phones): the sidebar becomes a slide-in drawer
+     instead of a fixed 260px column eating most of the screen width, the
+     grid drops to one big column per card (a 2-up grid of cramped cards
+     with a 3-button row each was worse, not better, for actually judging
+     a photo), and the desktop-only keyboard-shortcut hint is hidden since
+     it names keys a touchscreen doesn't have. */
+  @media (max-width: 760px) {
+    #sidebarToggle { display: inline-flex; align-items: center; justify-content: center;
+      background: #2a2d31; color: #ddd; border: 1px solid #3a3d41; border-radius: 4px;
+      padding: 8px 12px; cursor: pointer; min-height: 38px; }
+    #sidebar { position: fixed; inset: 0 25vw 0 0; z-index: 20; width: auto;
+      transform: translateX(-100%); transition: transform .15s ease; box-shadow: 2px 0 12px rgba(0,0,0,.5); }
+    #sidebar.open { transform: translateX(0); }
+    #grid { grid-template-columns: 1fr; gap: 10px; }
+    #toolbar .hint .desktop-only { display: none; }
+    #editorHost { width: 98vw; height: 62vh; }
+    #editor .bar { gap: 6px; }
+    #editor .bar button { padding: 8px 10px; font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<div id="sidebarScrim" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:15;"></div>
+<div id="sidebar"><h1>observation folders</h1><div id="folders"></div></div>
+<div id="main">
+  <div id="toolbar">
+    <button id="sidebarToggle">folders</button>
+    <button id="cullBtn">cull rejected in this folder</button>
+    <span class="hint">tap a photo to zoom in, or use its keep/reject buttons<span class="desktop-only"> &middot; keyboard: K keep &middot; R reject &middot; C crop &middot; Esc close</span></span>
+  </div>
+  <div id="grid"></div>
+  <div id="status"></div>
+</div>
+<div id="editor">
+  <div id="editorHost"><img id="editorImg" alt=""></div>
+  <div class="bar">
+    <button id="zoomOut">&minus;</button>
+    <button id="zoomIn">+</button>
+    <button id="cropClear">clear crop</button>
+    <button id="cropSave">save crop</button>
+  </div>
+  <div class="bar">
+    <button id="editorKeep" style="color:#6c6">keep</button>
+    <button id="editorReject" style="color:#c66">reject</button>
+    <button id="cropClose">close</button>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/cropperjs@2.3.1/dist/cropper.min.js"></script>
+<script>
+let currentFolder = null, assets = [], selected = null;
+let cropper = null;  // current Cropper.js instance for the open editor, or null
+
+function setStatus(s) { document.getElementById('status').textContent = s; }
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body;
+}
+
+async function loadLibrary() {
+  const { folders } = await api('/api/library');
+  const el = document.getElementById('folders');
+  el.innerHTML = '';
+  for (const f of folders) {
+    const d = document.createElement('div');
+    d.className = 'folder' + (f.folder === currentFolder ? ' active' : '');
+    const c = f.counts || {};
+    d.innerHTML = `<span class="path">${f.folder}</span><span class="counts">`
+      + `<b class="kept">${c.kept||0} kept</b> · <b class="rejected">${c.rejected||0} rejected</b> · `
+      + `<b class="ingested">${c.ingested||0} new</b>${f.cropped ? ' · '+f.cropped+' cropped' : ''}</span>`;
+    d.onclick = () => { openFolder(f.folder); closeSidebar(); };
+    el.appendChild(d);
+  }
+}
+
+function openSidebar() { document.getElementById('sidebar').classList.add('open'); document.getElementById('sidebarScrim').style.display = 'block'; }
+function closeSidebar() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebarScrim').style.display = 'none'; }
+document.getElementById('sidebarToggle').onclick = openSidebar;
+document.getElementById('sidebarScrim').onclick = closeSidebar;
+
+let pollTimer = null;
+
+async function openFolder(folder) {
+  currentFolder = folder;
+  selected = null;
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  await refreshFolder();
+  loadLibrary();
+  // Kick off (or join) the background auto-adjusted preview render for this
+  // folder; harmless to call again if one's already running (the server
+  // just reports already_running and does not start a second one).
+  await api('/api/prepare', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ folder }),
+  });
+  pollWhileBuilding();
+}
+
+async function refreshFolder() {
+  const { assets: a, cache_building } = await api('/api/folder?folder=' + encodeURIComponent(currentFolder));
+  assets = a;
+  renderGrid();
+  return cache_building;
+}
+
+function pollWhileBuilding() {
+  pollTimer = setTimeout(async () => {
+    if (!currentFolder) return;
+    const stillBuilding = await refreshFolder();
+    setStatus(stillBuilding
+      ? 'rendering auto-adjusted previews via LightCraft…'
+      : (document.getElementById('status').textContent.startsWith('rendering') ? '' : document.getElementById('status').textContent));
+    if (stillBuilding) pollWhileBuilding();
+  }, 3000);
+}
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  for (const a of assets) {
+    const c = document.createElement('div');
+    c.className = 'card ' + a.status + (a === selected ? ' sel' : '');
+    // cache_ready as a cache-busting query param: once the background
+    // render flips a file from not-ready to ready, this changes the URL
+    // so the browser actually re-fetches instead of reusing the flat
+    // fallback it cached on the first (not-yet-rendered) load.
+    const src = '/img?folder=' + encodeURIComponent(currentFolder) + '&file=' + encodeURIComponent(a.file)
+      + '&v=' + (a.cache_ready ? '1' : '0');
+    const pending = a.cache_ready ? '' : '<span class="badge" style="background:#654">rendering…</span>';
+    // Tapping the photo itself is the "enlarge/zoom" action -- it opens the
+    // full-size viewer (which also has the crop tool), matching ordinary
+    // photo-gallery behavior. Keep/reject stay as their own buttons so a
+    // quick triage pass doesn't need to open and close the viewer per
+    // photo; touch devices have no keyboard, so these buttons (not the
+    // K/R shortcuts, which still work on desktop) are the real mobile path.
+    c.innerHTML = `<img src="${src}" loading="lazy"><div class="name">${a.file}${a.crop ? '<span class="badge crop">crop</span>' : ''}${pending}</div>`
+      + `<div class="cardbar"><button class="keepBtn">keep</button><button class="rejectBtn">reject</button></div>`;
+    c.querySelector('img').onclick = c.querySelector('.name').onclick = () => { selected = a; renderGrid(); openEditor(); };
+    c.querySelector('.keepBtn').onclick = (e) => { e.stopPropagation(); selected = a; setStatusFor('kept'); };
+    c.querySelector('.rejectBtn').onclick = (e) => { e.stopPropagation(); selected = a; setStatusFor('rejected'); };
+    grid.appendChild(c);
+  }
+}
+
+async function setStatusFor(status) {
+  if (!selected) return;
+  const file = selected.file;
+  await api(status === 'kept' ? '/api/keep' : '/api/reject', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ folder: currentFolder, files: [file] }),
+  });
+  await openFolder(currentFolder);
+  setStatus(`${file} -> ${status}`);
+}
+
+document.getElementById('cullBtn').onclick = async () => {
+  if (!currentFolder) return;
+  if (!confirm('Delete every rejected raw in ' + currentFolder + '? This cannot be undone.')) return;
+  const { deleted } = await api('/api/cull', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ folder: currentFolder }),
+  });
+  setStatus(deleted.length + ' file(s) deleted');
+  await openFolder(currentFolder);
+};
+
+// --- crop editor: Cropper.js v2 (cropperjs.org, MIT) owns pinch-zoom, pan
+// and the crop box natively -- CropperImage.scalable/translatable give
+// real two-finger pinch-to-zoom and drag-to-pan on touch devices, and
+// CropperSelection.movable/resizable/zoomable give a draggable/resizable
+// crop box with its own handles, all built in. This replaces an earlier
+// hand-rolled pointer-event implementation that only supported +/- button
+// zoom with no pinch or pan -- a real gap the owner flagged; this is the
+// proven library for it instead of a second attempt at hand-rolling it.
+function openEditor() {
+  if (!selected) return;
+  const img = document.getElementById('editorImg');
+  const src = '/img?folder=' + encodeURIComponent(currentFolder) + '&file=' + encodeURIComponent(selected.file)
+    + '&v=' + (selected.cache_ready ? '1' : '0');
+  document.getElementById('editor').classList.add('open');
+  if (cropper) { cropper.destroy(); cropper = null; }
+  img.onload = () => {
+    cropper = Cropper.createCropper(img);
+    const cImage = cropper.getCropperImage();
+    cImage.scalable = true;    // pinch/wheel zoom
+    cImage.translatable = true; // drag to pan
+    const sel = cropper.getCropperSelection();
+    sel.movable = true;
+    sel.resizable = true;
+    sel.zoomable = true;
+    sel.outlined = true;
+    cImage.$ready(() => {
+      if (selected.crop) {
+        const [x0, y0, x1, y1] = selected.crop;
+        const w = img.naturalWidth, h = img.naturalHeight;
+        sel.$change(x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h);
+      }
+    });
+  };
+  img.src = src;
+}
+
+function closeEditor() {
+  document.getElementById('editor').classList.remove('open');
+  if (cropper) { cropper.destroy(); cropper = null; }
+}
+
+document.getElementById('zoomIn').onclick = () => { if (cropper) cropper.getCropperImage().$zoom(0.1); };
+document.getElementById('zoomOut').onclick = () => { if (cropper) cropper.getCropperImage().$zoom(-0.1); };
+
+document.getElementById('cropSave').onclick = async () => {
+  if (!cropper || !selected) return;
+  const img = document.getElementById('editorImg');
+  const sel = cropper.getCropperSelection();
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const crop = [sel.x / w, sel.y / h, (sel.x + sel.width) / w, (sel.y + sel.height) / h];
+  await api('/api/crop', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ folder: currentFolder, file: selected.file, crop }),
+  });
+  setStatus('crop saved for ' + selected.file);
+  closeEditor();
+  await openFolder(currentFolder);
+};
+document.getElementById('cropClear').onclick = async () => {
+  if (!selected) return;
+  await api('/api/crop', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ folder: currentFolder, file: selected.file, crop: null }),
+  });
+  setStatus('crop cleared for ' + selected.file);
+  closeEditor();
+  await openFolder(currentFolder);
+};
+document.getElementById('cropClose').onclick = closeEditor;
+document.getElementById('editorKeep').onclick = async () => { await setStatusFor('kept'); closeEditor(); };
+document.getElementById('editorReject').onclick = async () => { await setStatusFor('rejected'); closeEditor(); };
+
+window.addEventListener('keydown', (e) => {
+  if (document.getElementById('editor').classList.contains('open')) {
+    if (e.key === 'Escape') closeEditor();
+    return;
+  }
+  if (e.key === 'k' || e.key === 'K') setStatusFor('kept');
+  else if (e.key === 'r' || e.key === 'R') setStatusFor('rejected');
+  else if (e.key === 'c' || e.key === 'C') openEditor();
+});
+
+loadLibrary();
+</script>
+</body>
+</html>

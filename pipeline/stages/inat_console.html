@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iNat review console</title>
+<style>
+:root{--bg:#f6f7f4;--panel:#fff;--ink:#1d2a1f;--mut:#667467;--line:#d9dfd5;--acc:#2f7d3a;--warn:#b25b00;--bad:#a12626}
+@media (prefers-color-scheme:dark){:root{--bg:#141815;--panel:#1c221d;--ink:#e6ece6;--mut:#9aa89a;--line:#2d362e;--acc:#6fcf7a;--warn:#e0a050;--bad:#e07070}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+header b{font-size:15px}.note{color:var(--mut);font-size:12px}
+#wrap{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 46px)}
+#list{overflow:auto;border-right:1px solid var(--line);background:var(--panel)}
+#list .row{padding:7px 10px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:6px;align-items:center}
+#list .row.sel{background:rgba(47,125,58,.14)}#list .row small{color:var(--mut)}
+.pill{font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);color:var(--mut)}
+.pill.ok{color:var(--acc);border-color:var(--acc)}.pill.w{color:var(--warn);border-color:var(--warn)}.pill.b{color:var(--bad);border-color:var(--bad)}
+#main{overflow:auto;padding:14px}
+#strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+#strip label{display:block;border:2px solid var(--line);border-radius:6px;padding:3px;background:var(--panel);cursor:pointer}
+#strip img{display:block;height:170px;border-radius:3px}#strip input{margin:2px}
+#big{max-width:100%;max-height:60vh;display:none;margin-bottom:10px;border-radius:4px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:900px){.cols{grid-template-columns:1fr}#wrap{grid-template-columns:1fr}}
+fieldset{border:1px solid var(--line);border-radius:6px;margin:0 0 12px;padding:10px;background:var(--panel)}
+legend{color:var(--mut);padding:0 6px;font-size:12px}
+label.f{display:block;margin:6px 0 2px;color:var(--mut);font-size:12px}
+input[type=text],input[type=number],select,textarea{width:100%;padding:6px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink)}
+textarea{min-height:56px}
+button{padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer}
+button.go{background:var(--acc);color:#fff;border-color:var(--acc)}button.sug{display:block;width:100%;text-align:left;margin:4px 0}
+.row2{display:flex;gap:8px}.row2>*{flex:1}.msg{min-height:20px;margin:6px 0}.err{color:var(--bad)}.ok{color:var(--acc)}
+</style></head><body>
+<header><b>iNat review console</b><span class="note">Nothing is sent to iNaturalist from this page; posting is a separate step you run yourself.</span>
+<a href="/export?scope=approved" download title="one flat folder of JPEGs: time + GPS only, no tags">download approved (.zip, flat)</a><a href="/export?scope=all" download title="one flat folder of JPEGs: time + GPS only, no tags">download all (.zip, flat)</a>
+<span id="counts" class="note"></span>
+<button id="bDays" title="set one location for a whole day, applied to every observation of that day that has none">Day locations</button>
+<select id="filter"><option value="pending">pending</option><option value="approved">approved</option><option value="skipped">skipped</option><option value="hold">hold</option><option value="noloc">needs location</option><option value="flagged">release flags</option><option value="nonnature">likely not nature</option><option value="all">all</option></select></header>
+<div id="wrap"><div id="list"></div><div id="main"><p class="note">Pick an observation on the left.</p></div></div>
+<script>
+var S={groups:[],cur:null,det:null,tz:[]};
+function $(i){return document.getElementById(i)}
+function api(u,o){return fetch(u,o).then(function(r){return r.json()})}
+function load(){return api('/api/state').then(function(s){S.groups=s.groups;S.tz=s.tz_choices;
+ var c=s.counts;$('counts').textContent='queue: '+s.queue+' | approved '+(c.approved||0)+' / skipped '+(c.skipped||0)+' / hold '+(c.hold||0)+' / pending '+(c.pending||0)+' of '+s.groups.length+(s.without_copy?' | '+s.without_copy+' photos have no upload copy (no location)':'');
+ drawList()})}
+function vis(g){var f=$('filter').value;
+ if(f==='all')return true;if(f==='noloc')return g.loc==='none';if(f==='nonnature')return g.nonnature;if(f==='flagged')return g.flags.length>0&&g.flags.join()!=='unscreened';return g.status===f}
+function drawList(){var h='';S.groups.filter(vis).forEach(function(g){
+ var p='';if(g.loc==='none')p+='<span class="pill b">no location</span>';else if(g.loc==='day_pin')p+='<span class="pill w">day pin</span>';if(g.nonnature)p+='<span class="pill w">not nature?</span>';else if(g.loc==='neighbor')p+='<span class="pill w">loc: nearby frame</span>';
+ g.flags.forEach(function(x){p+='<span class="pill '+(x==='unscreened'?'w':'b')+'">'+x+'</span>'});
+ if(g.posted)p+='<span class="pill ok">posted</span>';
+ h+='<div class="row'+(S.cur===g.group?' sel':'')+'" data-g="'+g.group+'"><div><b>#'+g.group+'</b> <small>'+g.day+' · '+g.n+' photo'+(g.n>1?'s':'')+'</small><br><small>'+(g.top?g.top+(g.top_share!=null?' · '+Math.round(g.top_share*100)+'%':''):(g.iconic||'no suggestion'))+'</small><br>'+p+'</div></div>'});
+ $('list').innerHTML=h||'<p class="note" style="padding:10px">Nothing in this filter.</p>';
+ Array.prototype.forEach.call($('list').querySelectorAll('.row'),function(r){r.onclick=function(){open(parseInt(r.getAttribute('data-g'),10))}})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function open(g){S.cur=g;api('/api/group?id='+g).then(function(d){S.det=d;render();drawList()})}
+function render(){var d=S.det,def=d.defaults,dec=d.decision||{},m=$('main');
+ var v=function(k,fallback){return dec[k]!=null&&dec.status!=='pending'?dec[k]:fallback};
+ var h='<div class="note">Observation #'+d.group+' · '+esc(def.camera||'')+' · location: <b>'+esc(def.loc_source)+'</b> '+esc(def.loc_note||'')+(d.flags.length?' · flags: <b>'+esc(d.flags.join(', '))+'</b>':'')+'</div>';
+ h+='<div id="strip">';
+ var order=dec.photo_order||d.photos.map(function(p){return p.idx});
+ d.photos.forEach(function(p){h+='<label title="'+esc(p.name)+' '+esc(p.time||'')+'"><input type="checkbox" class="ph" value="'+p.idx+'"'+(order.indexOf(p.idx)>=0?' checked':'')+'><img src="/img?i='+p.idx+'&s=420" data-i="'+p.idx+'"></label>'});
+ h+='</div><img id="big">';
+ h+='<div class="cols"><div><fieldset><legend>What is it (advisory suggestions, your choice)</legend>';
+ var s=d.suggestions;
+ if(s&&s.species&&s.species.length){s.species.forEach(function(x){h+='<button class="sug" data-id="'+(x.taxon_id||'')+'" data-name="'+esc(x.taxon)+'">'+esc(x.common||x.taxon)+' <i>('+esc(x.taxon)+')</i> — neighbour vote '+Math.round(x.vote_share*100)+'%'+(x.measured_accuracy!=null?', measured accuracy for this level ~'+Math.round(x.measured_accuracy*100)+'%':'')+'</button>'})}
+ else h+='<div class="note">No species suggestion.</div>';
+ if(s&&s.iconic&&s.iconic.length)h+='<div class="note">Group guess: '+s.iconic.map(function(x){return esc(x.iconic)+' '+Math.round(x.vote_share*100)+'%'}).join(', ')+'</div>';
+ h+='<label class="f">Search taxon (iNat autocomplete)</label><input type="text" id="tq" placeholder="type 3+ letters"><div id="tres"></div>';
+ h+='<label class="f">Chosen taxon (empty = leave unidentified)</label><input type="text" id="taxon_name" value="'+esc(v('taxon_name',''))+'"><input type="hidden" id="taxon_id" value="'+esc(v('taxon_id',''))+'">';
+ h+='<label class="f">Common name / what did you see (species_guess)</label><input type="text" id="species_guess" value="'+esc(v('species_guess',''))+'">';
+ h+='</fieldset><fieldset><legend>Notes</legend><label class="f">Description</label><textarea id="description">'+esc(v('description',''))+'</textarea>';
+ h+='<label class="f">Tags (comma separated)</label><input type="text" id="tags" value="'+esc(v('tags',''))+'">';
+ h+='<label class="f"><input type="checkbox" id="captive"'+(v('captive',false)?' checked':'')+'> captive / cultivated</label></fieldset></div>';
+ h+='<div><fieldset><legend>When and where</legend><label class="f">Observed on</label><input type="text" id="observed_on_string" value="'+esc(v('observed_on_string',def.observed_on_string))+'">';
+ h+='<label class="f">Time zone'+(def.time_zone?'':' (not known for this day, pick one)')+'</label><select id="time_zone"><option value="">-- choose --</option>';
+ var tz=v('time_zone',def.time_zone);S.tz.forEach(function(z){h+='<option'+(z===tz?' selected':'')+'>'+esc(z)+'</option>'});
+ h+='</select><div class="row2"><div><label class="f">Latitude</label><input type="number" step="any" id="lat" value="'+esc(v('lat',def.lat))+'"></div><div><label class="f">Longitude</label><input type="number" step="any" id="lon" value="'+esc(v('lon',def.lon))+'"></div></div>';
+ h+='<div class="row2"><div><label class="f">Accuracy (m)</label><input type="number" id="positional_accuracy" value="'+esc(v('positional_accuracy',def.positional_accuracy))+'"></div>';
+ h+='<div><label class="f">Geoprivacy</label><select id="geoprivacy">'+['open','obscured','private'].map(function(x){return '<option'+(x===v('geoprivacy','open')?' selected':'')+'>'+x+'</option>'}).join('')+'</select></div></div>';
+ h+='<div class="note" style="margin-top:6px"><a href="#" id="pinFromCard">use this location for every observation on '+esc(d.day)+' that has none</a></div>';
+ h+='</fieldset><div class="msg" id="msg"></div><button class="go" id="bA">Approve (A)</button> <button id="bS">Skip (S)</button> <button id="bH">Hold (H)</button> <button id="bP">Prev (K)</button> <button id="bN">Next (J)</button>';
+ h+='<p class="note">Status now: <b>'+esc(dec.status||'pending')+'</b>. <a href="/export?scope=group&id='+d.group+'" download>download this observation (.zip, flat: time + GPS only)</a></p></div></div>';
+ m.innerHTML=h;
+ Array.prototype.forEach.call(m.querySelectorAll('#strip img'),function(im){im.onclick=function(e){e.preventDefault();var b=$('big');b.src='/img?i='+im.getAttribute('data-i')+'&s=1200';b.style.display='block'}});
+ Array.prototype.forEach.call(m.querySelectorAll('button.sug'),function(b){b.onclick=function(){$('taxon_id').value=b.getAttribute('data-id');$('taxon_name').value=b.getAttribute('data-name');if(!$('species_guess').value)$('species_guess').value=b.firstChild.textContent.trim()}});
+ var t=null;$('tq').oninput=function(){clearTimeout(t);var q=$('tq').value;t=setTimeout(function(){api('/api/taxa?q='+encodeURIComponent(q)).then(function(r){
+  $('tres').innerHTML=r.map(function(x){return '<button class="sug" data-id="'+(x.id||'')+'" data-name="'+esc(x.name)+'" data-c="'+esc(x.common||'')+'">'+esc(x.common||x.name)+' <i>'+esc(x.name)+'</i> · '+esc(x.rank||'')+'</button>'}).join('');
+  Array.prototype.forEach.call($('tres').querySelectorAll('button'),function(b){b.onclick=function(){$('taxon_id').value=b.getAttribute('data-id');$('taxon_name').value=b.getAttribute('data-name');$('species_guess').value=b.getAttribute('data-c')||b.getAttribute('data-name')}})})},500)};
+ $('pinFromCard').onclick=function(e){e.preventDefault();var la=val('lat'),lo=val('lon');
+  if(la===''||lo===''){$('msg').innerHTML='<span class="err">Enter latitude and longitude first.</span>';return}
+  savePin({day:d.day,lat:parseFloat(la),lon:parseFloat(lo),accuracy_m:val('positional_accuracy')?parseInt(val('positional_accuracy'),10):null,label:''}).then(function(r){
+   if(r.error){$('msg').innerHTML='<span class="err">'+esc(r.error)+'</span>';return}
+   $('msg').innerHTML='<span class="ok">Pinned for '+esc(d.day)+'.</span>';load()})};
+ $('bA').onclick=function(){decide('approved')};$('bS').onclick=function(){decide('skipped')};$('bH').onclick=function(){decide('hold')};
+ $('bN').onclick=function(){step(1)};$('bP').onclick=function(){step(-1)}}
+function val(i){var e=$(i);return e?e.value:''}
+function savePin(body){return fetch('/api/daypin',{method:'POST',headers:{'Content-Type':'application/json','X-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json()})}
+function showDays(){S.cur=null;drawList();api('/api/days').then(function(r){
+ var h='<h3 style="margin:0 0 6px">Day locations</h3><p class="note">One place for a whole day. It is used only for observations that have no location of their own (EXIF, phone track or a nearby frame always win). Paste "lat, lon" as copied from a map. The accuracy is the radius of the place in metres; it goes into the file and onto iNaturalist as the uncertainty circle, so be honest (a whole trail: 500-2000, one clearing: 50).</p>';
+ h+='<table style="border-collapse:collapse;width:100%"><tr class="note"><th align="left">day</th><th>obs.</th><th>photos</th><th>own location</th><th>from pin</th><th>none</th><th align="left">location (lat, lon)</th><th>accuracy m</th><th align="left">label</th><th></th></tr>';
+ r.days.forEach(function(d){var p=d.pin;
+  h+='<tr data-day="'+d.day+'" style="border-top:1px solid var(--line)"><td>'+d.day+'</td><td align="center">'+d.groups+'</td><td align="center">'+d.photos+'</td><td align="center">'+d.own_location+'</td><td align="center">'+d.from_pin+'</td><td align="center" style="'+(d.none?'color:var(--bad);font-weight:600':'')+'">'+d.none+'</td>'+
+   '<td><input type="text" class="pl" size="26" placeholder="39.9305, -77.4406" value="'+(p?esc(p.lat.toFixed(5)+', '+p.lon.toFixed(5)):'')+'"></td>'+
+   '<td><input type="number" class="pa" style="width:90px" value="'+(p&&p.accuracy_m?p.accuracy_m:r.default_accuracy_m)+'"></td>'+
+   '<td><input type="text" class="pn" size="18" placeholder="e.g. creek trail" value="'+(p?esc(p.label||''):'')+'"></td>'+
+   '<td><button class="ps">Save</button> '+(p?'<button class="pc">Clear</button>':'')+'</td></tr>'});
+ h+='</table><div class="msg" id="dmsg"></div>';
+ $('main').innerHTML=h;
+ Array.prototype.forEach.call(document.querySelectorAll('tr[data-day]'),function(tr){var day=tr.getAttribute('data-day');
+  var s=tr.querySelector('.ps');if(s)s.onclick=function(){savePin({day:day,latlon:tr.querySelector('.pl').value,accuracy_m:parseInt(tr.querySelector('.pa').value,10),label:tr.querySelector('.pn').value}).then(function(x){
+    if(x.error){$('dmsg').innerHTML='<span class="err">'+esc(day)+': '+esc(x.error)+'</span>';return}load().then(showDays)})};
+  var c=tr.querySelector('.pc');if(c)c.onclick=function(){savePin({day:day,clear:true}).then(function(){load().then(showDays)})}})})}
+function decide(status){var d=S.det;var photos=[];Array.prototype.forEach.call(document.querySelectorAll('.ph'),function(c){if(c.checked)photos.push(parseInt(c.value,10))});
+ var lat=val('lat'),lon=val('lon'),pa=val('positional_accuracy');
+ var body={group:d.group,status:status,taxon_id:val('taxon_id')?parseInt(val('taxon_id'),10):null,taxon_name:val('taxon_name'),species_guess:val('species_guess'),description:val('description'),tags:val('tags'),
+  geoprivacy:val('geoprivacy'),captive:$('captive').checked,observed_on_string:val('observed_on_string'),time_zone:val('time_zone'),lat:lat===''?null:parseFloat(lat),lon:lon===''?null:parseFloat(lon),positional_accuracy:pa===''?null:parseInt(pa,10),photo_order:photos};
+ if(status==='approved'&&!photos.length){$('msg').innerHTML='<span class="err">Select at least one photo.</span>';return}
+ fetch('/api/decide',{method:'POST',headers:{'Content-Type':'application/json','X-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(r){
+  if(r.error){$('msg').innerHTML='<span class="err">'+esc(r.error)+'</span>';return}
+  $('msg').innerHTML='<span class="ok">Saved: '+status+'</span>';load().then(function(){if(status!=='pending')step(1)})})}
+function step(dir){var vis_=S.groups.filter(vis);var i=vis_.map(function(g){return g.group}).indexOf(S.cur);
+ var n=vis_[Math.max(0,Math.min(vis_.length-1,(i<0?0:i+dir)))];if(n)open(n.group)}
+document.addEventListener('keydown',function(e){if(/INPUT|TEXTAREA|SELECT/.test((e.target.tagName||'')))return;
+ if(e.key==='a')decide('approved');else if(e.key==='s')decide('skipped');else if(e.key==='h')decide('hold');else if(e.key==='j')step(1);else if(e.key==='k')step(-1)});
+$('filter').onchange=drawList;$('bDays').onclick=showDays;
+load().then(function(){var f=S.groups.filter(vis)[0];if(f)open(f.group)});
+</script></body></html>

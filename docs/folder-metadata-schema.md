@@ -31,12 +31,14 @@ F:\Bio\
           IMG_1234.jpg
         export\
           inat\
-            IMG_1234_upload.jpg
+            IMG_1234.jpg
           stock\
-            IMG_1234_stock.jpg
+            IMG_1234.jpg
         metadata\
           observation.json
           assets.jsonl
+          IMG_1234.exif.json
+          IMG_1234.xmp
           keywords.json
           release.json
 ```
@@ -59,58 +61,12 @@ F:\Bio\
 - Use the same stem for all derivatives of one image.
 - Prefer lowercase, hyphen-separated names for derived artifacts.
 
-## Metadata files
+## Additional metadata files
 
-### `metadata/observation.json`
-
-Observation-level data pulled from iNaturalist or entered locally.
-
-```json
-{
-  "observation_id": 123456789,
-  "obsdate": "2026-03-01",
-  "taxon_name": "Prairie Warbler",
-  "taxon_id": 12345,
-  "place_guess": "F:\\Bio\\2026\\2026-03-01",
-  "locality": "nearfield notes",
-  "license": "CC BY-NC",
-  "quality_grade": "research",
-  "source": "iNaturalist",
-  "notes": "Imported from existing observation"
-}
-```
-
-### `metadata/image.exif.json`
-
-Per-file EXIF extracted from the raw or export copy.
-
-```json
-{
-  "file": "source/raw/DSC_0008.CR2",
-  "datetime_original": "2025-10-09 15:42:31",
-  "camera_make": "Nikon",
-  "camera_model": "Z 6",
-  "gps_latitude": 41.1234,
-  "gps_longitude": -72.5678,
-  "gps_altitude": 12.3
-}
-```
-
-### `metadata/image.xmp`
-
-Sidecar used by tooling that prefers XMP. Keep this in sync with EXIF where possible.
-
-### `metadata/assets.jsonl`
-
-One row per file for file-level processing state.
-
-```json
-{"file":"source/raw/IMG_1234.CR2","role":"original","status":"kept"}
-{"file":"review/IMG_1234.jpg","role":"review","status":"selected"}
-{"file":"export/inat/IMG_1234_upload.jpg","role":"upload","status":"ready"}
-{"file":"export/stock/IMG_1234_stock.jpg","role":"stock","status":"ready"}
-{"file":"source/raw/IMG_0001.CR2","role":"original","status":"rejected"}
-```
+`observation.json`, `assets.jsonl`, `<stem>.exif.json`, and `<stem>.xmp` are
+specified once, precisely, in **Minimal data schema** below — not repeated
+here. This section covers the two metadata files that section doesn't:
+`keywords.json` and `release.json`.
 
 ### `metadata/keywords.json`
 
@@ -171,7 +127,7 @@ Rights and usage notes for stock uploads.
 
 1. Ingest into `source/`.
 2. Create the observation folder and `observation.json`.
-3. Extract EXIF into `metadata/image.exif.json` and write matching XMP where useful.
+3. Extract EXIF into `metadata/<stem>.exif.json` and write matching XMP where useful.
 4. Rename files by capture time if needed.
 5. Generate a review JPEG.
 6. Export an iNat-sized upload copy.
@@ -181,41 +137,49 @@ Rights and usage notes for stock uploads.
 
 Keep it script-only and command-oriented. One thin CLI should orchestrate a few small library modules.
 
-```text
-scripts/
-  bio.py                  # single entrypoint / CLI dispatcher
-  ingest.py               # copy card -> raw inbox
-  cull.py                 # mark keep/reject, delete rejected raws
-  metadata.py             # iNat fetch, EXIF/XMP write, local sidecars
-  render.py               # review JPEGs and upload/stock exports
-  stock.py                # captions/keywords from observation data
+Note: the `scripts/` + `lib/` split below was the original planning sketch
+and was never implemented. It is kept only for history; the actual layout is
+a flat `src/bio_automation/` package:
 
-lib/
+```text
+src/bio_automation/
+  cli.py                  # single entrypoint / CLI dispatcher
   paths.py                # folder naming, stem rules, path helpers
-  models.py               # dataclasses / typed dicts for JSON
-  io.py                   # read/write json, jsonl, xmp, sidecars
-  exif.py                 # exiftool wrapper or equivalent
+  models.py               # Asset/Observation dataclasses for JSON
+  io.py                   # read/write json, jsonl
+  exif.py                 # exiftool wrapper; EXIF/XMP sidecar helpers
   inat.py                 # iNat read-only API client
-  pipeline.py             # state transitions and retention rules
+  pipeline.py             # state transitions, retention rules, orchestration
+  render.py               # review JPEGs and upload/stock exports (stub)
+  stock.py                # captions/keywords from observation data (stub)
 ```
 
 ### Workflow
 
 1. **ingest**
-   - Copy camera files from card/import folder into an observation work folder.
+   - Copy camera files from card/import folder directly into `source/raw/`.
    - Create observation id + folder name.
-   - Record every file in `assets.jsonl`.
+   - Record every file in `assets.jsonl` with status `ingested`.
 
 2. **cull**
-   - Generate review JPEGs.
-   - Mark files `kept` or `rejected`.
-   - Delete rejected raws immediately after culling.
-   - Move only kept raws into long-term `source/raw/`.
+   - Mark files `kept` or `rejected` in `assets.jsonl` (raws already live in `source/raw/`; culling never moves them).
+   - Delete rejected raws in place, immediately after marking.
+   - Review-JPEG generation is a separate step (see **render-review** in the minimal command set) and does not gate where a raw lives — it can run before, after, or independent of culling.
 
 3. **metadata pull**
    - Fetch read-only iNaturalist observation data only.
    - Do not create/upload/sync observations to iNat.
-   - Store the fetched observation payload locally.
+   - Store the fetched observation payload locally by merging it into the
+     observation record `ingest` already created: `metadata/observation.json`
+     must already exist (a missing file is a user error — run `bio ingest`
+     first), and the merge only overwrites the iNat-owned fields
+     (`observation_id`, `source`, `taxon`, `place_guess`, `license`,
+     `quality_grade`); `keywords_seed` is unioned rather than replaced.
+     Everything else — notably `obsdate` and `locality` — is local-only and
+     is never touched, since `obsdate` is already baked into the folder path.
+     If the folder is already linked to a different `observation_id`, abort
+     unless `--force` is passed, to avoid silently re-pointing a folder at a
+     different iNat record.
 
 4. **sidecar write**
    - Write EXIF JSON sidecars from the raw file.
@@ -236,11 +200,33 @@ Use one folder-level observation record plus one file-level asset log.
 
 ### `metadata/observation.json`
 
+`source` is a two-state lifecycle, not a free-form string: `bio ingest`
+always writes `"local-ingest"`; `bio fetch-inat` overwrites it to
+`"iNaturalist"` only after a successful merge. Right after ingest, before any
+`fetch-inat` call:
+
+```json
+{
+  "observation_id": null,
+  "obsdate": "2026-03-01",
+  "source": "local-ingest",
+  "taxon": {},
+  "place_guess": "F:\\Bio\\2026\\2026-03-01",
+  "locality": null,
+  "license": null,
+  "quality_grade": null,
+  "keywords_seed": []
+}
+```
+
+After `bio fetch-inat <folder> --observation-id 123456789` merges in the
+iNat-owned fields (see **Workflow** step 3):
+
 ```json
 {
   "observation_id": 123456789,
   "obsdate": "2026-03-01",
-  "source": "inat-readonly",
+  "source": "iNaturalist",
   "taxon": {
     "id": 12345,
     "name": "Prairie Warbler",
@@ -259,6 +245,9 @@ Use one folder-level observation record plus one file-level asset log.
 }
 ```
 
+`obsdate` and `locality` are local-only and are never touched by
+`fetch-inat`.
+
 ### `metadata/assets.jsonl`
 
 One row per file and per processing state.
@@ -271,7 +260,7 @@ One row per file and per processing state.
 {"file":"export/stock/IMG_1234.jpg","role":"stock","status":"ready"}
 ```
 
-### `metadata/image.exif.json`
+### `metadata/<stem>.exif.json`
 
 ```json
 {
@@ -288,39 +277,54 @@ One row per file and per processing state.
 }
 ```
 
-### `metadata/image.xmp`
+### `metadata/<stem>.xmp`
 
-Sidecar mirror for apps that prefer XMP.
+Sidecar mirror for apps that prefer XMP, one per raw.
 
 ## Minimal command set
 
 ```text
 bio ingest <card-or-folder> --obsdate YYYY-MM-DD --slug "prairie-warbler"
 bio cull <obs-folder>
-bio fetch-inat <obs-folder> --observation-id 123456789
+bio fetch-inat <obs-folder> --observation-id 123456789 [--force]
 bio write-sidecars <obs-folder>
 bio render-review <obs-folder>
 bio export-inat <obs-folder>
 bio export-stock <obs-folder>
 bio build-keywords <obs-folder>
-bio prune <obs-folder> --rejected-only
 ```
+
+`bio cull` already deletes rejected raws in place (see **Workflow** step 2);
+there is no separate `prune` command.
+
+`--force` on `fetch-inat` is only needed to relink a folder that is already
+associated with a different `--observation-id`; see **Workflow** step 3.
 
 ## Minimal functions
 
 - `make_observation_path(obsdate, slug) -> Path`
-- `load_observation(folder) / save_observation(folder, data)`
+- `load_observation(folder) -> Observation` / `save_observation(folder, data: Observation)`
 - `scan_assets(folder) -> list[Asset]`
-- `mark_asset(file, status, role)`
+- `save_assets(folder, assets: list[Asset])`
+- `set_asset_status(folder, file_names, status, selected) -> list[Asset]`
 - `delete_rejected_raws(folder)`
-- `fetch_inat_observation(observation_id) -> dict`
+- `fetch_inat_observation(observation_id) -> dict` (returns the iNat-owned
+  subset of fields — `observation_id`, `source`, `taxon`, `place_guess`,
+  `license`, `quality_grade`, `keywords_seed` — reshaped into
+  bio-automation's own field names, not iNat's raw API response)
+- `merge_inat_fields(existing: Observation, fetched: dict) -> Observation`
+  (overwrites only the iNat-owned fields, unions `keywords_seed`, leaves
+  `obsdate`/`locality`/everything else untouched; pure, no I/O)
 - `extract_exif(raw_path) -> dict`
-- `write_exif_json(asset_path, data)`
-- `write_xmp_sidecar(asset_path, data)`
-- `render_review_jpeg(raw_path) -> Path`
-- `export_inat_jpeg(raw_path) -> Path`
-- `export_stock_jpeg(raw_path) -> Path`
-- `build_stock_metadata(observation, asset) -> {title, caption, keywords}`
+- `write_sidecars(folder) -> list[Path]` (writes `metadata/<stem>.exif.json`
+  + `metadata/<stem>.xmp` for every kept raw)
+- `render_review_jpeg(raw_path, dest_path) -> Path` (stub pending an
+  image-rendering dependency — see Implementation notes)
+- `export_inat_jpeg(raw_path, dest_path) -> Path` (stub, same dependency)
+- `export_stock_jpeg(raw_path, dest_path) -> Path` (stub, same dependency)
+- `build_keywords(observation: Observation) -> {title, caption, keywords, source_taxon, source_observation_id}`
+  (one record per observation folder, not per asset — `keywords.json` is a
+  single shared file)
 
 ## Implementation notes
 
@@ -329,6 +333,32 @@ bio prune <obs-folder> --rejected-only
 - Keep raw retention strict: only selected raws survive long term.
 - Prefer plain JSON, JSONL, and XMP over any catalog database for v1.
 - Make the pipeline idempotent so reruns do not duplicate exports or metadata.
+- `observation.json`/`assets.jsonl` are the `Observation`/`Asset` dataclasses in
+  `models.py`, not ad hoc dicts: writers call `dataclasses.asdict()` before
+  handing data to `io.write_json`/`write_jsonl`, and readers reconstruct with
+  `Observation(**data)` / `Asset(**row)`. This is v1-only ceremony we accept:
+  the pipeline is the sole reader and writer of its own files, so unknown or
+  missing keys raise `TypeError` immediately rather than silently drifting.
+  If a future step (e.g. real `fetch-inat`) needs to tolerate extra fields,
+  extend the dataclasses or filter keys explicitly at that boundary instead of
+  reverting to dicts.
+- `Observation.source` is a two-state lifecycle, not a free-form string:
+  `"local-ingest"` (set by `bio ingest`) and `"iNaturalist"` (set by
+  `bio fetch-inat` on a successful merge). The `"inat-readonly"` value that
+  used to appear here described the API *access policy* (read-only), not
+  per-record data provenance, and has been retired.
+- `bio write-sidecars`/`render-review`/`export-inat`/`export-stock` and their
+  underlying `render.py`/`exif.py` functions are implemented (2026-10-19).
+  review/inat/stock JPEGs are sourced from the raw's embedded preview
+  (`exiftool -b -PreviewImage`, falling back to `-JpgFromRaw`), resized and
+  re-encoded with Pillow (now a real `pyproject.toml` dependency), not a full
+  raw development. `export-stock` is therefore capped by whatever
+  resolution/color the camera embedded in-frame -- a raw-decode library
+  (e.g. `rawpy`/LibRaw, already used elsewhere in this codebase by
+  `preclean.py`) would be needed to go beyond that, if ever needed for stock
+  buyers. All four operate only on raws at `status == "kept"` (not merely
+  ingested) -- a raw that cull never explicitly kept is skipped, not treated
+  as implicitly kept.
 
 ## What to leave manual at first
 

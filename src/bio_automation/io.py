@@ -28,3 +28,10 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         text += "\n"
     path.write_text(text, encoding="utf-8")
 
+
+
+def append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    """Append one row as a single line (no read-modify-rewrite)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(row, sort_keys=True) + "\n")

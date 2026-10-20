@@ -1,0 +1,3 @@
+{"group": 1, "status": "skipped", "taxon_id": 47367, "taxon_name": "Opiliones", "species_guess": "Harvestmen", "description": "", "tags": "", "geoprivacy": "open", "captive": false, "observed_on_string": "2026-09-05 07:15:00", "time_zone": "Eastern Time (US & Canada)", "lat": null, "lon": null, "positional_accuracy": null, "photo_order": [0, 1], "ts": "2026-10-19T09:00:00"}
+{"group": 2, "status": "pending", "ts": "2026-10-19T09:10:00"}
+{"group": 2, "status": "hold", "ts": "2026-10-19T09:15:00"}

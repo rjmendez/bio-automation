@@ -24,3 +24,5 @@ env/
 dist/
 build/
 *.sqlite3
+*.egg-info/
+tmp/
