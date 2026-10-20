@@ -49,15 +49,17 @@ by the owner in iNat. Build upload sets (files + CSV), never auto-post.
 **Remote download (owner works over the LAN, 2026-10-20).** `bio export-zip --kind
 inat|stock SRC...` validates every JPEG against the standard first and writes ONE flat
 stored zip + `.sha256` into `D:/bio-cache/downloads`; nothing is written when any file
-violates it. `bio serve-downloads --tailscale-login <login>` serves only that folder's zips
-on 127.0.0.1 (read-only, resumable ranges); `tailscale serve --bg --https=8780
-http://127.0.0.1:8780` publishes it on the tailnet. **No passwords:** the tailnet identifies
-the caller (the server accepts only a loopback peer carrying `Tailscale-User-Login`, and
-refuses to bind anything but loopback). Fetch from a tailnet device with `curl -C - -O
-https://<host>.<tailnet>.ts.net:8780/<name>.zip`. Never reuse `render._check_export_bounds`
-for validation: it deletes the file it checks. Persistent services and scheduled tasks need
-the owner's explicit grant (the permission classifier blocks them); write the script and
-hand it over.
+violates it. **The owner does NOT want anything on the tailnet (2026-10-20).** Fetch zips
+with `scp user@host:D:/bio-cache/downloads/<name>.zip .` (key auth over the existing sshd).
+`bio serve-downloads` (tailnet-identity auth) is DISABLED (task Bio-Downloads stopped): its
+`Tailscale-User-Login` trust is only safe when `tailscale serve` is the ONLY thing that can
+reach the port. It was NOT: the front-door Caddy site `photos.lab.floppydicks.net:4443`
+(LAN + tailnet) proxied the same port 8780 and passed a forged header through, so any LAN
+client got the zips (reproduced, then closed). Before trusting a header from a loopback
+upstream, enumerate every proxy that can forward to that port (`Caddyfile`, `tailscale serve
+status`). Never reuse `render._check_export_bounds` for validation: it deletes the file it
+checks. Persistent services and scheduled tasks need the owner's explicit grant (the
+permission classifier blocks them); write the script and hand it over.
 
 **Adobe Stock gallery (2026-10-20).** Framework, not hand-rolled: PiGallery2 3.5.2 (MIT;
 native Windows install is unsupported by the maintainer, needs Node 22, so it runs from
@@ -65,9 +67,14 @@ native Windows install is unsupported by the maintainer, needs Node 22, so it ru
 It serves `F:/Bio-export/adobe-stock/gallery`, a folder of HARDLINKS (no copies) to the 1,900
 shortlist-A files (`F:/bio-automation-data/build_gallery.py`): research grade, species level,
 JPEG quality >= q93, >= 24 MP, not tentative. Originals download unchanged (byte-identical,
-verified). Listens on 127.0.0.1:8781, published by `tailscale serve --https=8781`; app login
-`owner` (password in `F:/services/bio-gallery/password.txt`; the default admin/admin was
-deleted by `gallery_secure.py`). Supervisor `F:/services/bio-gallery/run-gallery.ps1`.
+verified). Listens on 127.0.0.1:8781 ONLY (the tailscale serve entry was removed at the
+owner's request); app login `owner` (password in `F:/services/bio-gallery/password.txt`; the
+default admin/admin was deleted by `gallery_secure.py`). Supervisor
+`F:/services/bio-gallery/run-gallery.ps1` (not registered as a task). LAN path (proposed,
+needs the owner's yes because it edits the front door): `photos.lab.floppydicks.net` already
+resolves to the LAN IP 172.16.100.11 and the Caddy site of that name already listens there
+with the wildcard Let's Encrypt cert; only its `reverse_proxy` still points at 8780 (the
+retired review console) instead of 8781.
 
 **No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
 are shelved: do not build, extend, audit or fix them. The focus is bulk photo
