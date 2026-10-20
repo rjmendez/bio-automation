@@ -128,23 +128,18 @@ def main():
     todo = [x for x in todo if x[0] not in done or 'error' in done[x[0]]]
     model = vf.pick_model()
     print('model:', model, '| to do', len(todo), flush=True)
-    gpu = {'main_gpu': 1}
+    gpu = vf.gpu_options()
+    print('ollama options:', gpu, flush=True)
     t0 = time.time()
     for i, (name, path, tax) in enumerate(todo, 1):
         try:
             body = {'model': model, 'stream': False, 'format': 'json', 'think': False, 'keep_alive': '30m',
                     'options': {'temperature': 0, **gpu},
                     'messages': [{'role': 'user', 'content': prompt(tax), 'images': [vf.small(path)]}]}
-            try:
-                r = vf.http('/api/chat', body)
-            except Exception:
-                body.pop('think', None)
-                r = vf.http('/api/chat', body)
+            r = vf.chat(body)
             done[name] = {'tags': json.loads(r['message']['content']), 'taxon': tax.get('name'), 'iconic': tax.get('iconic'), 'model': model}
         except Exception as e:
             done[name] = {'error': f'{type(e).__name__}: {str(e)[:100]}'}
-            if gpu and i < 5:
-                gpu = {}
         if i % 20 == 0 or i == len(todo):
             json.dump(done, open(OUT, 'w'))
             el = time.time() - t0

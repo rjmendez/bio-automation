@@ -16,6 +16,8 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image
 
+from bio_automation import ort_providers
+
 CACHE_DIR = Path(r"C:\TopazModels")
 _MODEL_DIR = CACHE_DIR / "daclip-v2-fp32-224x224-1x-ox"
 _ONNX_NAME = "daclip-v2-fp32-224x224-1x.onnx"
@@ -28,13 +30,16 @@ _SIZE = 224
 
 
 def load_session(cache_dir: Path = CACHE_DIR) -> ort.InferenceSession:
-    """Load the DA-CLIP ONNX model and return an InferenceSession."""
+    """Load the DA-CLIP ONNX model and return an InferenceSession on CUDA when it can get it.
+
+    The CUDA device comes from BIO_ORT_CUDA_DEVICE (default 0).  A session that ends up on CPU is reported
+    (WARNING + ort_providers.degraded_counts()) rather than returned silently."""
     model_path = Path(cache_dir) / "daclip-v2-fp32-224x224-1x-ox" / _ONNX_NAME
     if not model_path.exists():
         raise FileNotFoundError(f"DA-CLIP model not found: {model_path}")
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    return ort.InferenceSession(str(model_path), sess_options=opts)
+    return ort_providers.open_session(ort, model_path, sess_options=opts, label="daclip")
 
 
 def preprocess(img_bgr_uint8: np.ndarray) -> np.ndarray:

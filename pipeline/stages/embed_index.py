@@ -3,16 +3,21 @@
 Config-driven (embed_config.json). Idempotent: points already indexed are skipped.
 Payloads never contain coordinates or credentials: source, ids, taxon, quality, date, obscured flag only.
 usage: embed_index.py [--limit N]
+
+Execution providers (all optional keys in embed_config.json): "providers" (default CUDA then CPU), "cuda_device_id"
+(overridden by env BIO_ORT_CUDA_DEVICE), "require_cuda" (true = refuse to run on CPU). A session that does not get CUDA is
+reported at WARNING and counted (ort_providers.degraded_counts()), never silent. EMBED_CONFIG overrides the config path.
 """
 import hashlib, json, os, sys, time
 import numpy as np
 from PIL import Image
 import onnxruntime as ort
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG = json.load(open(os.path.join(HERE, 'embed_config.json'), encoding='utf-8'))
+sys.path.insert(0, HERE)
+from ort_providers import configured_device_id, open_session  # noqa: E402
+
+CFG = json.load(open(os.environ.get('EMBED_CONFIG') or os.path.join(HERE, 'embed_config.json'), encoding='utf-8'))
 
 
 class Embedder:
@@ -25,7 +30,9 @@ class Embedder:
         self.std = np.array(pp.get('image_std', [0.5, 0.5, 0.5]), dtype=np.float32).reshape(1, 1, 3)
         so = ort.SessionOptions()
         so.intra_op_num_threads = CFG.get('threads', 4)
-        self.sess = ort.InferenceSession(os.path.join(md, CFG['onnx_file']), so, providers=['CPUExecutionProvider'])
+        self.sess = open_session(ort, os.path.join(md, CFG['onnx_file']), sess_options=so, requested=CFG.get('providers'),
+                                 device_id=configured_device_id(CFG.get('cuda_device_id')),
+                                 require_cuda=bool(CFG.get('require_cuda', False)), label='embed_index')
         self.inp = self.sess.get_inputs()[0].name
         outs = [o.name for o in self.sess.get_outputs()]
         self.out = CFG['output_name'] if CFG['output_name'] in outs else outs[-1]
@@ -59,6 +66,8 @@ def inat_meta():
 
 
 def main():
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Distance, PointStruct, VectorParams
     limit = int(sys.argv[sys.argv.index('--limit') + 1]) if '--limit' in sys.argv else None
     emb = Embedder()
     dim = emb.embed([next(os.path.join(CFG['sources'][s], f) for s in CFG['sources']

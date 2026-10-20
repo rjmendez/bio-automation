@@ -28,7 +28,8 @@ def main():
     if os.path.exists(VEC):
         z = np.load(VEC)
         vec = {int(i): v for i, v in zip(z['ids'], z['vectors'])}
-    gpu = {'main_gpu': 1}
+    gpu = vf.gpu_options()
+    print('ollama options:', gpu, flush=True)
     last_progress = time.time()
     t0, n = time.time(), 0
     print('vision model:', model, flush=True)
@@ -59,8 +60,6 @@ def main():
                     vec[i] = emb.embed([p])[0]
             except Exception as e:
                 done[str(i)] = {'error': f'{type(e).__name__}: {str(e)[:100]}'}
-                if gpu and n < 5:
-                    gpu = {}
             n += 1
             last_progress = time.time()
             if n % 50 == 0:
