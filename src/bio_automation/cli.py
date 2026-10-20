@@ -386,7 +386,7 @@ def cmd_fetch_inat(args: argparse.Namespace) -> int:
             f"{folder} is already linked to iNat observation {existing.observation_id}; "
             f"pass --force to relink to {args.observation_id}"
         )
-    fetched = fetch_inat_observation(args.observation_id)
+    fetched = fetch_inat_observation(args.observation_id, with_lineage=True)
     save_observation(folder, merge_inat_fields(existing, fetched))
     print(folder / "metadata" / "observation.json")
     return 0
