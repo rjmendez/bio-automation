@@ -1,4 +1,4 @@
-"""Pre-stack cleanup: raw denoise, then levels, in a fixed order with one
+"""Pre-stack cleanup: slb pass (Topaz Sharpen Refocus; NOT a denoiser, see compute_fixed_params), then levels, in a fixed order with one
 fixed parameter set shared across the whole stack, before Zerene aligns/
 merges the frames. "Other processing" (sharpen/upscale) stays a later,
 separate stage -- the existing post-stack topaz.enhance()/lce pass run
@@ -114,7 +114,7 @@ def _to_chw_rgb_f32(img_bgr_hwc_u16: np.ndarray) -> np.ndarray:
 
 def _sharpen_f32(img_chw_f32: np.ndarray, cache: ModelCache,
                   blur: float, noise: float) -> np.ndarray:
-    """Run the slb lens-blur/denoise model on float32 [0,1] CHW input and
+    """Run the slb (Topaz Sharpen Refocus) model on float32 [0,1] CHW input and
     return float32 [0,1] CHW output, skipping topaz.sharpen()'s uint8
     round-trip. Mirrors its tiling/feed logic exactly; kept separate
     rather than adding a dtype branch to sharpen() itself, which is
@@ -313,13 +313,16 @@ def apply_levels_masked(img_chw_f32: np.ndarray, mask_hw: np.ndarray,
 
 
 def compute_fixed_params(raw_paths: list[Path], cache: ModelCache,
-                          noise: float = 1.0) -> tuple[float, float]:
+                          noise: float = 0.0) -> tuple[float, float]:
     """Estimate (blur, noise) once from the middle frame of *raw_paths* and
     return it for reuse across the whole stack.
 
-    *noise* overrides the estimated noise value directly: denoise strength
-    is the point of this pass, so it is a dial the caller sets (clamped to
-    [0, 1], the model's trained range), not a per-frame estimate. *blur* --
+    *noise* is slb's second parameter t_param1, set directly by the caller
+    (clamped to [0, 1], the model's trained range), not a per-frame
+    estimate. MEASURED 2026-10-20: t_param1 is a second SHARPENING amplitude,
+    NOT a denoiser (noisy input rms 7.95 -> 11.3/17.8/24.8 at 0.25/0.5/1.0),
+    so the default is 0.0; a real denoiser (dnt_beta) only helps above
+    sigma ~10-16/255 and is not wired here. *blur* --
     lens-blur sharpening strength -- still comes from the autoparam model,
     since that is a real optical property of the lens/aperture the whole
     stack shares, not an artifact of any one frame. Estimated at native
@@ -334,7 +337,7 @@ def compute_fixed_params(raw_paths: list[Path], cache: ModelCache,
 
 
 def denoise_stack_frames(raw_paths: list[Path], dest_dir: Path,
-                          noise: float = 1.0, exposure_ev: float = 0.0,
+                          noise: float = 0.0, exposure_ev: float = 0.0,
                           subject_boost_ev: float = 0.0,
                           cache: ModelCache | None = None,
                           min_free_gb: float = 5.0) -> list[Path]:

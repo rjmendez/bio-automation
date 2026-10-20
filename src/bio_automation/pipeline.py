@@ -386,7 +386,7 @@ def stack_focus(folder: Path, method: str = "focus-stack", timeout: float = 1800
     return asset
 
 
-def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
+def clean_and_stack(folder: Path, noise: float = 0.0, exposure_ev: float = 0.0,
                      subject_boost_ev: float = 0.0,
                      method: str = "focus-stack", timeout: float = 1800.0,
                      min_free_gb: float = 5.0, check_subjects: bool = True,
@@ -457,7 +457,7 @@ def clean_and_stack(folder: Path, noise: float = 1.0, exposure_ev: float = 0.0,
     return asset
 
 
-def stack_all(base_dir: Path, noise: float = 1.0, exposure_ev: float = 0.0,
+def stack_all(base_dir: Path, noise: float = 0.0, exposure_ev: float = 0.0,
               subject_boost_ev: float = 0.0,
               method: str = "focus-stack", timeout: float = 1800.0,
               min_free_gb: float = 5.0, check_subjects: bool = True) -> list[dict]:
@@ -525,7 +525,7 @@ def build_and_save_keywords(folder: Path) -> dict:
 
 def process_observation(folder: Path, *, method: str = "focus-stack", timeout: float = 1800.0,
                          min_free_gb: float = 5.0, check_subjects: bool = True,
-                         denoise: bool = False, noise: float = 1.0, exposure_ev: float = 0.0,
+                         denoise: bool = False, noise: float = 0.0, exposure_ev: float = 0.0,
                          subject_boost_ev: float = 0.0, cache: ModelCache | None = None) -> dict:
     """Run the mechanical, no-judgment-required chain for one observation
     folder that a human has already ingested and curated (kept/rejected via
@@ -607,7 +607,7 @@ def process_observation(folder: Path, *, method: str = "focus-stack", timeout: f
 
 def process_all(base_dir: Path, *, method: str = "focus-stack", timeout: float = 1800.0,
                  min_free_gb: float = 5.0, check_subjects: bool = True,
-                 denoise: bool = False, noise: float = 1.0, exposure_ev: float = 0.0,
+                 denoise: bool = False, noise: float = 0.0, exposure_ev: float = 0.0,
                  subject_boost_ev: float = 0.0) -> list[dict]:
     """Run process_observation() over every observation folder under
     *base_dir*, reusing discover_observation_folders() -- the same

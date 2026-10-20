@@ -97,8 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stack.add_argument("--denoise", action="store_true",
                           help="Denoise+levels every raw (fixed params shared across "
                                "the stack) before handing off to the stacking engine")
-    p_stack.add_argument("--noise", type=float, default=1.0,
-                          help="Fixed denoise strength 0..1, only with --denoise")
+    p_stack.add_argument("--noise", type=float, default=0.0,
+                          help="Fixed slb t_param1 (a SHARPENING amplitude, not a denoiser; measured 2026-10-20) 0..1, default 0, only with --denoise")
     p_stack.add_argument("--exposure-ev", type=float, default=0.0,
                           help="Fixed EV pull-down applied after denoise, only with --denoise "
                                "(negative leaves headroom under clipping for specular highlights)")
@@ -121,8 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stack_all.add_argument("base_dir")
     p_stack_all.add_argument("--method", default="focus-stack", choices=["focus-stack", "zerene"])
     p_stack_all.add_argument("--timeout", type=float, default=1800.0)
-    p_stack_all.add_argument("--noise", type=float, default=1.0,
-                              help="Fixed denoise strength 0..1 applied to every folder's stack")
+    p_stack_all.add_argument("--noise", type=float, default=0.0,
+                              help="Fixed slb t_param1 (a SHARPENING amplitude, not a denoiser; measured 2026-10-20) 0..1, default 0, applied to every folder's stack")
     p_stack_all.add_argument("--exposure-ev", type=float, default=0.0,
                               help="Fixed EV pull-down applied after denoise to every folder's "
                                    "stack (negative leaves headroom under clipping for specular "
@@ -173,8 +173,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_process.add_argument("--denoise", action="store_true",
                             help="Denoise+levels every raw before handing off to the "
                                  "stacking engine, same as `bio stack --denoise`")
-    p_process.add_argument("--noise", type=float, default=1.0,
-                            help="Fixed denoise strength 0..1, only with --denoise")
+    p_process.add_argument("--noise", type=float, default=0.0,
+                            help="Fixed slb t_param1 (a SHARPENING amplitude, not a denoiser; measured 2026-10-20) 0..1, default 0, only with --denoise")
     p_process.add_argument("--exposure-ev", type=float, default=0.0,
                             help="Fixed EV pull-down applied after denoise, only with --denoise")
     p_process.add_argument("--subject-boost-ev", type=float, default=0.0,
@@ -195,8 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_process_all.add_argument("--denoise", action="store_true",
                                 help="Denoise+levels every raw for every folder before "
                                      "handing off to the stacking engine")
-    p_process_all.add_argument("--noise", type=float, default=1.0,
-                                help="Fixed denoise strength 0..1, only with --denoise")
+    p_process_all.add_argument("--noise", type=float, default=0.0,
+                                help="Fixed slb t_param1 (a SHARPENING amplitude, not a denoiser; measured 2026-10-20) 0..1, default 0, only with --denoise")
     p_process_all.add_argument("--exposure-ev", type=float, default=0.0,
                                 help="Fixed EV pull-down applied after denoise, only with --denoise")
     p_process_all.add_argument("--subject-boost-ev", type=float, default=0.0,

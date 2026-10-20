@@ -151,3 +151,22 @@ class TestIngestDoesNotStorePathAsPlace:
 
         folder = make_observation_path(tmp_path / "Bio", "2026-07-04", "spider")
         assert load_observation(folder).place_guess is None
+
+
+class TestNoiseDefaultIsNotMaximumSharpening:
+    """slb's t_param1 (the CLI's --noise) is a sharpening amplitude, not a denoiser (measured 2026-10-20), so the default must be 0.0."""
+
+    @pytest.mark.parametrize("argv", [["stack", "f"], ["stack-all", "d"], ["process", "f"], ["process-all", "d"]])
+    def test_default_is_zero(self, argv):
+        assert build_parser().parse_args(argv).noise == 0.0
+
+    @pytest.mark.parametrize("argv", [["stack", "f"], ["stack-all", "d"], ["process", "f"], ["process-all", "d"]])
+    def test_explicit_value_is_honoured(self, argv):
+        assert build_parser().parse_args(argv + ["--noise", "0.25"]).noise == 0.25
+
+    def test_pipeline_and_preclean_defaults_are_zero(self):
+        import inspect
+        from bio_automation import pipeline, preclean
+        for fn in (pipeline.clean_and_stack, pipeline.stack_all, pipeline.process_observation, pipeline.process_all,
+                   preclean.compute_fixed_params, preclean.denoise_stack_frames):
+            assert inspect.signature(fn).parameters["noise"].default == 0.0, fn.__name__
