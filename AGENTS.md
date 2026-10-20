@@ -50,8 +50,12 @@ by the owner in iNat. Build upload sets (files + CSV), never auto-post.
 candidate ONLY if it matches one of the owner's live iNat observations by capture time
 (`inat_stock.match_frames`, 90 s) and that observation is labelled from its live-fetched
 iNat data (`fetch_inat_observation` -> `stock.build_metadata` -> title, 15-50 keywords,
-caption, Adobe category number). The backlog of frames not on iNat is never a candidate;
-the code says why (`no iNat observation within 90 s`). `bio stock-tag-queue` REQUIRES
+caption, Adobe category number). A time match alone is NOT enough (a frame shot within 90 s
+of an unrelated observation carried its species, found 2026-10-20): the frame must also look
+like the observation's own iNat photos (DA-CLIP on the GPU, similarity >= 0.90, measured).
+Keywords include the family/order/class names and common names from iNat's taxonomy
+(`fetch_taxon_lineage`, also stored by `bio fetch-inat`). The backlog of frames not on iNat is
+never a candidate; the code says why (`no iNat observation within 90 s`). `bio stock-tag-queue` REQUIRES
 `--observations <live snapshot, at most 3 days old>`; `bio process` ends with
 `tag_observation`, which needs the folder to be fetch-inat'd. `stock-publish` writes the
 label INTO each render (XMP + IPTC), reads it back, and links nothing that fails
