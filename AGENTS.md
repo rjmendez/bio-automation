@@ -46,6 +46,17 @@ process on the library). Do not drive the live GUI session.
 **iNat posting is human-approved per observation**; locations and taxa are chosen
 by the owner in iNat. Build upload sets (files + CSV), never auto-post.
 
+**Remote download (owner works over the LAN, 2026-10-20).** `bio export-zip --kind
+inat|stock SRC...` validates every JPEG against the standard first and writes ONE flat
+stored zip + `.sha256` into `D:/bio-cache/downloads`; nothing is written when any file
+violates it. `bio serve-downloads --bind <lan ip> --port 8780` serves only that folder's
+zips over HTTP (Basic auth, password in `F:/services/bio-downloads/password.txt`, source
+allowlist, resumable ranges, GET/HEAD only; no TLS). Fetch with `curl -u owner:<pw> -C - -O
+http://<host>:8780/<name>.zip` or `scp user@host:D:/bio-cache/downloads/<name>.zip .`.
+Never reuse `render._check_export_bounds` for validation: it deletes the file it checks.
+Persistent services and scheduled tasks need the owner's explicit grant (the permission
+classifier blocks them); write the script and hand it over.
+
 **No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
 are shelved: do not build, extend, audit or fix them. The focus is bulk photo
 processing from the command line (render, tag, validate, build upload sets).
