@@ -11,6 +11,7 @@ from bio_automation.inat import (
     InatNotFoundError,
     RateLimiter,
     fetch_inat_observation,
+    fetch_taxon_lineage,
 )
 
 
@@ -173,3 +174,57 @@ class TestDefaultGetTransport:
 
         with pytest.raises(InatApiError, match="500"):
             inat_module._default_get("https://api.inaturalist.org/v1/observations/1", "ua/1.0")
+
+
+class TestFetchTaxonLineage:
+    PAYLOAD = {"results": [{"id": 48707, "ancestors": [
+        {"rank": "kingdom", "name": "Fungi", "preferred_common_name": "Fungi Including Lichens"},
+        {"rank": "order", "name": "Gomphales"},
+        {"rank": "family", "name": "Gomphaceae", "preferred_common_name": None},
+        {"rank": "genus", "name": None}]}]}
+
+    def test_returns_ancestors_root_first_with_common_names(self):
+        get_fn = RecordingGet(payload=self.PAYLOAD)
+        out = fetch_taxon_lineage(48707, get_fn=get_fn, rate_limiter=RateLimiter(min_interval=0))
+        assert out == [{"rank": "kingdom", "name": "Fungi", "common_name": "Fungi Including Lichens"},
+                       {"rank": "order", "name": "Gomphales", "common_name": None},
+                       {"rank": "family", "name": "Gomphaceae", "common_name": None}]                  # the nameless entry is dropped
+        assert [c["url"] for c in get_fn.calls] == ["https://api.inaturalist.org/v1/taxa/48707"]
+
+    def test_unknown_taxon_raises_not_found(self):
+        with pytest.raises(InatNotFoundError, match="taxon 5: no results in API response"):
+            fetch_taxon_lineage(5, get_fn=RecordingGet(payload={"results": []}), rate_limiter=RateLimiter(min_interval=0))
+
+    def test_taxon_with_no_ancestors_gives_an_empty_lineage(self):
+        assert fetch_taxon_lineage(1, get_fn=RecordingGet(payload={"results": [{"id": 1}]}), rate_limiter=RateLimiter(min_interval=0)) == []
+
+
+class TestFetchObservationWithLineage:
+    def getter(self):
+        calls = []
+
+        def get(url, ua):
+            calls.append(url)
+            if "/taxa/" in url:
+                return {"results": [{"ancestors": [{"rank": "family", "name": "Fam", "preferred_common_name": "Fams"}]}]}
+            return {"results": [RAW_OBSERVATION]}
+
+        return get, calls
+
+    def test_lineage_is_stored_under_the_taxon_with_one_extra_request(self):
+        get, calls = self.getter()
+        out = fetch_inat_observation(123456, get_fn=get, rate_limiter=RateLimiter(min_interval=0), with_lineage=True)
+        assert out["taxon"]["lineage"] == [{"rank": "family", "name": "Fam", "common_name": "Fams"}]
+        assert calls == ["https://api.inaturalist.org/v1/observations/123456", f"https://api.inaturalist.org/v1/taxa/{out['taxon']['id']}"]
+
+    def test_default_makes_no_taxon_request_and_stores_no_lineage(self):
+        get, calls = self.getter()
+        out = fetch_inat_observation(123456, get_fn=get, rate_limiter=RateLimiter(min_interval=0))
+        assert "lineage" not in out["taxon"] and len(calls) == 1
+
+    def test_cache_shares_one_taxon_request_across_observations(self):
+        get, calls = self.getter()
+        cache = {}
+        for oid in (1, 2, 3):
+            fetch_inat_observation(oid, get_fn=get, rate_limiter=RateLimiter(min_interval=0), with_lineage=True, lineage_cache=cache)
+        assert sum("/taxa/" in c for c in calls) == 1 and sum("/observations/" in c for c in calls) == 3

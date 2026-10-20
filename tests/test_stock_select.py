@@ -406,6 +406,22 @@ class TestTagQueue:
         assert (by[2]["category"], by[2]["category_id"]) == ("Animals", 1)
         assert by[2]["caption"] == "Warty Harvestman (Leiobunum verrucosum) photographed at Pennsylvania, US on 2026-07-31."
 
+    def test_default_fetch_asks_for_the_lineage_and_shares_one_cache(self, tmp_path, monkeypatch):
+        from bio_automation import inat
+
+        seen = []
+
+        def real(obs_id, **kw):
+            seen.append((obs_id, kw["with_lineage"], id(kw["lineage_cache"])))
+            return fake_fetch([])(obs_id)
+
+        monkeypatch.setattr(inat, "fetch_inat_observation", real)
+        self.seed(tmp_path)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json", workers=1)
+        assert [(o, w) for o, w, _ in seen] == [(11, True), (22, True)]
+        assert len({c for _, _, c in seen}) == 1                                      # one shared cache, so a taxon is looked up once
+
     def test_each_observation_is_fetched_once(self, tmp_path, monkeypatch):
         _, calls = self.run(tmp_path, monkeypatch)
         assert calls == [11, 22]
@@ -670,6 +686,19 @@ class TestCli:
         write_json(tmp_path / "obs.json", {"observations": []})
         assert cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json"))) == 0
         assert capsys.readouterr().out == "2 Stock candidates of 4 frames in 2 of 3 groups -> o.csv\n"
+
+    def test_fetch_inat_stores_the_lineage_with_the_observation(self, tmp_path, monkeypatch):
+        from bio_automation.pipeline import ensure_layout, load_observation, save_observation
+
+        ensure_layout(tmp_path)
+        save_observation(tmp_path, Observation(obsdate="2026-06-13"))
+        asked = []
+        monkeypatch.setattr(cli, "fetch_inat_observation", lambda oid, **kw: asked.append((oid, kw)) or {
+            "observation_id": oid, "source": "inaturalist", "place_guess": "PA", "license": None, "quality_grade": "research", "keywords_seed": [],
+            "taxon": {"name": "Ramaria", "lineage": [{"rank": "family", "name": "Gomphaceae", "common_name": None}]}})
+        cli.cmd_fetch_inat(cli.build_parser().parse_args(["fetch-inat", str(tmp_path), "--observation-id", "408509974"]))
+        assert asked == [(408509974, {"with_lineage": True})]
+        assert load_observation(tmp_path).taxon["lineage"] == [{"rank": "family", "name": "Gomphaceae", "common_name": None}]
 
     def test_publish_exit_code_reflects_failures_and_missing_renders(self, monkeypatch):
         seen = []

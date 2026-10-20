@@ -263,7 +263,8 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     from .inat import fetch_inat_observation
     from .inat_stock import LabelError, label_observation, label_problems, match_frames
 
-    fetch = fetch or fetch_inat_observation
+    lineage_cache: dict = {}
+    fetch = fetch or (lambda i: fetch_inat_observation(i, with_lineage=True, lineage_cache=lineage_cache))
     floor = load_floor(floor_path)
     queue = read_json(Path(queue_json))
     matches = match_frames([{"id": x["lc_id"], "t": x["t"]} for x in queue], observations)
