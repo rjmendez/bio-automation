@@ -49,13 +49,25 @@ by the owner in iNat. Build upload sets (files + CSV), never auto-post.
 **Remote download (owner works over the LAN, 2026-10-20).** `bio export-zip --kind
 inat|stock SRC...` validates every JPEG against the standard first and writes ONE flat
 stored zip + `.sha256` into `D:/bio-cache/downloads`; nothing is written when any file
-violates it. `bio serve-downloads --bind <lan ip> --port 8780` serves only that folder's
-zips over HTTP (Basic auth, password in `F:/services/bio-downloads/password.txt`, source
-allowlist, resumable ranges, GET/HEAD only; no TLS). Fetch with `curl -u owner:<pw> -C - -O
-http://<host>:8780/<name>.zip` or `scp user@host:D:/bio-cache/downloads/<name>.zip .`.
-Never reuse `render._check_export_bounds` for validation: it deletes the file it checks.
-Persistent services and scheduled tasks need the owner's explicit grant (the permission
-classifier blocks them); write the script and hand it over.
+violates it. `bio serve-downloads --tailscale-login <login>` serves only that folder's zips
+on 127.0.0.1 (read-only, resumable ranges); `tailscale serve --bg --https=8780
+http://127.0.0.1:8780` publishes it on the tailnet. **No passwords:** the tailnet identifies
+the caller (the server accepts only a loopback peer carrying `Tailscale-User-Login`, and
+refuses to bind anything but loopback). Fetch from a tailnet device with `curl -C - -O
+https://<host>.<tailnet>.ts.net:8780/<name>.zip`. Never reuse `render._check_export_bounds`
+for validation: it deletes the file it checks. Persistent services and scheduled tasks need
+the owner's explicit grant (the permission classifier blocks them); write the script and
+hand it over.
+
+**Adobe Stock gallery (2026-10-20).** Framework, not hand-rolled: PiGallery2 3.5.2 (MIT;
+native Windows install is unsupported by the maintainer, needs Node 22, so it runs from
+`D:/apps/node22`; app in `D:/apps/pigallery2`, thumbnails in `D:/apps/pigallery2-data/tmp`).
+It serves `F:/Bio-export/adobe-stock/gallery`, a folder of HARDLINKS (no copies) to the 1,900
+shortlist-A files (`F:/bio-automation-data/build_gallery.py`): research grade, species level,
+JPEG quality >= q93, >= 24 MP, not tentative. Originals download unchanged (byte-identical,
+verified). Listens on 127.0.0.1:8781, published by `tailscale serve --https=8781`; app login
+`owner` (password in `F:/services/bio-gallery/password.txt`; the default admin/admin was
+deleted by `gallery_secure.py`). Supervisor `F:/services/bio-gallery/run-gallery.ps1`.
 
 **No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
 are shelved: do not build, extend, audit or fix them. The focus is bulk photo
