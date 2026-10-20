@@ -11,7 +11,7 @@ import numpy as np
 import lab
 from PIL import Image
 
-OUT = r'D:\bio-cache\photos\enhanced'
+OUT = os.environ.get('LAB_ENHANCED_OUT', r'D:\bio-cache\photos\enhanced')      # LAB_SRC / LAB_ENHANCED_OUT keep a second render set from mixing with the first
 LOG = os.path.join(OUT, 'enhance_detail_log.csv')
 STEM = 'ghqv2_ldn-v1-fp32-128x128-2x-ox'
 PN, PB, PC = 0.3, 0.0, 0.3
