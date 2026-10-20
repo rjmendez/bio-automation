@@ -302,7 +302,6 @@ def ingest_capture_group(base_dir: Path, capture_date: dt.date, camera_model: st
         Observation(
             obsdate=obsdate,
             source="auto-ingest",
-            place_guess=str(observation_dir.parent.parent),
         ),
     )
 

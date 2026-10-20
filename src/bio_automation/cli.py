@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
@@ -206,10 +207,21 @@ def build_parser() -> argparse.ArgumentParser:
                                      "handing off to the stacking engine, for every folder")
 
     p_serve = sub.add_parser("serve", help="Start Topaz enhancement HTTP server")
-    p_serve.add_argument("--host", default="0.0.0.0")
+    p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8091)
     p_serve.add_argument("--device", default="AUTO",
                          help="OpenVINO device: CPU, GPU, AUTO (default: AUTO)")
+
+    p_review_console = sub.add_parser(
+        "review-console",
+        help="Start the local sort/crop/cull web console over every observation "
+             "folder under --base-dir. Loopback only by default -- reach it "
+             "through a reverse proxy that restricts by source IP, not by "
+             "binding this process to a public interface. See review_console.py.",
+    )
+    p_review_console.add_argument("--base-dir", default=r"F:\Bio")
+    p_review_console.add_argument("--host", default="127.0.0.1")
+    p_review_console.add_argument("--port", type=int, default=8780)
 
     return parser
 
@@ -225,7 +237,6 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         Observation(
             obsdate=args.obsdate,
             source="local-ingest",
-            place_guess=str(observation_dir.parent.parent),
         ),
     )
     save_assets(
@@ -440,12 +451,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     serve_script = Path(__file__).parent.parent.parent / "tools" / "topaz_serve.py"
     cmd = [
-        "python", str(serve_script),
+        sys.executable, str(serve_script),
         "--host", args.host,
         "--port", str(args.port),
         "--device", args.device,
     ]
     raise SystemExit(subprocess.call(cmd))
+
+
+def cmd_review_console(args: argparse.Namespace) -> int:
+    from .review_console import serve
+
+    serve(Path(args.base_dir), host=args.host, port=args.port)
+    return 0
 
 
 def main() -> int:
@@ -487,6 +505,8 @@ def main() -> int:
         return cmd_process_all(args)
     if args.command == "serve":
         return cmd_serve(args)
+    if args.command == "review-console":
+        return cmd_review_console(args)
     raise SystemExit(2)
 
 

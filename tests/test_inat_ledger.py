@@ -153,3 +153,29 @@ class TestPostedLedger:
 
         assert posted[1]["observation_id"] == 4242
         assert posted[2]["observation_id"] == 9001
+
+
+class TestLedgersAreTrulyAppendOnly:
+    def test_record_decision_appends_without_rewriting_existing_bytes(self, tmp_path):
+        path = tmp_path / "inat_decisions.jsonl"
+        record_decision(path, 1, "hold", now_fn=lambda: 1.0)
+        before = path.read_bytes()
+
+        record_decision(path, 2, "skipped", now_fn=lambda: 2.0)
+
+        after = path.read_bytes()
+        assert after.startswith(before)
+        assert after[len(before):] == b'{"group": 2, "status": "skipped", "ts": 2.0}\n'
+
+    def test_record_posted_appends_without_rewriting_existing_bytes(self, tmp_path):
+        from bio_automation.inat_ledger import record_posted
+        path = tmp_path / "inat_posted.jsonl"
+        record_posted(path, 1, "posted", observation_id=5, now_fn=lambda: 1.0)
+        before = path.read_bytes()
+
+        record_posted(path, 2, "failed", error="boom", now_fn=lambda: 2.0)
+
+        after = path.read_bytes()
+        assert after.startswith(before)
+        assert after[len(before):] == (b'{"error": "boom", "group": 2, "observation_id": null, '
+                                       b'"photos": null, "status": "failed", "ts": 2.0, "uuid": null}\n')

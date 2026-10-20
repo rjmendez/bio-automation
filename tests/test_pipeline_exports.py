@@ -77,8 +77,8 @@ class TestRenderReview:
         _seed_two_kept_one_rejected(tmp_path)
         calls = []
 
-        def fake_render(raw_path, dest_path):
-            calls.append((raw_path.name, dest_path))
+        def fake_render(raw_path, dest_path, crop=None):
+            calls.append((raw_path.name, dest_path, crop))
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(b"jpeg")
 
@@ -101,17 +101,44 @@ class TestRenderReview:
         ensure_layout(tmp_path)
         save_assets(tmp_path, [])
         monkeypatch.setattr(pipeline, "render_review_jpeg",
-                             lambda *a: pytest.fail("must not be called"))
+                             lambda *a, **k: pytest.fail("must not be called"))
 
         assert render_review(tmp_path) == []
         assert scan_assets(tmp_path) == []
+
+    def test_forwards_each_kept_assets_own_crop_rect(self, tmp_path, monkeypatch):
+        """A kept raw's Asset.crop (set by the review console) must reach
+        render_review_jpeg as its crop= kwarg -- not dropped, not shared
+        across raws. Positive twin to the uncropped case above, where every
+        fake_render call's crop is implicitly None."""
+        ensure_layout(tmp_path)
+        raw_dir = source_raw_dir(tmp_path)
+        (raw_dir / "DSC_0001.NEF").write_bytes(b"x")
+        (raw_dir / "DSC_0002.NEF").write_bytes(b"x")
+        save_assets(tmp_path, [
+            Asset(file="source/raw/DSC_0001.NEF", role="original", status="kept", selected=True,
+                  crop=[0.1, 0.2, 0.9, 0.8]),
+            Asset(file="source/raw/DSC_0002.NEF", role="original", status="kept", selected=True),
+        ])
+        calls = {}
+
+        def fake_render(raw_path, dest_path, crop=None):
+            calls[raw_path.name] = crop
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"jpeg")
+
+        monkeypatch.setattr(pipeline, "render_review_jpeg", fake_render)
+
+        render_review(tmp_path)
+
+        assert calls == {"DSC_0001.NEF": [0.1, 0.2, 0.9, 0.8], "DSC_0002.NEF": None}
 
 
 class TestExportInat:
     def test_writes_into_export_inat_dir_with_upload_role(self, tmp_path, monkeypatch):
         _seed_two_kept_one_rejected(tmp_path)
 
-        def fake_render(raw_path, dest_path):
+        def fake_render(raw_path, dest_path, crop=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(b"jpeg")
 
@@ -131,7 +158,7 @@ class TestExportStock:
     def test_writes_into_export_stock_dir_with_stock_role(self, tmp_path, monkeypatch):
         _seed_two_kept_one_rejected(tmp_path)
 
-        def fake_render(raw_path, dest_path):
+        def fake_render(raw_path, dest_path, crop=None):
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(b"jpeg")
 
@@ -164,3 +191,61 @@ class TestBuildAndSaveKeywords:
         assert result["source_observation_id"] == 123
         assert "spider" in result["keywords"]
         assert "macro" in result["keywords"]  # Arachnida is in stock._MACRO_TAXA
+
+
+class TestExportIdempotenceAndFailure:
+    def test_running_export_twice_keeps_one_row_per_file(self, tmp_path, monkeypatch):
+        _seed_two_kept_one_rejected(tmp_path)
+
+        def fake_render(raw_path, dest_path, crop=None):
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"jpeg")
+
+        monkeypatch.setattr(pipeline, "export_inat_jpeg", fake_render)
+
+        export_inat(tmp_path)
+        export_inat(tmp_path)
+
+        rows = sorted(a.file for a in scan_assets(tmp_path) if a.role == "upload")
+        assert rows == ["export/inat/DSC_0001.jpg", "export/inat/DSC_0002.jpg"]
+
+    def test_failure_on_second_file_keeps_the_first_files_row(self, tmp_path, monkeypatch):
+        _seed_two_kept_one_rejected(tmp_path)
+
+        def flaky_render(raw_path, dest_path, crop=None):
+            if raw_path.name == "DSC_0002.NEF":
+                raise RuntimeError("boom")
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"jpeg")
+
+        monkeypatch.setattr(pipeline, "export_inat_jpeg", flaky_render)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            export_inat(tmp_path)
+
+        rows = [a.file for a in scan_assets(tmp_path) if a.role == "upload"]
+        assert rows == ["export/inat/DSC_0001.jpg"]
+
+
+class TestSetAssetCropValidation:
+    def _seed(self, tmp_path):
+        ensure_layout(tmp_path)
+        save_assets(tmp_path, [Asset(file="source/raw/A.NEF", role="original", status="kept", selected=True)])
+
+    @pytest.mark.parametrize("bad,msg", [
+        (["a", 0, 1, 1], "crop values must be finite numbers"),
+        ([float("nan"), 0, 1, 1], "crop values must be finite numbers"),
+        ([0, 0, 1.5, 1], "crop values must be within"),
+        ([0.6, 0, 0.4, 1], "crop must satisfy x0 < x1 and y0 < y1"),
+        ([0.2, 0.2, 0.2, 0.9], "crop must satisfy x0 < x1 and y0 < y1"),
+    ])
+    def test_bad_crop_is_rejected_and_not_persisted(self, tmp_path, bad, msg):
+        self._seed(tmp_path)
+        with pytest.raises(ValueError, match=msg):
+            pipeline.set_asset_crop(tmp_path, "A.NEF", bad)
+        assert scan_assets(tmp_path)[0].crop is None
+
+    def test_valid_crop_is_stored(self, tmp_path):
+        self._seed(tmp_path)
+        pipeline.set_asset_crop(tmp_path, "A.NEF", [0.1, 0.2, 0.8, 0.9])
+        assert scan_assets(tmp_path)[0].crop == [0.1, 0.2, 0.8, 0.9]

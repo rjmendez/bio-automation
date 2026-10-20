@@ -47,6 +47,25 @@ _CATEGORY_MAP: dict[str, str] = {
 _MACRO_TAXA: set[str] = {"insecta", "arachnida", "plantae", "fungi"}
 
 
+MIN_KEYWORDS = 15
+_SHORT_KEYWORD_OK = {"uk"}
+_ANIMAL_CATEGORY = "Animals"
+
+
+def _clean_place(place_guess: str | None) -> str | None:
+    """place_guess with filesystem paths (older ingests stored the base
+    directory there, e.g. F:/Bio/2026) treated as absent."""
+    place = (place_guess or "").strip()
+    if not place or "\\" in place or "/" in place or (len(place) > 1 and place[1] == ":"):
+        return None
+    return place
+
+
+def _keyword_ok(word: str) -> bool:
+    """Reject 1-2 character tokens (state codes, stray tags like 'x')."""
+    return len(word) >= 3 or word in _SHORT_KEYWORD_OK
+
+
 def _season_from_obsdate(obsdate: str | None) -> str | None:
     if not obsdate:
         return None
@@ -99,16 +118,11 @@ def _extract_geo_keywords(place_guess: str | None) -> list[str]:
 
 
 def _category_from_taxon(taxon: dict) -> list[str]:
+    """Adobe Stock category from iconic_taxon_name only; [] when it is
+    missing or unknown rather than guessing a category."""
     iconic = (taxon.get("iconic_taxon_name") or "").lower()
     cat = _CATEGORY_MAP.get(iconic)
-    if cat:
-        return [cat]
-    # Fallback: check name for known taxa strings
-    name_lower = (taxon.get("name") or "").lower()
-    for key, val in _CATEGORY_MAP.items():
-        if key in name_lower:
-            return [val]
-    return ["Animals"]
+    return [cat] if cat else []
 
 
 def _build_keywords(observation: Observation) -> list[str]:
@@ -124,7 +138,7 @@ def _build_keywords(observation: Observation) -> list[str]:
 
     def add(kw: str, is_priority: bool = False) -> None:
         k = kw.strip().lower()
-        if not k or k in seen:
+        if not k or k in seen or not _keyword_ok(k):
             return
         seen.add(k)
         (priority if is_priority else rest).append(k)
@@ -143,7 +157,7 @@ def _build_keywords(observation: Observation) -> list[str]:
         add(season, is_priority=True)
 
     # 4. Geographic keywords: first 2 parts (state/country) → priority
-    geo = _extract_geo_keywords(observation.place_guess)
+    geo = _extract_geo_keywords(_clean_place(observation.place_guess))
     for i, g in enumerate(geo):
         add(g, is_priority=(i < 2))
 
@@ -152,7 +166,8 @@ def _build_keywords(observation: Observation) -> list[str]:
         add(kw.lower().strip(), is_priority=True)
 
     # 6. Always-include photography/nature terms → rest
-    add("wildlife")
+    if _category_from_taxon(taxon) == [_ANIMAL_CATEGORY]:
+        add("wildlife")
     add("nature")
     add("outdoor")
     add("photography")
@@ -167,9 +182,7 @@ def _build_keywords(observation: Observation) -> list[str]:
         add(scientific.split()[0].lower())
 
     # 9. Generic biology terms → rest
-    for kw in ("wild", "habitat", "biology", "natural", "species",
-               "organism", "taxonomy", "field", "observation", "ecosystem",
-               "environment", "conservation", "endemic", "terrestrial"):
+    for kw in ("wild", "habitat", "natural", "species"):
         add(kw)
 
     # Combine: first 10 from priority, overflow priority, then rest
@@ -189,11 +202,12 @@ def _build_title(observation: Observation) -> str:
     common = (taxon.get("common_name") or taxon.get("name") or "Unknown").strip()
     scientific = (taxon.get("name") or "").strip()
 
-    base = f"{common} ({scientific})" if scientific else common
+    base = f"{common} ({scientific})" if scientific and scientific != common else common
 
     context = ""
-    if observation.place_guess:
-        context = observation.place_guess.split(",")[0].strip()
+    place = _clean_place(observation.place_guess)
+    if place:
+        context = place.split(",")[0].strip()
     elif observation.obsdate:
         season = _season_from_obsdate(observation.obsdate)
         if season:
@@ -209,11 +223,16 @@ def _build_caption(observation: Observation) -> str:
     taxon = observation.taxon or {}
     common = (taxon.get("common_name") or taxon.get("name") or "Unknown").strip()
     scientific = (taxon.get("name") or "").strip()
-    place = observation.place_guess or "an unknown location"
-    date = observation.obsdate or "an unknown date"
+    place = _clean_place(observation.place_guess)
+    date = observation.obsdate
 
-    label = f"{common} ({scientific})" if scientific else common
-    caption = f"{label} photographed at {place} on {date}."
+    label = f"{common} ({scientific})" if scientific and scientific != common else common
+    caption = f"{label} photographed"
+    if place:
+        caption += f" at {place}"
+    if date:
+        caption += f" on {date}"
+    caption += "."
     if len(caption) > 500:
         caption = caption[:497] + "..."
     return caption
@@ -249,4 +268,5 @@ def build_keywords(observation: Observation) -> dict:
         "keywords": meta.keywords,
         "source_taxon": taxon.get("name"),
         "source_observation_id": observation.observation_id,
+        "keywords_incomplete": len(meta.keywords) < MIN_KEYWORDS,
     }

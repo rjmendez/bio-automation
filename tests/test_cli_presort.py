@@ -8,6 +8,8 @@ dispatch, and printed summary -- not a reimplementation of suggest_culling.
 from __future__ import annotations
 
 import argparse
+
+import pytest
 from pathlib import Path
 
 from bio_automation import cli
@@ -115,3 +117,37 @@ class TestPresortNeverMutatesAssetStatus:
         cmd_reject(argparse.Namespace(folder=str(tmp_path), files=["DSC_0001.NEF"]))
 
         assert set_status_calls == [((Path(str(tmp_path)), ["DSC_0001.NEF"], "rejected", False), {})]
+
+
+class TestServeDefaults:
+    def test_serve_binds_loopback_by_default(self):
+        assert build_parser().parse_args(["serve"]).host == "127.0.0.1"
+
+    def test_serve_launches_the_current_interpreter(self, monkeypatch):
+        import subprocess
+        import sys
+        calls = []
+        monkeypatch.setattr(subprocess, "call", lambda cmd: calls.append(cmd) or 0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli.cmd_serve(build_parser().parse_args(["serve", "--port", "9"]))
+
+        assert exc_info.value.code == 0
+        assert calls[0][0] == sys.executable
+        assert calls[0][2:] == ["--host", "127.0.0.1", "--port", "9", "--device", "AUTO"]
+
+
+class TestIngestDoesNotStorePathAsPlace:
+    def test_ingest_leaves_place_guess_unset(self, tmp_path):
+        from bio_automation.paths import make_observation_path
+        from bio_automation.pipeline import load_observation
+        src = tmp_path / "in" / "A.NEF"
+        src.parent.mkdir()
+        src.write_bytes(b"raw")
+        args = build_parser().parse_args(["ingest", str(src), "--base-dir", str(tmp_path / "Bio"),
+                                          "--obsdate", "2026-07-04", "--slug", "spider"])
+
+        assert cli.cmd_ingest(args) == 0
+
+        folder = make_observation_path(tmp_path / "Bio", "2026-07-04", "spider")
+        assert load_observation(folder).place_guess is None

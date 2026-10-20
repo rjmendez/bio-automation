@@ -336,3 +336,7 @@ class TestAutoIngestVolume:
             str(base_dir / "2025" / "2025-08-02" / "obs-20250802-nikon-z-7-2"),
             str(base_dir / "2025" / "2025-08-03" / "obs-20250803-nikon-z-7-2"),
         ]
+
+        # The base directory must not be stored as the place.
+        for group in result["groups"]:
+            assert load_observation(Path(group["folder"])).place_guess is None

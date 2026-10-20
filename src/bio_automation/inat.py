@@ -95,6 +95,9 @@ def _reshape(observation: dict, requested_id: int) -> dict:
             "id": taxon.get("id"),
             "name": taxon.get("name"),
             "preferred_common_name": taxon.get("preferred_common_name"),
+            # stock.py reads these two names (not the iNat API's own).
+            "common_name": taxon.get("preferred_common_name"),
+            "iconic_taxon_name": taxon.get("iconic_taxon_name"),
             "rank": taxon.get("rank"),
         },
         "place_guess": observation.get("place_guess"),

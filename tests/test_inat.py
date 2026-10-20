@@ -24,6 +24,7 @@ RAW_OBSERVATION = {
         "id": 48484,
         "name": "Araneae",
         "preferred_common_name": "spiders",
+        "iconic_taxon_name": "Arachnida",
         "rank": "order",
     },
 }
@@ -58,6 +59,8 @@ class TestFetchInatObservation:
                 "id": 48484,
                 "name": "Araneae",
                 "preferred_common_name": "spiders",
+                "common_name": "spiders",
+                "iconic_taxon_name": "Arachnida",
                 "rank": "order",
             },
             "place_guess": "Marin County, CA",

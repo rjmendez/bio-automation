@@ -14,10 +14,16 @@ from bio_automation.inat_post import (
     AlreadyPostedError,
     InatAuthError,
     MissingCredentialError,
+    build_observation_body,
     post_approved,
     post_one,
 )
 from bio_automation.inat_queue import QueueItem
+
+
+DECISION = {"group": 1, "status": "approved", "observed_on_string": "2026-09-01 08:00:00",
+            "time_zone": "Pacific Time (US & Canada)", "lat": 38.5, "lon": -122.25,
+            "geoprivacy": "obscured", "ts": 1.0}
 
 
 def _item(group=1, photos=("a.jpg", "b.jpg")):
@@ -269,7 +275,7 @@ class TestDefaultTransport:
         monkeypatch.setattr(inat_post_module.urllib.request, "urlopen", fake_urlopen)
 
         with pytest.raises(InatAuthError, match="401"):
-            inat_post_module._default_create_observation(_item(), "expired-jwt")
+            inat_post_module._default_create_observation(_item(), "expired-jwt", DECISION)
 
     def test_500_on_create_is_not_wrapped_as_an_auth_error(self, monkeypatch):
         import bio_automation.inat_post as inat_post_module
@@ -280,5 +286,79 @@ class TestDefaultTransport:
         monkeypatch.setattr(inat_post_module.urllib.request, "urlopen", fake_urlopen)
 
         with pytest.raises(urllib.error.HTTPError) as exc_info:
-            inat_post_module._default_create_observation(_item(), "fake-jwt")
+            inat_post_module._default_create_observation(_item(), "fake-jwt", DECISION)
         assert exc_info.value.code == 500
+
+
+class TestObservationBody:
+    def test_body_carries_every_approved_field_with_inat_api_names(self):
+        assert build_observation_body(DECISION) == {"observation": {
+            "observed_on_string": "2026-09-01 08:00:00",
+            "time_zone": "Pacific Time (US & Canada)",
+            "latitude": 38.5, "longitude": -122.25, "geoprivacy": "obscured",
+        }}
+
+    def test_optional_taxon_fields_are_included_only_when_present(self):
+        body = build_observation_body({**DECISION, "species_guess": "Monarch", "taxon_id": 48662})
+        assert body["observation"]["species_guess"] == "Monarch"
+        assert body["observation"]["taxon_id"] == 48662
+
+    def test_missing_required_field_raises_instead_of_posting_an_empty_observation(self):
+        bad = {k: v for k, v in DECISION.items() if k not in ("lat", "geoprivacy")}
+        with pytest.raises(ValueError, match="approved decision is missing: lat, geoprivacy"):
+            build_observation_body(bad)
+
+    def test_default_transport_sends_that_exact_body(self, monkeypatch):
+        import io
+        import json
+
+        import bio_automation.inat_post as inat_post_module
+
+        sent = []
+
+        def fake_urlopen(request, timeout=120):
+            sent.append((request.full_url, json.loads(request.data)))
+            return io.BytesIO(json.dumps({"results": [{"id": 77, "uuid": "u-77"}]}).encode())
+
+        monkeypatch.setattr(inat_post_module.urllib.request, "urlopen", fake_urlopen)
+        attached = []
+
+        row = post_one(_item(photos=("a.jpg",)), jwt="jwt", posted={}, dry_run=False, decision=DECISION,
+                       attach_fn=lambda oid, path, jwt: attached.append((oid, path)))
+
+        assert sent == [("https://api.inaturalist.org/v1/observations",
+                         build_observation_body(DECISION))]
+        assert row["status"] == "posted" and row["observation_id"] == 77
+        assert attached == [(77, "a.jpg")]
+
+    def test_post_approved_passes_each_items_own_decision(self, monkeypatch):
+        import io
+        import json
+
+        import bio_automation.inat_post as inat_post_module
+
+        bodies = []
+
+        def fake_urlopen(request, timeout=120):
+            bodies.append(json.loads(request.data))
+            return io.BytesIO(json.dumps({"results": [{"id": 5, "uuid": "u"}]}).encode())
+
+        monkeypatch.setattr(inat_post_module.urllib.request, "urlopen", fake_urlopen)
+        decisions = {1: DECISION}
+
+        results = post_approved([_item(photos=())], decisions, {}, jwt="jwt", dry_run=False,
+                                rate_limiter=RateLimiter(min_interval=0))
+
+        assert [r["status"] for r in results] == ["posted"]
+        assert bodies == [build_observation_body(DECISION)]
+
+    def test_default_transport_without_a_decision_fails_the_row_not_an_empty_post(self, monkeypatch):
+        import bio_automation.inat_post as inat_post_module
+
+        monkeypatch.setattr(inat_post_module.urllib.request, "urlopen",
+                            lambda *a, **k: pytest.fail("must not reach the network"))
+
+        row = post_one(_item(), jwt="jwt", posted={}, dry_run=False)
+
+        assert row["status"] == "failed"
+        assert row["error"].startswith("ValueError: approved decision is missing: observed_on_string")

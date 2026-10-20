@@ -1,13 +1,46 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
+
+EXIFTOOL_BINARY_ENV = "EXIFTOOL_BINARY"
+
+# Bare "exiftool" only resolves when the caller's own interactive shell
+# profile happens to put it on PATH -- it is NOT on PATH for this machine's
+# background/service contexts (Scheduled Tasks run under a different user
+# environment), confirmed 2026-10-19 when the review console's /img
+# endpoint failed with WinError 2 under the Review-Console task although it
+# worked in an interactive terminal. Same resolution pattern as
+# focus_stack.DEFAULT_BINARY: an env var override, else a real installed
+# copy already on this machine (bundled with Zerene Stacker, which this
+# pipeline already depends on -- not a new dependency).
+_DEFAULT_EXIFTOOL_CANDIDATES = (
+    r"C:\Program Files\ZereneStacker\exiftool\exiftool.exe",
+)
+
+
+def _exiftool_binary() -> str:
+    override = os.environ.get(EXIFTOOL_BINARY_ENV)
+    if override:
+        return override
+    on_path = shutil.which("exiftool")
+    if on_path:
+        return on_path
+    for candidate in _DEFAULT_EXIFTOOL_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    raise FileNotFoundError(
+        f"exiftool not found on PATH or at any of {_DEFAULT_EXIFTOOL_CANDIDATES} -- "
+        f"install it or set {EXIFTOOL_BINARY_ENV}"
+    )
 
 
 def extract_exif(raw_path: Path) -> dict:
     result = subprocess.run(
-        ["exiftool", "-j", str(raw_path)],
+        [_exiftool_binary(), "-j", str(raw_path)],
         check=True,
         capture_output=True,
         text=True,
@@ -25,15 +58,16 @@ def extract_preview_bytes(raw_path: Path) -> bytes:
     Raises RuntimeError if neither tag is present (not every raw embeds a
     full-size preview).
     """
+    exiftool = _exiftool_binary()
     result = subprocess.run(
-        ["exiftool", "-b", "-PreviewImage", str(raw_path)],
+        [exiftool, "-b", "-PreviewImage", str(raw_path)],
         check=True, capture_output=True,
     )
     if result.stdout:
         return result.stdout
 
     result = subprocess.run(
-        ["exiftool", "-b", "-JpgFromRaw", str(raw_path)],
+        [exiftool, "-b", "-JpgFromRaw", str(raw_path)],
         check=True, capture_output=True,
     )
     if result.stdout:
@@ -54,7 +88,7 @@ def _extract_gps_numeric(raw_path: Path) -> dict | None:
     format (used elsewhere, e.g. for human-readable Make/Model strings).
     """
     result = subprocess.run(
-        ["exiftool", "-j", "-GPSLatitude#", "-GPSLongitude#", "-GPSAltitude#", str(raw_path)],
+        [_exiftool_binary(), "-j", "-GPSLatitude#", "-GPSLongitude#", "-GPSAltitude#", str(raw_path)],
         check=True, capture_output=True, text=True,
     )
     data = json.loads(result.stdout)[0]

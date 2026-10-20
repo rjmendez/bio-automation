@@ -16,9 +16,16 @@ one POST per photo to /observation_photos) is isolated behind *create_fn*/
 *attach_fn* -- functions this module calls, never implements inline, so
 callers (and tests) can swap them for a recording stub without touching
 the logic above them.
+
+NOT WIRED: no CLI command or console endpoint calls post_approved() yet;
+it is library code exercised only by its tests. Wiring it (a `bio post`
+command that defaults to dry-run and persists each returned row with
+inat_ledger.record_posted) is a separate, owner-approved step -- posting
+stays human-approved per observation.
 """
 from __future__ import annotations
 
+import functools
 import json
 import mimetypes
 import urllib.error
@@ -59,11 +66,35 @@ def _is_done(posted: dict[int, dict], group: int) -> bool:
     return row is not None and row.get("status") in ("posted", "partial")
 
 
-def _default_create_observation(item: QueueItem, jwt: str) -> dict:
-    """Real transport, step 1: POST the observation itself. This is the
+def build_observation_body(decision: dict) -> dict:
+    """The JSON body for POST /observations, from the human's approved
+    decision row (inat_ledger fields observed_on_string, time_zone, lat,
+    lon, geoprivacy; species_guess/taxon_id only when the row carries
+    them). Raises ValueError if a required field is missing -- an empty
+    observation must never be posted."""
+    required = ("observed_on_string", "time_zone", "lat", "lon", "geoprivacy")
+    missing = [key for key in required if decision.get(key) in (None, "")]
+    if missing:
+        raise ValueError(f"approved decision is missing: {', '.join(missing)}")
+    observation = {
+        "observed_on_string": decision["observed_on_string"],
+        "time_zone": decision["time_zone"],
+        "latitude": decision["lat"],
+        "longitude": decision["lon"],
+        "geoprivacy": decision["geoprivacy"],
+    }
+    for key in ("species_guess", "taxon_id"):
+        if decision.get(key) not in (None, ""):
+            observation[key] = decision[key]
+    return {"observation": observation}
+
+
+def _default_create_observation(item: QueueItem, jwt: str, decision: dict | None = None) -> dict:
+    """Real transport, step 1: POST the observation itself, with the body
+    built from *decision* (see build_observation_body). This is the
     network boundary -- tests pass their own create_fn instead of
     exercising this against the live API."""
-    body = json.dumps({"observation": {}}).encode("utf-8")
+    body = json.dumps(build_observation_body(decision or {})).encode("utf-8")
     request = urllib.request.Request(
         f"{INAT_API_BASE}/observations", data=body,
         headers={"User-Agent": USER_AGENT, "Authorization": jwt,
@@ -120,7 +151,7 @@ def _default_attach_photo(observation_id: int, path: str, jwt: str) -> None:
 def post_one(item: QueueItem, *, jwt: str | None, posted: dict[int, dict],
              create_fn: Callable[[QueueItem, str], dict] | None = None,
              attach_fn: Callable[[int, str, str], None] | None = None,
-             dry_run: bool = True) -> dict:
+             dry_run: bool = True, decision: dict | None = None) -> dict:
     """Post (or dry-run) a single approved QueueItem. Raises
     AlreadyPostedError if item.group already has a "posted"/"partial" row
     in *posted* -- callers doing a batch should check the ledger
@@ -143,7 +174,7 @@ def post_one(item: QueueItem, *, jwt: str | None, posted: dict[int, dict],
         return {"group": item.group, "status": "dry_run", "observation_id": None,
                 "uuid": None, "photos": 0, "error": None}
 
-    create_fn = create_fn or _default_create_observation
+    create_fn = create_fn or functools.partial(_default_create_observation, decision=decision)
     attach_fn = attach_fn or _default_attach_photo
     observation_id = None
     uuid_value = None
@@ -179,6 +210,10 @@ def post_approved(items: list[QueueItem], decisions: dict[int, dict], posted: di
     into the returned list), but nothing after it is attempted, matching
     legacy inat_post.py's "stopping after the first problem" behavior.
 
+    Persistence: this only mutates the in-memory *posted* dict; the caller
+    must write every returned row with inat_ledger.record_posted (a crash
+    before that loses the idempotence guard).
+
     Raises MissingCredentialError immediately, before attempting anything,
     if dry_run=False and no jwt was given -- legacy inat_post.py's
     `sys.exit('INAT_JWT is not set ...')` check, ported as a real
@@ -197,7 +232,8 @@ def post_approved(items: list[QueueItem], decisions: dict[int, dict], posted: di
     results: list[dict] = []
     for item in todo[:limit]:
         limiter.wait()
-        row = post_one(item, jwt=jwt, posted=posted, create_fn=create_fn, attach_fn=attach_fn, dry_run=dry_run)
+        row = post_one(item, jwt=jwt, posted=posted, create_fn=create_fn, attach_fn=attach_fn, dry_run=dry_run,
+                       decision=decisions[item.group])
         results.append(row)
         if not dry_run:
             posted[item.group] = row

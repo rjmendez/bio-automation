@@ -13,7 +13,7 @@ from .io import read_json, read_jsonl, write_json, write_jsonl
 from .models import Asset, Observation
 from .paths import export_dir, metadata_dir, review_dir, source_raw_dir, work_dir
 from .preclean import decode_raw_frames_to_tiff, denoise_stack_frames
-from .render import export_inat_jpeg, export_stock_jpeg, render_review_jpeg
+from .render import _validate_crop_numbers, export_inat_jpeg, export_stock_jpeg, render_review_jpeg
 from .stock import build_keywords
 from .topaz import ModelCache
 from .zerene import run_batch as zerene_run_batch
@@ -59,6 +59,43 @@ def set_asset_status(folder: Path, file_names: list[str], status: str, selected:
         updated.append(asset)
     save_assets(folder, updated)
     return updated
+
+
+def validate_crop(crop: list[float]) -> None:
+    """Raise ValueError unless *crop* is [x0, y0, x1, y1]: four finite
+    numbers in [0, 1] with x0 < x1 and y0 < y1."""
+    _validate_crop_numbers(crop)
+    x0, y0, x1, y1 = crop
+    if not all(0 <= v <= 1 for v in crop):
+        raise ValueError(f"crop values must be within [0, 1], got {crop!r}")
+    if not (x0 < x1 and y0 < y1):
+        raise ValueError(f"crop must satisfy x0 < x1 and y0 < y1, got {crop!r}")
+
+
+def set_asset_crop(folder: Path, file_name: str, crop: list[float] | None) -> Asset:
+    """Set (or clear, when *crop* is None) the non-destructive crop rect
+    (see models.Asset.crop) on exactly one asset in *folder*, identified by
+    its file path relative to *folder* or just its basename -- same
+    name-matching convention as set_asset_status(). Unlike set_asset_status
+    (which silently no-ops on a name that matches nothing, since it can
+    target several files at once), this raises ValueError when *file_name*
+    matches no asset: the review console calls this for one specific file a
+    user is looking at, so a typo'd/stale name must fail loud, not silently
+    do nothing.
+    """
+    if crop is not None:
+        validate_crop(crop)
+    assets = scan_assets(folder)
+    wanted = file_name.replace("\\", "/")
+    matched: Asset | None = None
+    for asset in assets:
+        if asset.file == wanted or asset.file.split("/")[-1] == wanted:
+            asset.crop = crop
+            matched = asset
+    if matched is None:
+        raise ValueError(f"no asset matches {file_name!r} in {folder}")
+    save_assets(folder, assets)
+    return matched
 
 
 def discover_source_files(source: Path) -> list[Path]:
@@ -174,23 +211,25 @@ def write_sidecars(folder: Path) -> list[Path]:
 def _render_derivatives(folder: Path, render_fn, dest_dir: Path, role: str,
                          status: str) -> list[Path]:
     """Shared body for render_review/export_inat/export_stock: run
-    *render_fn* over every kept raw into *dest_dir*, append a matching
-    Asset row (role, status) for each, save once, return the written paths.
+    *render_fn* over every kept raw into *dest_dir*, upsert a matching
+    Asset row (role, status) for each (saved per file), return the written paths.
+
+    Each kept raw's own Asset.crop (set by the review console, see
+    review_console.py; None means uncropped) is forwarded to *render_fn* as
+    its crop= kwarg, so a reviewer's non-destructive crop is reflected in
+    every derivative without ever touching the original raw file.
     """
     written: list[Path] = []
-    new_assets: list[Asset] = []
     for asset in _kept_original_raws(folder):
         raw_path = folder / asset.file
         dest_path = dest_dir / f"{raw_path.stem}.jpg"
-        render_fn(raw_path, dest_path)
+        render_fn(raw_path, dest_path, crop=asset.crop)
         written.append(dest_path)
-        new_assets.append(Asset(
-            file=str(dest_path.relative_to(folder)).replace("\\", "/"),
-            role=role, status=status, selected=None,
-        ))
-    if new_assets:
-        assets = scan_assets(folder)
-        assets.extend(new_assets)
+        # Upsert by (file, role) and save per file: a re-run never duplicates
+        # a row, and a failure on a later file keeps the rows already written.
+        rel = str(dest_path.relative_to(folder)).replace("\\", "/")
+        assets = [a for a in scan_assets(folder) if not (a.file == rel and a.role == role)]
+        assets.append(Asset(file=rel, role=role, status=status, selected=None))
         save_assets(folder, assets)
     return written
 

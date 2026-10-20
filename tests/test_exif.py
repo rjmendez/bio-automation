@@ -17,6 +17,44 @@ def _fake_run(stdout=b""):
     return result
 
 
+class TestExiftoolBinary:
+    """_exiftool_binary()'s resolution order: env override -> PATH ->
+    known-installed fallback paths -> loud failure. shutil.which and
+    Path.exists are both mocked here so this runs the same on any machine,
+    independent of what's actually installed where."""
+
+    def test_env_override_wins_even_when_also_on_path(self, monkeypatch):
+        monkeypatch.setenv(exif.EXIFTOOL_BINARY_ENV, r"D:\custom\exiftool.exe")
+        monkeypatch.setattr(exif.shutil, "which", lambda name: r"C:\on\path\exiftool.exe")
+
+        assert exif._exiftool_binary() == r"D:\custom\exiftool.exe"
+
+    def test_falls_back_to_path_when_no_override(self, monkeypatch):
+        monkeypatch.delenv(exif.EXIFTOOL_BINARY_ENV, raising=False)
+        monkeypatch.setattr(exif.shutil, "which", lambda name: r"C:\on\path\exiftool.exe")
+
+        assert exif._exiftool_binary() == r"C:\on\path\exiftool.exe"
+
+    def test_falls_back_to_known_install_path_when_not_on_path(self, monkeypatch):
+        monkeypatch.delenv(exif.EXIFTOOL_BINARY_ENV, raising=False)
+        monkeypatch.setattr(exif.shutil, "which", lambda name: None)
+        monkeypatch.setattr(exif.Path, "exists", lambda self: True)
+
+        assert exif._exiftool_binary() == exif._DEFAULT_EXIFTOOL_CANDIDATES[0]
+
+    def test_raises_loudly_when_nothing_resolves(self, monkeypatch):
+        """Negative twin to the three resolution-success tests: when
+        nothing resolves, this must fail loud with a clear message, not
+        return None or an empty string for subprocess.run to choke on
+        opaquely."""
+        monkeypatch.delenv(exif.EXIFTOOL_BINARY_ENV, raising=False)
+        monkeypatch.setattr(exif.shutil, "which", lambda name: None)
+        monkeypatch.setattr(exif.Path, "exists", lambda self: False)
+
+        with pytest.raises(FileNotFoundError, match=r"exiftool not found on PATH"):
+            exif._exiftool_binary()
+
+
 class TestExtractPreviewBytes:
     def test_returns_preview_image_when_present(self, monkeypatch):
         calls = []
@@ -25,6 +63,7 @@ class TestExtractPreviewBytes:
             calls.append(cmd)
             return _fake_run(stdout=b"\xff\xd8\xff\xe0jpegbytes")
 
+        monkeypatch.setattr(exif, "_exiftool_binary", lambda: "exiftool")
         monkeypatch.setattr(subprocess, "run", fake_run)
         result = extract_preview_bytes(Path("DSC_0001.NEF"))
 
@@ -41,6 +80,7 @@ class TestExtractPreviewBytes:
                 return _fake_run(stdout=b"")
             return _fake_run(stdout=b"\xff\xd8fallbackbytes")
 
+        monkeypatch.setattr(exif, "_exiftool_binary", lambda: "exiftool")
         monkeypatch.setattr(subprocess, "run", fake_run)
         result = extract_preview_bytes(Path("DSC_0002.NEF"))
 
@@ -49,6 +89,7 @@ class TestExtractPreviewBytes:
         assert calls[1] == ["exiftool", "-b", "-JpgFromRaw", "DSC_0002.NEF"]
 
     def test_raises_when_neither_tag_present(self, monkeypatch):
+        monkeypatch.setattr(exif, "_exiftool_binary", lambda: "exiftool")
         monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _fake_run(stdout=b""))
 
         with pytest.raises(RuntimeError, match=r"no embedded PreviewImage or JpgFromRaw tag found"):
@@ -122,6 +163,7 @@ class TestExtractGpsNumeric:
                                               "GPSAltitude": 12.3}])
             return result
 
+        monkeypatch.setattr(exif, "_exiftool_binary", lambda: "exiftool")
         monkeypatch.setattr(subprocess, "run", fake_run)
         result = exif._extract_gps_numeric(Path("f.NEF"))
         assert result == {"lat": 41.1234, "lon": -72.5678, "alt": 12.3}

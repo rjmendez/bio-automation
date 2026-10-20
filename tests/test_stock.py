@@ -311,4 +311,77 @@ def test_empty_taxon_does_not_raise():
     obs = Observation(taxon={})
     meta = build_metadata(obs)
     assert isinstance(meta, StockMetadata)
-    assert 15 <= len(meta.keywords) <= 35
+    # Nothing is invented for an unknown taxon: only the generic photo terms
+    # remain, and the record is flagged incomplete instead of padded.
+    assert meta.keywords == ["nature", "outdoor", "photography", "wild", "habitat", "natural", "species"]
+    assert meta.categories == []
+    assert build_keywords(obs)["keywords_incomplete"] is True
+
+
+# ---------------------------------------------------------------------------
+# 11. Audit regressions: inat fetch -> merge -> stock, path place_guess, filler
+# ---------------------------------------------------------------------------
+
+def _fetched(taxon, place):
+    from bio_automation.inat import _reshape
+    return _reshape({"id": 1, "taxon": taxon, "place_guess": place, "tags": ["x", "wing"]}, 1)
+
+
+def test_inat_fetch_merge_stock_end_to_end_monarch():
+    from bio_automation.pipeline import merge_inat_fields
+    fetched = _fetched({"id": 48662, "name": "Danaus plexippus", "rank": "species",
+                        "preferred_common_name": "Monarch", "iconic_taxon_name": "Insecta"},
+                       "Boulder, CO, US")
+    obs = merge_inat_fields(Observation(obsdate="2026-07-04"), fetched)
+
+    record = build_keywords(obs)
+
+    assert record["title"] == "Monarch (Danaus plexippus) \u2014 Boulder"
+    assert "macro" in record["keywords"] and "close-up" in record["keywords"]
+    assert "wildlife" in record["keywords"]
+    assert "x" not in record["keywords"] and "co" not in record["keywords"] and "us" not in record["keywords"]
+    assert "wing" in record["keywords"]
+
+
+def test_inat_fetch_merge_stock_end_to_end_plant_is_plants_not_animals():
+    from bio_automation.pipeline import merge_inat_fields
+    fetched = _fetched({"id": 47125, "name": "Rosa", "rank": "genus", "iconic_taxon_name": "Plantae"}, "Boulder")
+    obs = merge_inat_fields(Observation(obsdate="2026-07-04"), fetched)
+
+    meta = build_metadata(obs)
+
+    assert meta.categories == ["Plants and Flowers"]
+    assert "wildlife" not in meta.keywords
+    assert meta.title == "Rosa \u2014 Boulder"  # name not doubled when there is no common name
+
+
+def test_filesystem_path_place_guess_never_reaches_caption_or_keywords():
+    obs = Observation(obsdate="2026-07-04", place_guess="F:\\Bio\\2026")
+
+    record = build_keywords(obs)
+
+    assert record["caption"] == "Unknown photographed on 2026-07-04."
+    assert not any("bio" in k or "\\" in k for k in record["keywords"])
+
+
+def test_real_place_guess_still_reaches_caption():
+    obs = Observation(obsdate="2026-07-04", place_guess="Boulder, Colorado")
+    assert build_keywords(obs)["caption"] == "Unknown photographed at Boulder, Colorado on 2026-07-04."
+
+
+def test_unverifiable_filler_keywords_are_gone(monarch_obs):
+    kws = build_metadata(monarch_obs).keywords
+    for junk in ("endemic", "terrestrial", "conservation", "taxonomy", "organism", "observation"):
+        assert junk not in kws
+    assert "monarch" in kws
+
+
+def test_unknown_iconic_taxon_gets_no_invented_category():
+    from bio_automation.stock import _category_from_taxon
+    assert _category_from_taxon({"name": "Araneae"}) == []
+    assert _category_from_taxon({"name": "Araneae", "iconic_taxon_name": "Arachnida"}) == ["Animals"]
+
+
+def test_posix_path_place_guess_is_also_treated_as_absent():
+    record = build_keywords(Observation(obsdate="2026-07-04", place_guess="/mnt/f/Bio/2026"))
+    assert record["caption"] == "Unknown photographed on 2026-07-04."

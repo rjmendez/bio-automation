@@ -11,7 +11,8 @@ vocabulary ("approved"/"skipped"/"hold"/"pending" for decisions,
 validation (inat_console.py's do_POST /api/decide handler) match the
 legacy scripts exactly.
 
-Both ledgers are plain JSONL, append-only by convention, replayed
+Both ledgers are plain JSONL, append-only (io.append_jsonl writes one line
+per record; nothing rewrites the file), replayed
 last-write-wins per group on load -- a group can appear more than once (the
 human changed their mind in the console), and the latest row for that
 group is the one that counts. Nothing here reads or writes any *{TAG}*
@@ -22,7 +23,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from .io import read_jsonl, write_jsonl
+from .io import append_jsonl, read_jsonl
 
 DECISION_STATUSES = ("approved", "skipped", "hold", "pending")
 APPROVAL_REQUIRED_FIELDS = ("observed_on_string", "time_zone", "lat", "lon")
@@ -57,9 +58,7 @@ def record_decision(path, group: int, status: str, *, fields: dict | None = None
                               f"got {fields.get('geoprivacy')!r}")
 
     row = {"group": group, "status": status, **fields, "ts": now_fn()}
-    rows = read_jsonl(path)
-    rows.append(row)
-    write_jsonl(path, rows)
+    append_jsonl(path, row)
     return row
 
 
@@ -97,7 +96,5 @@ def record_posted(path, group: int, status: str, *, observation_id: int | None =
         raise ValueError(f"status must be one of ('posted', 'partial', 'failed'), got {status!r}")
     row = {"group": group, "status": status, "observation_id": observation_id, "uuid": uuid,
            "photos": photos, "error": error, "ts": now_fn()}
-    rows = read_jsonl(path)
-    rows.append(row)
-    write_jsonl(path, rows)
+    append_jsonl(path, row)
     return row
