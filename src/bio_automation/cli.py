@@ -167,6 +167,13 @@ def build_parser() -> argparse.ArgumentParser:
                               help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
     p_export_zip.add_argument("--name", default=None, help="zip name (default: <kind>-<n>photos-<timestamp>.zip)")
 
+    p_flag = sub.add_parser(
+        "flag-upload-set",
+        help="Append `flags`/`flag_notes` columns to an iNat upload set's observations.csv: black frames (measured) plus manual per-group notes. "
+             "Nothing is removed.")
+    p_flag.add_argument("folder", help="upload set folder holding the JPEGs and observations.csv")
+    p_flag.add_argument("--notes", default=None, help='json {"<group>": {"flags": [...], "note": "..."}}')
+
     p_stock_cal = sub.add_parser(
         "stock-calibrate",
         help="Measure a folder of already-approved Stock exports and save the sharpness floor candidates are judged against.")
@@ -468,6 +475,20 @@ def cmd_build_keywords(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_flag_upload_set(args: argparse.Namespace) -> int:
+    import json
+
+    from .upload_flags import flag_observations_csv, load_manual_notes
+
+    try:
+        manual = load_manual_notes(Path(args.notes) if args.notes else None)
+        result = flag_observations_csv(Path(args.folder), manual)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc))
+    print(json.dumps(result))
+    return 0
+
+
 def cmd_stock_calibrate(args: argparse.Namespace) -> int:
     import json
 
@@ -591,6 +612,8 @@ def main() -> int:
         return cmd_export_stock(args)
     if args.command == "export-zip":
         return cmd_export_zip(args)
+    if args.command == "flag-upload-set":
+        return cmd_flag_upload_set(args)
     if args.command == "stock-calibrate":
         return cmd_stock_calibrate(args)
     if args.command == "stock-tag-queue":
