@@ -31,17 +31,18 @@ from .models import Observation
 from .pipeline import merge_inat_fields
 from .stock import MIN_KEYWORDS, build_metadata
 
-MATCH_TOLERANCE_S = 90.0
 MAX_SNAPSHOT_AGE_DAYS = 3
 MAX_FILENAME, MAX_TITLE, MAX_KEYWORDS = 30, 70, 50
 ADOBE_CATEGORY_IDS = {"Animals": 1, "Plants and Flowers": 14, "Science": 16}
 ADOBE_CSV_FIELDS = ("Filename", "Title", "Keywords", "Category", "Releases")
 
 
-# Visual check that a time-matched frame really is the observation's subject. Measured 2026-10-20 on 266 frames (DA-CLIP content vectors, frame vs
-# the observation's own iNat photos, best of them): frames that ARE the uploaded photo score ~0.99; at 0.89 and below every pair inspected by eye was a
-# different subject (a moth against a mushroom, a morning glory against another herb); from 0.90 up the pairs were other shots of the same organism.
-FRAME_MATCH_MIN_SIMILARITY = 0.90
+# Which frames belong to an observation: the observation's own iNat photos decide, not timestamps. Each iNat photo takes the frame, among those captured
+# within PHOTO_MATCH_WINDOW_S of the observation's time, whose DA-CLIP content vector is closest (argmax); the match counts at >= 0.97. Measured on
+# observation 409468156 (13 photos): every photo had one frame at 0.993-1.000 and the nearest sibling shot at <= 0.987, whereas time matching (90 s) used two
+# frames that were never uploaded and missed three that were. Time-only matching also put a species on frames shot near an unrelated observation.
+PHOTO_MATCH_MIN_SIMILARITY = 0.97
+PHOTO_MATCH_WINDOW_S = 900.0
 PHOTO_CACHE_DEFAULT = Path(os.environ.get("BIO_INAT_PHOTO_CACHE", r"D:\bio-cache\photos\inat_photos"))
 PHOTO_USER_AGENT = "bio-automation-owner-sync/1.0 (own account rjmendez; read-only)"
 
@@ -61,22 +62,6 @@ def load_snapshot(path: Path, *, max_age_days: float = MAX_SNAPSHOT_AGE_DAYS, no
     if age > max_age_days:
         raise SnapshotStale(f"{path} is {age:.1f} days old (limit {max_age_days:g}); refresh it from the live iNat account first")
     return json.loads(path.read_text(encoding="utf-8"))["observations"]
-
-
-def match_frames(frames: list[dict], observations: list[dict], tol: float = MATCH_TOLERANCE_S) -> dict:
-    """{frame id: observation id} for every frame (needs id, t = capture epoch) within tol seconds of an observation's time; nearest wins."""
-    times = sorted((dt.datetime.fromisoformat(o["time"]).timestamp(), o["id"]) for o in observations if o.get("time"))
-    ts = [a for a, _ in times]
-    out = {}
-    for f in frames:
-        i = bisect.bisect_left(ts, f["t"])
-        best = None
-        for j in (i - 1, i):
-            if 0 <= j < len(ts) and abs(ts[j] - f["t"]) <= tol and (best is None or abs(ts[j] - f["t"]) < abs(ts[best] - f["t"])):
-                best = j
-        if best is not None:
-            out[f["id"]] = times[best][1]
-    return out
 
 
 def clean_title(title: str) -> str:
@@ -227,9 +212,35 @@ def default_embedder() -> Callable[[Path], np.ndarray]:
     return embed
 
 
-def frame_similarity(frame_image: Path, photo_paths: list[Path], embed: Callable[[Path], np.ndarray]) -> float | None:
-    """Best cosine similarity between the frame and any of the observation's photos; None when there are no photos to compare with."""
-    if not photo_paths:
-        return None
-    f = embed(Path(frame_image))
-    return max(float(f @ embed(Path(p))) for p in photo_paths)
+def match_photos_to_frames(frames: list[dict], observations: list[dict], embed: Callable[[Path], np.ndarray],
+                           photo_for: Callable[[str, str], Path], *, window: float = PHOTO_MATCH_WINDOW_S,
+                           min_similarity: float = PHOTO_MATCH_MIN_SIMILARITY) -> dict:
+    """{frame id: (observation id, similarity)} for the frames that ARE photos of the owner's observations.
+
+    frames: dicts with id, t (capture epoch) and image (a Path to a picture of the frame). For every observation with frames captured within `window`
+    seconds of its time, each of its iNat photos takes the one frame that looks most like it; the pair counts when the similarity is at least
+    min_similarity. A frame claimed by two observations keeps the closer one. Frames that are not an uploaded photo (siblings of a burst, or shots from
+    near an unrelated observation) are not in the result."""
+    ordered = sorted(frames, key=lambda f: f["t"])
+    times = [f["t"] for f in ordered]
+    vectors: dict = {}
+
+    def vec(f):
+        if f["id"] not in vectors:
+            vectors[f["id"]] = embed(Path(f["image"]))
+        return vectors[f["id"]]
+
+    claims: dict = {}
+    for o in observations:
+        if not o.get("time"):
+            continue
+        t0 = dt.datetime.fromisoformat(o["time"]).timestamp()
+        near = [f for f in ordered[bisect.bisect_left(times, t0 - window):bisect.bisect_right(times, t0 + window)] if Path(f["image"]).is_file()]
+        if not near:
+            continue
+        for pid, url in observation_photo_urls(o):
+            pv = embed(photo_for(pid, url))
+            sim, best = max(((float(vec(f) @ pv), f) for f in near), key=lambda x: x[0])
+            if sim >= min_similarity and (best["id"] not in claims or sim > claims[best["id"]][1]):
+                claims[best["id"]] = (o["id"], sim)
+    return claims

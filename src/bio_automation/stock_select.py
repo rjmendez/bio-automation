@@ -7,7 +7,7 @@ Stock files must come from the raws (the iNat set is 2048 px). Every frame is me
   floor      the 10th percentile of the same sharpness measured on a folder of already-approved exports (calibrate_floor), so the bar is
              "as sharp as the weakest tenth of what was already judged good". A heuristic, NOT a quality verdict: exports are processed,
              raws are not. The owner's review of the published candidates is the real gate;
-  burst      at most top_per_group frames per group (Stock rejects near-duplicates), sharpest first;
+  burst      optional: at most top_per_group frames per group (Stock rejects near-duplicates), sharpest first; default is every frame that passes;
   release    people/property are never checked here: every row is 'unscreened'.
 A missing floor, an unreadable raw or an unknown ISO is reported as a reason on the row, never silently passed.
 """
@@ -28,9 +28,9 @@ from .paths import metadata_dir
 TILES = 8
 TILE_PERCENTILE = 90
 FLOOR_PERCENTILE = 10
+CLIP_PERCENTILE = 95          # the share of near-white pixels that only 5% of the approved exports exceed
 DEFAULT_MAX_ISO = 3200
-DEFAULT_TOP_PER_GROUP = 2
-MAX_CLIPPED_FRACTION = 0.02
+DEFAULT_TOP_PER_GROUP = None          # None = every frame that passes; a number keeps only that many sharpest per group (Stock rejects near-duplicates)
 STOCK_MIN_MP, STOCK_MAX_MP = 4.0, 100.0
 DEFAULT_FLOOR_PATH = Path(os.environ.get("BIO_STOCK_FLOOR", r"D:\bio-cache\photos\stock_floor.json"))
 TAGS_FILENAME = "stock_tags.json"
@@ -71,7 +71,7 @@ def median_luma(rgb: np.ndarray) -> float:
     return float(np.median(rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114))
 
 
-def calibrate_floor(sharp_values: list[float], luma_values: list[float] | None = None) -> dict:
+def calibrate_floor(sharp_values: list[float], luma_values: list[float] | None = None, clip_values: list[float] | None = None) -> dict:
     if not sharp_values:
         raise ValueError("cannot calibrate a floor from zero measurements")
     v = np.asarray(sharp_values, dtype=np.float64)
@@ -79,6 +79,16 @@ def calibrate_floor(sharp_values: list[float], luma_values: list[float] | None =
              "p25": float(np.percentile(v, 25)), "median": float(np.median(v))}
     if luma_values:
         floor["luma_p10"] = float(np.percentile(np.asarray(luma_values, dtype=np.float64), FLOOR_PERCENTILE))
+    if clip_values:
+        floor["clip_p95"] = float(np.percentile(np.asarray(clip_values, dtype=np.float64), CLIP_PERCENTILE))
+    return floor
+
+
+def require_complete_floor(floor: dict) -> dict:
+    """The floor must carry every measured limit (sharpness p10, luma_p10, clip_p95); an older file is refused, never silently half-applied."""
+    missing = [k for k in ("luma_p10", "clip_p95") if k not in floor]
+    if missing:
+        raise StockFloorMissing(f"the sharpness floor has no {', '.join(missing)}; re-run `bio stock-calibrate <folder of approved exports>`")
     return floor
 
 
@@ -96,22 +106,25 @@ def _small(im, edge: int = 512):
     return out
 
 
-def calibrate_from_folder(folder: Path, out: Path | None = None, sample: int = 300) -> dict:
-    """Measure up to *sample* evenly spaced JPEGs under *folder* (halved by a 2x box filter so they match a half-size demosaic) and save the floor."""
+def calibrate_from_folder(folder: Path, out: Path | None = None, sample: int = 300, exclude_names: set[str] | None = None) -> dict:
+    """Measure up to *sample* evenly spaced JPEGs under *folder* (halved by a 2x box filter so they match a half-size demosaic) and save the floor.
+    exclude_names: file names to leave out (the candidates this tool published into the same folder must not calibrate their own floor)."""
     from PIL import Image
 
-    files = sorted(p for p in Path(folder).rglob("*") if p.suffix.lower() in (".jpg", ".jpeg"))
+    files = sorted(p for p in Path(folder).rglob("*") if p.suffix.lower() in (".jpg", ".jpeg") and p.name not in (exclude_names or set()))
     if not files:
         raise ValueError(f"no JPEGs under {folder}")
     step = max(1, len(files) // sample)
-    vals, lumas = [], []
+    vals, lumas, clips = [], [], []
     for p in files[::step][:sample]:
         with Image.open(p) as im:
             im = im.convert("RGB")
             half = im.resize((im.width // 2, im.height // 2), Image.BOX)
-            vals.append(tile_sharpness(np.asarray(half)).sharp)
+            score = tile_sharpness(np.asarray(half))
+            vals.append(score.sharp)
+            clips.append(score.clip)
             lumas.append(median_luma(np.asarray(_small(im))))
-    floor = calibrate_floor(vals, lumas)
+    floor = calibrate_floor(vals, lumas, clips)
     write_json(Path(out or DEFAULT_FLOOR_PATH), floor)
     return floor
 
@@ -152,14 +165,14 @@ def technical_reasons(*, mp: float, iso: int | None, score: FrameScore | None, f
         reasons.append(f"ISO {iso} > {max_iso}")
     if score.sharp < floor["p10"]:
         reasons.append(f"sharpness {score.sharp:.1f} < floor {floor['p10']:.1f}")
-    if score.clip > MAX_CLIPPED_FRACTION:
+    if score.clip > floor["clip_p95"]:
         reasons.append(f"{score.clip * 100:.1f}% clipped highlights")
     if located:
         reasons.append("carries a location")
     return reasons
 
 
-def pick_top_per_group(rows: list[dict], top: int = DEFAULT_TOP_PER_GROUP) -> set:
+def pick_top_per_group(rows: list[dict], top: int | None = DEFAULT_TOP_PER_GROUP) -> set:
     """ids of the *top* sharpest technically passing rows of each group. rows need id, group, sharp, tech_pass."""
     by_group: dict = {}
     for r in rows:
@@ -168,12 +181,12 @@ def pick_top_per_group(rows: list[dict], top: int = DEFAULT_TOP_PER_GROUP) -> se
     chosen = set()
     for items in by_group.values():
         items.sort(key=lambda r: -r["sharp"])
-        chosen.update(r["id"] for r in items[:top])
+        chosen.update(r["id"] for r in (items if top is None else items[:top]))
     return chosen
 
 
 def decide(frames: list[dict], scores: dict, floor: dict, *, max_iso: int = DEFAULT_MAX_ISO,
-           top_per_group: int = DEFAULT_TOP_PER_GROUP, excluded_groups: dict | None = None) -> list[dict]:
+           top_per_group: int | None = DEFAULT_TOP_PER_GROUP, excluded_groups: dict | None = None) -> list[dict]:
     """frames: dicts with id, group, mp, iso, located. scores: id -> FrameScore | None. Returns one row per frame with tech_pass, stock_candidate, reasons.
 
     excluded_groups maps a group to the reason a person flagged it (people, signs, not wildlife, ...): none of its frames can be a candidate,
@@ -200,7 +213,7 @@ def decide(frames: list[dict], scores: dict, floor: dict, *, max_iso: int = DEFA
 # ---- pipeline step: one observation folder (called from pipeline.process_observation) ----
 
 def tag_observation(folder: Path, floor_path: Path | None = None, *, max_iso: int = DEFAULT_MAX_ISO,
-                    top_per_group: int = DEFAULT_TOP_PER_GROUP) -> dict:
+                    top_per_group: int | None = DEFAULT_TOP_PER_GROUP) -> dict:
     """Score the kept raws of one observation folder, write metadata/stock_tags.json, return it. One folder = one group.
 
     The folder's observation must be linked to iNat (bio fetch-inat) and pass the label policy: its taxon, place and date become the Stock label
@@ -209,7 +222,7 @@ def tag_observation(folder: Path, floor_path: Path | None = None, *, max_iso: in
     from .inat_stock import LabelError, label_from_observation
     from .pipeline import _kept_original_raws, load_observation
 
-    floor = load_floor(floor_path)
+    floor = require_complete_floor(load_floor(floor_path))
     obs = load_observation(folder)
     label, label_error = None, None
     if obs.observation_id is None:
@@ -249,47 +262,39 @@ KEYWORD_SEP = "|"
 
 
 def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: list[dict], fetch=None, floor_path: Path | None = None,
-              workers: int = 3, max_iso: int = DEFAULT_MAX_ISO, top_per_group: int = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
+              workers: int = 3, max_iso: int = DEFAULT_MAX_ISO, top_per_group: int | None = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
               excluded_groups: dict | None = None, embedder=None, photo_cache: Path | None = None, get_bytes=None,
-              min_similarity: float | None = None) -> list[dict]:
+              min_similarity: float | None = None, window: float | None = None) -> list[dict]:
     """Score every frame of a LightCraft queue (items with lc_id, raw, day, t = capture epoch, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
 
-    `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED: a frame is only a candidate when it matches one by
-    capture time. Each matched observation is fetched live (fetch, default inat.fetch_inat_observation) and labelled; an unmatched frame, or one whose
-    observation cannot be labelled (no taxon, casual), is excluded with the reason. A time match is only kept when the frame also LOOKS like the
-    observation's own iNat photos (inat_stock.FRAME_MATCH_MIN_SIMILARITY, DA-CLIP on the GPU; embedder/photo_cache/get_bytes are the injectable
-    dependencies): a frame shot within 90 s of an unrelated observation would otherwise carry that observation's species. The burst limit applies per observation.
+    `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED, and the iNat photos decide which frames count: each photo of
+    each observation takes the frame that looks most like it (inat_stock.match_photos_to_frames, DA-CLIP on the GPU; embedder/photo_cache/get_bytes are
+    the injectable dependencies), so exactly the frames the owner uploaded are the candidates -- not their unuploaded siblings, and not frames shot near
+    an unrelated observation. Each matched observation is fetched live (fetch, default inat.fetch_inat_observation) and labelled; a frame that is not an
+    uploaded photo, or whose observation cannot be labelled (no taxon, casual), is excluded with the reason. top_per_group (default: none) can still cap
+    how many frames of one observation are kept.
     excluded_groups (keyed by observation id here): see decide().
     """
     from PIL import Image
 
     from .inat import fetch_inat_observation
-    from .inat_stock import (FRAME_MATCH_MIN_SIMILARITY, PHOTO_CACHE_DEFAULT, LabelError, cached_photo, default_embedder, frame_similarity,
-                             label_observation, label_problems, match_frames, observation_photo_urls)
+    from .inat_stock import (PHOTO_CACHE_DEFAULT, PHOTO_MATCH_MIN_SIMILARITY, PHOTO_MATCH_WINDOW_S, LabelError, cached_photo, default_embedder,
+                             label_observation, label_problems, match_photos_to_frames)
 
     lineage_cache: dict = {}
     fetch = fetch or (lambda i: fetch_inat_observation(i, with_lineage=True, lineage_cache=lineage_cache))
-    floor = load_floor(floor_path)
+    floor = require_complete_floor(load_floor(floor_path))
     queue = read_json(Path(queue_json))
-    matches = match_frames([{"id": x["lc_id"], "t": x["t"]} for x in queue], observations)
     observed_on = {o["id"]: o.get("observed_on") for o in observations}
+    photo_kw = {"get_bytes": get_bytes} if get_bytes else {}
+    claims = match_photos_to_frames(
+        [{"id": x["lc_id"], "t": x["t"], "image": x.get("copy") or ""} for x in queue], observations, embedder or default_embedder(),
+        lambda pid, url: cached_photo(pid, url, photo_cache or PHOTO_CACHE_DEFAULT, **photo_kw),
+        window=PHOTO_MATCH_WINDOW_S if window is None else window,
+        min_similarity=PHOTO_MATCH_MIN_SIMILARITY if min_similarity is None else min_similarity)
+    matches = {lc_id: obs_id for lc_id, (obs_id, _) in claims.items()}
+    similarity = {lc_id: sim for lc_id, (_, sim) in claims.items()}
     labels, exclusions = {}, dict(excluded_groups or {})
-    similarity: dict = {}
-    if matches:
-        embed = embedder or default_embedder()
-        threshold = FRAME_MATCH_MIN_SIMILARITY if min_similarity is None else min_similarity
-        by_obs = {o["id"]: o for o in observations}
-        queue_by_id = {x["lc_id"]: x for x in queue}
-        photo_kw = {"get_bytes": get_bytes} if get_bytes else {}
-        for lc_id, obs_id in list(matches.items()):
-            photos = [cached_photo(pid, url, photo_cache or PHOTO_CACHE_DEFAULT, **photo_kw) for pid, url in observation_photo_urls(by_obs[obs_id])]
-            frame_image = Path(queue_by_id[lc_id].get("copy") or "")
-            sim = frame_similarity(frame_image, photos, embed) if frame_image.is_file() else None
-            similarity[lc_id] = sim
-            if sim is None or sim < threshold:
-                del matches[lc_id]
-                why = "no frame image or observation photo to compare with" if sim is None else f"similarity {sim:.2f} < {threshold:.2f}"
-                exclusions[-lc_id] = f"frame does not look like observation {obs_id}'s photos ({why})"
     for obs_id in sorted(set(matches.values())):
         try:
             labels[obs_id] = label_observation(obs_id, observed_on.get(obs_id), fetch=lambda i: fetch(i))
@@ -301,7 +306,7 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
             exclusions.setdefault(obs_id, "label: " + "; ".join(problems))
     for x in queue:
         if x["lc_id"] not in matches:
-            exclusions.setdefault(-x["lc_id"], "no iNat observation within 90 s of the capture time")
+            exclusions.setdefault(-x["lc_id"], "not one of the photos uploaded to an iNat observation")
     cache_path = Path(str(out_csv) + ".raw")
     cached: dict = {}
     if cache_path.exists():
@@ -390,9 +395,7 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
     from .inat_stock import LabelError, embed_label, label_problems, read_label, write_adobe_csv
     from .render import ExportBoundsError, export_stock_jpeg
 
-    floor = load_floor(floor_path)
-    if "luma_p10" not in floor:
-        raise StockFloorMissing("the sharpness floor has no luma_p10; re-run `bio stock-calibrate <folder of approved exports>`")
+    floor = require_complete_floor(load_floor(floor_path))
 
     with open(rows_csv, newline="", encoding="utf-8") as f:
         picks = [r for r in csv.DictReader(f) if r["stock_candidate"] == "True"]

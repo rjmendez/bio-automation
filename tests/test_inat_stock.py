@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,21 +24,6 @@ def fetched(name="Leiobunum verrucosum", common="Warty Harvestman", iconic="Arac
 
 def epoch(iso):
     return dt.datetime.fromisoformat(iso).timestamp()
-
-
-class TestMatchFrames:
-    OBS = [{"id": 100, "time": "2026-06-13T09:34:00-04:00"}, {"id": 200, "time": "2026-06-13T09:40:00-04:00"}, {"id": 300}]
-
-    def test_nearest_observation_within_tolerance_wins(self):
-        frames = [{"id": "a", "t": epoch("2026-06-13T09:34:30-04:00")}, {"id": "b", "t": epoch("2026-06-13T09:38:50-04:00")}]
-        assert inat_stock.match_frames(frames, self.OBS) == {"a": 100, "b": 200}                # b is 70 s from 200 and 290 s from 100
-
-    def test_tolerance_boundary_is_90_seconds_inclusive(self):
-        assert inat_stock.match_frames([{"id": "x", "t": epoch("2026-06-13T09:35:30-04:00")}], self.OBS) == {"x": 100}
-        assert inat_stock.match_frames([{"id": "x", "t": epoch("2026-06-13T09:35:31-04:00")}], self.OBS) == {}
-
-    def test_observation_without_a_time_never_matches(self):
-        assert inat_stock.match_frames([{"id": "x", "t": 0.0}], [{"id": 300}]) == {}
 
 
 class TestSnapshot:
@@ -171,6 +157,67 @@ class TestAdobeCsv:
         assert os.path.getsize(tmp_path / "a.csv") < 1_000_000
 
 
+class TestMatchPhotosToFrames:
+    T0 = epoch("2026-06-13T10:51:00-04:00")
+    VEC = {"p1": (1.0, 0.0), "p2": (0.0, 1.0), "f1": (1.0, 0.0), "f2": (0.0, 1.0), "sib": (0.96, 0.28), "far": (1.0, 0.0), "noimg": (1.0, 0.0)}
+
+    def obs(self, oid, offset=0.0, photos=("p1", "p2")):
+        iso = dt.datetime.fromtimestamp(self.T0 + offset).astimezone().isoformat()
+        return {"id": oid, "time": iso, "photos": [{"id": p, "url": f"https://x/photos/{p}/square.jpg"} for p in photos]}
+
+    def frames(self, tmp_path, spec):
+        out = []
+        for fid, offset in spec.items():
+            (tmp_path / f"{fid}.jpg").write_bytes(b"x")
+            out.append({"id": fid, "t": self.T0 + offset, "image": tmp_path / f"{fid}.jpg"})
+        return out
+
+    def embed(self, path):
+        return np.array(self.VEC[Path(path).stem], dtype=np.float32)
+
+    def run(self, tmp_path, spec, observations, **kw):
+        return inat_stock.match_photos_to_frames(self.frames(tmp_path, spec), observations, self.embed, lambda pid, url: Path(f"{pid}.jpg"), **kw)
+
+    def test_each_photo_takes_the_frame_that_looks_like_it_and_siblings_are_left_out(self, tmp_path):
+        out = self.run(tmp_path, {"f1": -50, "f2": 10, "sib": 20}, [self.obs(100)])
+        assert out == {"f1": (100, pytest.approx(1.0)), "f2": (100, pytest.approx(1.0))}                  # 'sib' (0.96 to p1) was never uploaded
+
+    def test_match_is_inclusive_at_the_threshold_and_exclusive_just_below(self, tmp_path):
+        self.VEC["sib"] = (0.97, (1 - 0.97 ** 2) ** 0.5)
+        try:
+            obs = [self.obs(100, photos=("p1",))]
+            sim = self.run(tmp_path, {"sib": 0}, obs, min_similarity=0.0)["sib"][1]
+            assert self.run(tmp_path, {"sib": 0}, obs, min_similarity=sim) == {"sib": (100, sim)}                  # exactly at the threshold: kept
+            assert self.run(tmp_path, {"sib": 0}, obs, min_similarity=float(np.nextafter(sim, 1.0))) == {}          # a hair above: dropped
+        finally:
+            self.VEC["sib"] = (0.96, 0.28)
+
+    def test_window_boundary_is_15_minutes(self, tmp_path):
+        assert self.run(tmp_path, {"f1": 900}, [self.obs(100, photos=("p1",))]) != {}
+        assert self.run(tmp_path, {"f1": 901}, [self.obs(100, photos=("p1",))]) == {}
+
+    def test_a_frame_claimed_by_two_observations_keeps_the_closer_look(self, tmp_path):
+        self.VEC.update({"g": (1.0, 0.0), "pa": (0.98, (1 - 0.98 ** 2) ** 0.5), "pb": (0.99, (1 - 0.99 ** 2) ** 0.5)})
+        a, b = self.obs(100, 0, photos=("pa",)), self.obs(200, 30, photos=("pb",))
+        out = self.run(tmp_path, {"g": 10}, [a, b])
+        assert out["g"][0] == 200 and out["g"][1] == pytest.approx(0.99, abs=1e-4)
+        assert self.run(tmp_path, {"g": 10}, [b, a])["g"][0] == 200                                           # the order of the observations does not matter
+
+    def test_frames_without_an_image_and_observations_without_a_time_are_ignored(self, tmp_path):
+        frames = self.frames(tmp_path, {"f1": 0})
+        frames.append({"id": "noimg", "t": self.T0, "image": tmp_path / "missing.jpg"})
+        no_time = {"id": 5, "photos": [{"id": "p1", "url": "https://x/photos/p1/square.jpg"}]}
+        out = inat_stock.match_photos_to_frames(frames, [no_time, self.obs(100, photos=("p1",))], self.embed, lambda pid, url: Path(f"{pid}.jpg"))
+        assert list(out) == ["f1"]
+
+    def test_photos_are_only_fetched_for_observations_with_frames_nearby(self, tmp_path):
+        asked = []
+        far = self.obs(300, 86400)
+        inat_stock.match_photos_to_frames(self.frames(tmp_path, {"f1": 0}), [far, self.obs(100, photos=("p1",))], self.embed,
+                                          lambda pid, url: asked.append(pid) or Path(f"{pid}.jpg"))
+        assert asked == ["p1"]
+
+
 class TestVisualCheck:
     def test_photo_urls_use_the_requested_size(self):
         rec = {"photos": [{"id": 5, "url": "https://x/photos/5/square.jpg"}, {"id": None, "url": "https://x/photos/6/square.jpg"}, {"id": 7, "url": ""}]}
@@ -191,12 +238,5 @@ class TestVisualCheck:
         inat_stock.cached_photo("5", "u", tmp_path, get_bytes=lambda url: b"x", sleep=lambda d: None)
         assert (tmp_path / "5.jpg").read_bytes() == b"x"
 
-    def test_similarity_is_the_best_cosine_over_the_photos(self, tmp_path):
-        vec = {"f": np.array([1.0, 0.0]), "a": np.array([0.0, 1.0]), "b": np.array([0.8, 0.6])}
-        assert inat_stock.frame_similarity(tmp_path / "f", [tmp_path / "a", tmp_path / "b"], lambda p: vec[p.name]) == pytest.approx(0.8)
-
-    def test_no_photos_means_no_similarity(self, tmp_path):
-        assert inat_stock.frame_similarity(tmp_path / "f", [], lambda p: np.array([1.0])) is None
-
-    def test_threshold_is_the_measured_one(self):
-        assert inat_stock.FRAME_MATCH_MIN_SIMILARITY == 0.90
+    def test_thresholds_are_the_measured_ones(self):
+        assert (inat_stock.PHOTO_MATCH_MIN_SIMILARITY, inat_stock.PHOTO_MATCH_WINDOW_S) == (0.97, 900.0)
