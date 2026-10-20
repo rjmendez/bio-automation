@@ -167,6 +167,30 @@ def build_parser() -> argparse.ArgumentParser:
                               help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
     p_export_zip.add_argument("--name", default=None, help="zip name (default: <kind>-<n>photos-<timestamp>.zip)")
 
+    p_stock_cal = sub.add_parser(
+        "stock-calibrate",
+        help="Measure a folder of already-approved Stock exports and save the sharpness floor candidates are judged against.")
+    p_stock_cal.add_argument("folder")
+    p_stock_cal.add_argument("--out", default=None, help="floor file (default: env BIO_STOCK_FLOOR)")
+    p_stock_cal.add_argument("--sample", type=int, default=300)
+
+    p_stock_queue = sub.add_parser(
+        "stock-tag-queue",
+        help="Score every frame of a LightCraft iNat queue json from its raw, tag the Stock candidates, write a csv (resumable).")
+    p_stock_queue.add_argument("queue_json")
+    p_stock_queue.add_argument("--raw-root", required=True)
+    p_stock_queue.add_argument("--out", required=True, help="csv with one row per frame, reasons included")
+    p_stock_queue.add_argument("--floor", default=None)
+    p_stock_queue.add_argument("--workers", type=int, default=3)
+
+    p_stock_pub = sub.add_parser(
+        "stock-publish",
+        help="Render the csv's Stock candidates full-size q95 from their raws and hardlink them into the review gallery folder.")
+    p_stock_pub.add_argument("csv")
+    p_stock_pub.add_argument("--raw-root", required=True)
+    p_stock_pub.add_argument("--render-dir", required=True)
+    p_stock_pub.add_argument("--gallery-dir", required=True)
+
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
 
@@ -440,6 +464,39 @@ def cmd_build_keywords(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_stock_calibrate(args: argparse.Namespace) -> int:
+    import json
+
+    from .stock_select import calibrate_from_folder
+
+    print(json.dumps(calibrate_from_folder(Path(args.folder), Path(args.out) if args.out else None, args.sample), indent=2))
+    return 0
+
+
+def cmd_stock_tag_queue(args: argparse.Namespace) -> int:
+    from .stock_select import StockFloorMissing, tag_queue
+
+    try:
+        rows = tag_queue(Path(args.queue_json), Path(args.raw_root), Path(args.out),
+                         floor_path=Path(args.floor) if args.floor else None, workers=args.workers)
+    except StockFloorMissing as exc:
+        raise SystemExit(str(exc))
+    picked = [r for r in rows if r["stock_candidate"]]
+    print(f"{len(picked)} Stock candidates of {len(rows)} frames in {len({r['group'] for r in picked})} of "
+          f"{len({r['group'] for r in rows})} groups -> {args.out}")
+    return 0
+
+
+def cmd_stock_publish(args: argparse.Namespace) -> int:
+    import json
+
+    from .stock_select import publish_candidates
+
+    result = publish_candidates(Path(args.csv), Path(args.raw_root), Path(args.render_dir), Path(args.gallery_dir))
+    print(json.dumps(result, indent=2))
+    return 1 if result["failed"] else 0
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     import json
 
@@ -529,6 +586,12 @@ def main() -> int:
         return cmd_export_stock(args)
     if args.command == "export-zip":
         return cmd_export_zip(args)
+    if args.command == "stock-calibrate":
+        return cmd_stock_calibrate(args)
+    if args.command == "stock-tag-queue":
+        return cmd_stock_tag_queue(args)
+    if args.command == "stock-publish":
+        return cmd_stock_publish(args)
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
     if args.command == "process":

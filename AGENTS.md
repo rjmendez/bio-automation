@@ -46,6 +46,18 @@ process on the library). Do not drive the live GUI session.
 **iNat posting is human-approved per observation**; locations and taxa are chosen
 by the owner in iNat. Build upload sets (files + CSV), never auto-post.
 
+**Stock candidate tagging is automatic (2026-10-20).** `bio process` ends with
+`stock_select.tag_observation` (writes `metadata/stock_tags.json`; a missing sharpness
+floor is reported in the result and logged, never silently skipped). For the LightCraft
+iNat backlog: `bio stock-calibrate <approved exports folder>` once (saves the floor, env
+`BIO_STOCK_FLOOR`), then `bio stock-tag-queue <queue.json> --raw-root F:/Bio --out
+<csv>` (resumable, one row per frame with reasons) and `bio stock-publish <csv>
+--raw-root ... --render-dir ... --gallery-dir ...` (full-size q95 renders from the raws,
+hardlinked into the review gallery). The tag is a measured heuristic (technical bounds,
+ISO, tile sharpness vs a floor from already-approved exports, top 2 per burst), NOT a
+quality or release verdict: every row is `release: unscreened` and the owner's look in the
+gallery is the gate. The 2048 px iNat renders can never be Stock files.
+
 **Remote download (owner works over the LAN, 2026-10-20).** `bio export-zip --kind
 inat|stock SRC...` validates every JPEG against the standard first and writes ONE flat
 stored zip + `.sha256` into `D:/bio-cache/downloads`; nothing is written when any file
