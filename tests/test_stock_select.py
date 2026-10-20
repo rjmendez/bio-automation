@@ -72,6 +72,26 @@ class TestTileSharpness:
         assert stock_select.tile_sharpness(np.zeros((24, 24, 3), np.uint8)).sharp == 0.0
 
 
+class TestMedianLuma:
+    def test_uniform_colour_uses_rec601_weights(self):
+        img = np.zeros((4, 4, 3), np.uint8)
+        img[...] = (100, 0, 0)
+        assert stock_select.median_luma(img) == pytest.approx(29.9, rel=1e-5)
+        img[...] = (0, 100, 0)
+        assert stock_select.median_luma(img) == pytest.approx(58.7, rel=1e-5)
+
+    def test_median_not_mean(self):
+        img = np.zeros((10, 10, 3), np.uint8)
+        img[:, :4] = 255                                                  # 40% white: mean 102, median 0
+        assert stock_select.median_luma(img) == 0.0
+        img[:, :6] = 255                                                  # 60% white: median flips to white
+        assert stock_select.median_luma(img) == pytest.approx(255.0, rel=1e-5)
+
+    def test_wrong_shape_refused(self):
+        with pytest.raises(ValueError, match=r"rgb must be HxWx3, got shape \(4, 4\)"):
+            stock_select.median_luma(np.zeros((4, 4), np.uint8))
+
+
 class TestFloor:
     def test_percentiles_of_1_to_100(self):
         f = stock_select.calibrate_floor([float(i) for i in range(1, 101)])
@@ -79,6 +99,11 @@ class TestFloor:
         assert f["p10"] == pytest.approx(10.9)
         assert f["p25"] == pytest.approx(25.75)
         assert f["median"] == pytest.approx(50.5)
+
+    def test_luma_floor_is_added_when_measured(self):
+        f = stock_select.calibrate_floor([1.0, 2.0], [float(i) for i in range(1, 101)])
+        assert f["luma_p10"] == pytest.approx(10.9)
+        assert "luma_p10" not in stock_select.calibrate_floor([1.0, 2.0])
 
     def test_empty_calibration_is_refused(self):
         with pytest.raises(ValueError, match="cannot calibrate a floor from zero measurements"):
@@ -104,6 +129,7 @@ class TestFloor:
         assert floor["n"] == 1
         assert floor["p10"] == floor["median"] == floor["p25"]
         assert floor["p10"] == pytest.approx(CHECKER_VAR, rel=0.02)                                 # JPEG q100 is the only deviation from exact
+        assert floor["luma_p10"] == pytest.approx(127.5, abs=1.0)                                   # half the pixels 255, half 0: the median sits at the 127/128 midpoint
         assert read_json(tmp_path / "floor.json") == floor
 
     def test_calibrate_from_folder_without_jpegs(self, tmp_path):
@@ -341,45 +367,107 @@ class TestTagQueue:
 
 
 class TestPublish:
-    def csv_file(self, tmp_path, rows):
+    ROWS = [{"raw": "2026/d/DSC_1.NEF", "day": "2026-07-31", "stock_candidate": "True"},
+            {"raw": "2026/d/DSC_2.NEF", "day": "2026-07-31", "stock_candidate": "False"},
+            {"raw": "2026/d/DSC_3.NEF", "day": "2026-08-01", "stock_candidate": "True"}]
+
+    @pytest.fixture(autouse=True)
+    def floor_file(self, tmp_path, monkeypatch):
+        write_json(tmp_path / "pubfloor.json", {**FLOOR, "luma_p10": 35.0})
+        monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "pubfloor.json")
+
+    def csv_file(self, tmp_path, rows=None):
         p = tmp_path / "c.csv"
         with open(p, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, ["raw", "day", "stock_candidate"])
             w.writeheader()
-            w.writerows(rows)
+            w.writerows(rows or self.ROWS)
         return p
 
-    def test_candidates_are_rendered_and_hardlinked_once(self, tmp_path, monkeypatch):
+    def render(self, tmp_path, day, name, size=(2000, 2000), quality=95, gps=False, color=(90, 120, 60)):
+        from PIL import Image, ImageCms
+
+        p = tmp_path / "render" / day[:4] / day / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        kw = {"icc_profile": ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()}
+        if gps:
+            ex = Image.Exif()
+            g = ex.get_ifd(0x8825)
+            g[1], g[2], g[3], g[4] = "N", (40.0, 0.0, 0.0), "W", (75.0, 0.0, 0.0)
+            kw["exif"] = ex.tobytes()
+        Image.new("RGB", size, color).save(p, "JPEG", quality=quality, **kw)
+        return p
+
+    def test_render_name_carries_the_day(self):
+        assert stock_select.render_name(self.ROWS[0]) == "2026-07-31_DSC_1.jpg"
+
+    def test_retouched_renders_are_linked_into_year_month_folders_and_non_candidates_are_not(self, tmp_path):
+        src1 = self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_2.jpg")                       # a render exists for the non-candidate: still not shipped
+        self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
+        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": []}
+        assert os.path.samefile(src1, tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg")
+        assert (tmp_path / "gallery/2026/2026-08/2026-08-01_DSC_3.jpg").is_file()
+        assert not (tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_2.jpg").exists()
+        again = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        assert again["linked"] == 0 and again["failed"] == []
+
+    def test_a_candidate_without_a_retouched_render_is_missing_and_never_decoded_plain(self, tmp_path, monkeypatch):
         from bio_automation import render
 
-        rendered = []
-        monkeypatch.setattr(render, "export_stock_jpeg", lambda raw, dest: (rendered.append(raw.name), dest.write_bytes(b"jpg"))[1])
-        c = self.csv_file(tmp_path, [{"raw": "2026/d/DSC_1.NEF", "day": "2026-07-31", "stock_candidate": "True"},
-                                      {"raw": "2026/d/DSC_2.NEF", "day": "2026-07-31", "stock_candidate": "False"},
-                                      {"raw": "2026/d/DSC_3.NEF", "day": "2026-08-01", "stock_candidate": "True"}])
-        out = stock_select.publish_candidates(c, tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
-        assert out == {"candidates": 2, "rendered": 2, "linked": 2, "failed": []}
-        assert rendered == ["DSC_1.NEF", "DSC_3.NEF"]                                     # the non-candidate is never rendered
-        assert os.path.samefile(tmp_path / "render/2026/2026-07-31/DSC_1.jpg", tmp_path / "gallery/2026/2026-07-31/DSC_1.jpg")
-        assert not (tmp_path / "gallery/2026/2026-07-31/DSC_2.jpg").exists()
-        again = stock_select.publish_candidates(c, tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
-        assert again == {"candidates": 2, "rendered": 0, "linked": 0, "failed": []} and rendered == ["DSC_1.NEF", "DSC_3.NEF"]
+        decoded = []
+        monkeypatch.setattr(render, "export_stock_jpeg", lambda raw, dest: decoded.append(raw))
+        self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
+        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        assert out["missing"] == ["2026/d/DSC_1.NEF"] and out["linked"] == 1
+        assert decoded == []
+        assert not (tmp_path / "gallery/2026/2026-07").exists()
 
-    def test_a_render_that_breaks_the_stock_bounds_is_reported_and_the_rest_continue(self, tmp_path, monkeypatch):
+    def test_plain_decode_only_runs_when_asked_for(self, tmp_path, monkeypatch):
+        from PIL import Image
+
         from bio_automation import render
+
+        decoded = []
 
         def fake(raw, dest):
-            if raw.name == "DSC_1.NEF":
-                raise ExportBoundsError("1.0 MP below the 4 MP minimum")
-            dest.write_bytes(b"jpg")
+            decoded.append(raw.name)
+            self.render(tmp_path, "2026-07-31", dest.name)
 
         monkeypatch.setattr(render, "export_stock_jpeg", fake)
-        c = self.csv_file(tmp_path, [{"raw": "a/DSC_1.NEF", "day": "2026-07-31", "stock_candidate": "True"},
-                                      {"raw": "a/DSC_2.NEF", "day": "2026-07-31", "stock_candidate": "True"}])
-        out = stock_select.publish_candidates(c, tmp_path, tmp_path / "r", tmp_path / "g")
-        assert out["failed"] == [{"raw": "a/DSC_1.NEF", "error": "ExportBoundsError: 1.0 MP below the 4 MP minimum"}]
-        assert (out["rendered"], out["linked"]) == (1, 1)
-        assert (tmp_path / "g/2026/2026-07-31/DSC_2.jpg").is_file() and not (tmp_path / "g/2026/2026-07-31/DSC_1.jpg").exists()
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render",
+                                              tmp_path / "gallery", plain_decode=True)
+        assert decoded == ["DSC_1.NEF"]
+        assert (out["plain_decoded"], out["linked"], out["missing"]) == (1, 1, [])
+        assert Image.open(tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg").size == (2000, 2000)
+
+    def test_renders_that_break_the_stock_standard_are_failed_not_linked(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", size=(100, 100))                 # under 4 MP
+        self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg", gps=True)                        # carries a GPS block
+        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        assert out["linked"] == 0
+        assert out["failed"] == [
+            {"raw": "2026/d/DSC_1.NEF", "error": "100x100 = 0.01 MP is below the 4 MP minimum"},
+            {"raw": "2026/d/DSC_3.NEF", "error": "contains a GPS block (Stock files must not carry coordinates)"}]
+        assert not (tmp_path / "gallery").exists()
+
+    def test_dark_render_is_failed_and_one_just_bright_enough_is_linked(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", color=(10, 10, 10))              # median luma 10 < 35
+        self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg", color=(36, 36, 36))              # median luma 36 >= 35
+        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path, tmp_path / "render", tmp_path / "gallery")
+        assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "under-exposed: median luma 10.0 < floor 35.0"}]
+        assert out["linked"] == 1 and (tmp_path / "gallery/2026/2026-08/2026-08-01_DSC_3.jpg").is_file()
+
+    def test_floor_without_luma_is_refused(self, tmp_path):
+        write_json(tmp_path / "pubfloor.json", FLOOR)
+        with pytest.raises(StockFloorMissing, match="the sharpness floor has no luma_p10; re-run `bio stock-calibrate"):
+            stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path, tmp_path / "render", tmp_path / "gallery")
+
+    def test_low_quality_render_is_failed(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", quality=80)
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path, tmp_path / "render", tmp_path / "gallery")
+        assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "JPEG quality below 95 (quantisation table coarser than q95)"}]
 
 
 class TestCli:
@@ -399,9 +487,19 @@ class TestCli:
         assert cli.cmd_stock_tag_queue(args) == 0
         assert capsys.readouterr().out == "2 Stock candidates of 4 frames in 2 of 3 groups -> o.csv\n"
 
-    def test_publish_exit_code_reflects_failures(self, monkeypatch, capsys):
-        monkeypatch.setattr(stock_select, "publish_candidates", lambda *a: {"candidates": 1, "rendered": 0, "linked": 0, "failed": [{"raw": "x", "error": "e"}]})
-        args = cli.build_parser().parse_args(["stock-publish", "c.csv", "--raw-root", "r", "--render-dir", "d", "--gallery-dir", "g"])
+    def test_publish_exit_code_reflects_failures_and_missing_renders(self, monkeypatch):
+        seen = []
+        result = {"candidates": 1, "plain_decoded": 0, "linked": 0, "missing": [], "failed": [{"raw": "x", "error": "e"}]}
+        monkeypatch.setattr(stock_select, "publish_candidates", lambda *a, **k: seen.append(k) or result)
+        argv = ["stock-publish", "c.csv", "--raw-root", "r", "--render-dir", "d", "--gallery-dir", "g"]
+        args = cli.build_parser().parse_args(argv)
         assert cli.cmd_stock_publish(args) == 1
-        monkeypatch.setattr(stock_select, "publish_candidates", lambda *a: {"candidates": 1, "rendered": 1, "linked": 1, "failed": []})
+        result = {**result, "failed": [], "missing": ["m"]}
+        assert cli.cmd_stock_publish(args) == 1                                           # a missing render is also not a clean run
+        result = {**result, "missing": []}
         assert cli.cmd_stock_publish(args) == 0
+        assert seen == [{"plain_decode": False, "floor_path": None}] * 3
+        cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--plain-decode"]))
+        assert seen[-1] == {"plain_decode": True, "floor_path": None}
+        cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--floor", "f.json"]))
+        assert seen[-1] == {"plain_decode": False, "floor_path": Path("f.json")}

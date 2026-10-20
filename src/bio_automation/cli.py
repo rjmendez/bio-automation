@@ -185,11 +185,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_stock_pub = sub.add_parser(
         "stock-publish",
-        help="Render the csv's Stock candidates full-size q95 from their raws and hardlink them into the review gallery folder.")
+        help="Hardlink the csv's Stock candidates' RETOUCHED full-size renders (render-dir/<year>/<day>/<day>_<stem>.jpg) into the gallery "
+             "as <year>/<year-month>/, after validating each against the Stock standard. Candidates with no render are reported, not shipped.")
     p_stock_pub.add_argument("csv")
     p_stock_pub.add_argument("--raw-root", required=True)
     p_stock_pub.add_argument("--render-dir", required=True)
     p_stock_pub.add_argument("--gallery-dir", required=True)
+    p_stock_pub.add_argument("--floor", default=None, help="floor file (default: env BIO_STOCK_FLOOR)")
+    p_stock_pub.add_argument("--plain-decode", action="store_true",
+                             help="Also produce a PLAIN raw decode (flat, no retouching) for candidates with no render. Off by default: not Stock-grade.")
 
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
@@ -492,9 +496,10 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
 
     from .stock_select import publish_candidates
 
-    result = publish_candidates(Path(args.csv), Path(args.raw_root), Path(args.render_dir), Path(args.gallery_dir))
+    result = publish_candidates(Path(args.csv), Path(args.raw_root), Path(args.render_dir), Path(args.gallery_dir),
+                                plain_decode=args.plain_decode, floor_path=Path(args.floor) if args.floor else None)
     print(json.dumps(result, indent=2))
-    return 1 if result["failed"] else 0
+    return 1 if result["failed"] or result["missing"] else 0
 
 
 def cmd_process(args: argparse.Namespace) -> int:
