@@ -51,17 +51,14 @@ def main():
     todo = [x for x in todo if x[0] not in done or 'error' in done[x[0]]]
     model = vf.pick_model()
     print('model:', model, 'to do', len(todo), flush=True)
-    gpu = {'main_gpu': 1}
+    gpu = vf.gpu_options()
+    print('ollama options:', gpu, flush=True)
     t0 = time.time()
     for i, (k, p) in enumerate(todo, 1):
         try:
             body = {'model': model, 'stream': False, 'format': 'json', 'think': False, 'keep_alive': '30m', 'options': {'temperature': 0, **gpu},
                     'messages': [{'role': 'user', 'content': Q, 'images': [vf.small(p)]}]}
-            try:
-                r = vf.http('/api/chat', body)
-            except Exception:
-                body.pop('think', None)
-                r = vf.http('/api/chat', body)
+            r = vf.chat(body)
             a = L.flat(json.loads(r['message']['content']))
             only = (L.truthy(a.get('hands_or_fingers')) and not any(L.truthy(a.get(x)) for x in
                     ('face_or_head', 'other_body', 'clothing_or_accessory', 'tattoo_or_mark', 'shadow_of_person'))
@@ -69,8 +66,6 @@ def main():
             done[k] = {'only_hands': bool(only), 'answer': a}
         except Exception as e:
             done[k] = {'error': f'{type(e).__name__}: {str(e)[:100]}'}
-            if gpu and i < 5:
-                gpu = {}
         if i % 20 == 0 or i == len(todo):
             json.dump(done, open(OUT, 'w'))
             el = time.time() - t0

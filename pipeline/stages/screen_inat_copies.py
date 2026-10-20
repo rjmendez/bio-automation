@@ -24,15 +24,14 @@ def main():
     todo = [p for p in paths if p not in done or 'error' in done[p]]
     model = vf.pick_model()
     print(f'copies {len(paths)}, to do {len(todo)}, model {model}', flush=True)
-    gpu = {'main_gpu': 1}
+    gpu = vf.gpu_options()
+    print('ollama options:', gpu, flush=True)
     t0 = time.time()
     for i, p in enumerate(todo, 1):
         try:
             done[p] = {'tags': vf.ask(model, vf.small(p), gpu), 'model': model}
         except Exception as e:
             done[p] = {'error': f'{type(e).__name__}: {str(e)[:100]}'}
-            if gpu and i < 5:
-                gpu = {}
         if i % 25 == 0 or i == len(todo):
             json.dump(done, open(OUT, 'w'))
             el = time.time() - t0
