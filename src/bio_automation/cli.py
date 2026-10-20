@@ -189,6 +189,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_stock_queue.add_argument("--out", required=True, help="csv with one row per frame, reasons included")
     p_stock_queue.add_argument("--floor", default=None)
     p_stock_queue.add_argument("--workers", type=int, default=3)
+    p_stock_queue.add_argument("--observations", required=True,
+                               help="the owner's live iNat observations json (must be at most 3 days old); frames match it by capture time, "
+                                    "each match is fetched live and labelled -- a frame with no observation is never a candidate")
     p_stock_queue.add_argument("--notes", default=None,
                                help="the upload set's manual flag notes json (see flag-upload-set): every group named in it is excluded from the candidates")
 
@@ -503,14 +506,16 @@ def cmd_stock_calibrate(args: argparse.Namespace) -> int:
 def cmd_stock_tag_queue(args: argparse.Namespace) -> int:
     from .stock_select import StockFloorMissing, tag_queue
 
+    from .inat_stock import SnapshotStale, load_snapshot
     from .upload_flags import load_manual_notes
 
     try:
         notes = load_manual_notes(Path(args.notes) if args.notes else None)
-        rows = tag_queue(Path(args.queue_json), Path(args.raw_root), Path(args.out),
+        observations = load_snapshot(Path(args.observations))
+        rows = tag_queue(Path(args.queue_json), Path(args.raw_root), Path(args.out), observations=observations,
                          floor_path=Path(args.floor) if args.floor else None, workers=args.workers,
                          excluded_groups={g: "flagged " + ", ".join(v["flags"]) for g, v in notes.items()})
-    except (StockFloorMissing, ValueError) as exc:
+    except (StockFloorMissing, SnapshotStale, ValueError) as exc:
         raise SystemExit(str(exc))
     picked = [r for r in rows if r["stock_candidate"]]
     print(f"{len(picked)} Stock candidates of {len(rows)} frames in {len({r['group'] for r in picked})} of "

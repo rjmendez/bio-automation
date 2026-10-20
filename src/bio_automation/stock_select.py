@@ -201,10 +201,24 @@ def decide(frames: list[dict], scores: dict, floor: dict, *, max_iso: int = DEFA
 
 def tag_observation(folder: Path, floor_path: Path | None = None, *, max_iso: int = DEFAULT_MAX_ISO,
                     top_per_group: int = DEFAULT_TOP_PER_GROUP) -> dict:
-    """Score the kept raws of one observation folder, write metadata/stock_tags.json, return it. One folder = one group."""
-    from .pipeline import _kept_original_raws
+    """Score the kept raws of one observation folder, write metadata/stock_tags.json, return it. One folder = one group.
+
+    The folder's observation must be linked to iNat (bio fetch-inat) and pass the label policy: its taxon, place and date become the Stock label
+    (inat_stock.label_from_observation). Otherwise no frame of the folder can be a candidate and the reason is in every row and in `label_error`.
+    """
+    from .inat_stock import LabelError, label_from_observation
+    from .pipeline import _kept_original_raws, load_observation
 
     floor = load_floor(floor_path)
+    obs = load_observation(folder)
+    label, label_error = None, None
+    if obs.observation_id is None:
+        label_error = "no iNat observation linked (run bio fetch-inat first)"
+    else:
+        try:
+            label = label_from_observation(obs)
+        except LabelError as e:
+            label_error = str(e)
     frames, scores = [], {}
     for asset in _kept_original_raws(folder):
         raw = Path(folder) / asset.file
@@ -213,8 +227,9 @@ def tag_observation(folder: Path, floor_path: Path | None = None, *, max_iso: in
         except Exception:
             scores[asset.file] = None
         frames.append({"id": asset.file, "group": 0, "mp": raw_megapixels(raw), "iso": raw_iso(raw), "located": False})
-    rows = decide(frames, scores, floor, max_iso=max_iso, top_per_group=top_per_group)
-    result = {"floor": floor, "max_iso": max_iso, "top_per_group": top_per_group, "frames": rows}
+    rows = decide(frames, scores, floor, max_iso=max_iso, top_per_group=top_per_group,
+                  excluded_groups={0: label_error} if label_error else None)
+    result = {"floor": floor, "max_iso": max_iso, "top_per_group": top_per_group, "label": label, "label_error": label_error, "frames": rows}
     write_json(metadata_dir(Path(folder)) / TAGS_FILENAME, result)
     return result
 
@@ -229,15 +244,43 @@ def _score_item(item: dict) -> dict:
         return {"lc_id": item["lc_id"], "sharp": "", "clip": "", "iso": "", "error": f"{type(e).__name__}: {e}"}
 
 
-def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, floor_path: Path | None = None, workers: int = 3,
-              max_iso: int = DEFAULT_MAX_ISO, top_per_group: int = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
+LABEL_COLUMNS = ("obs_id", "taxon", "grade", "rank", "title", "keywords", "caption", "category", "category_id")
+KEYWORD_SEP = "|"
+
+
+def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: list[dict], fetch=None, floor_path: Path | None = None,
+              workers: int = 3, max_iso: int = DEFAULT_MAX_ISO, top_per_group: int = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
               excluded_groups: dict | None = None) -> list[dict]:
-    """Score every frame of a LightCraft queue (items with lc_id, raw, group, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
-    excluded_groups: see decide()."""
+    """Score every frame of a LightCraft queue (items with lc_id, raw, day, t = capture epoch, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
+
+    `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED: a frame is only a candidate when it matches one by
+    capture time. Each matched observation is fetched live (fetch, default inat.fetch_inat_observation) and labelled; an unmatched frame, or one whose
+    observation cannot be labelled (no taxon, casual, genus-only needs-ID), is excluded with the reason. The burst limit applies per observation.
+    excluded_groups (keyed by observation id here): see decide().
+    """
     from PIL import Image
 
+    from .inat import fetch_inat_observation
+    from .inat_stock import LabelError, label_observation, label_problems, match_frames
+
+    fetch = fetch or fetch_inat_observation
     floor = load_floor(floor_path)
     queue = read_json(Path(queue_json))
+    matches = match_frames([{"id": x["lc_id"], "t": x["t"]} for x in queue], observations)
+    observed_on = {o["id"]: o.get("observed_on") for o in observations}
+    labels, exclusions = {}, dict(excluded_groups or {})
+    for obs_id in sorted(set(matches.values())):
+        try:
+            labels[obs_id] = label_observation(obs_id, observed_on.get(obs_id), fetch=lambda i: fetch(i))
+        except LabelError as e:
+            exclusions.setdefault(obs_id, str(e))
+            continue
+        problems = label_problems("x.jpg", labels[obs_id])
+        if problems:
+            exclusions.setdefault(obs_id, "label: " + "; ".join(problems))
+    for x in queue:
+        if x["lc_id"] not in matches:
+            exclusions[-x["lc_id"]] = "no iNat observation within 90 s of the capture time"
     cache_path = Path(str(out_csv) + ".raw")
     cached: dict = {}
     if cache_path.exists():
@@ -269,13 +312,22 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, floor_path: Pa
         scored = c is not None and not c["error"] and c["sharp"] != ""
         scores[x["lc_id"]] = FrameScore(float(c["sharp"]), float(c["clip"])) if scored else None
         iso = c["iso"] if c else ""
-        frames.append({"id": x["lc_id"], "group": x["group"], "mp": x["w"] * x["h"] / 1e6,
-                       "iso": int(float(iso)) if iso not in ("", "None", None) else None, "located": x.get("loc_source", "none") != "none"})
-    rows = decide(frames, scores, floor, max_iso=max_iso, top_per_group=top_per_group, excluded_groups=excluded_groups)
+        frames.append({"id": x["lc_id"], "group": matches.get(x["lc_id"], -x["lc_id"]), "mp": x["w"] * x["h"] / 1e6,
+                       "iso": int(float(iso)) if iso not in ("", "None", None) else None, "located": False})          # the retouched export removes location (and publish checks the file), so a queue location is irrelevant
+    rows = decide(frames, scores, floor, max_iso=max_iso, top_per_group=top_per_group, excluded_groups=exclusions)
     by_id = {x["lc_id"]: x for x in queue}
     for r in rows:
         r["day"], r["raw"] = by_id[r["id"]]["day"], by_id[r["id"]]["raw"]
         r["reasons"] = " | ".join(r["reasons"])
+        obs_id = matches.get(r["id"])
+        lab = labels.get(obs_id) if obs_id else None
+        r.update({c: "" for c in LABEL_COLUMNS})
+        if obs_id:
+            r["obs_id"] = obs_id
+        if lab:
+            r.update({"taxon": lab["taxon"], "grade": lab["grade"], "rank": lab["rank"], "title": lab["title"],
+                      "keywords": KEYWORD_SEP.join(lab["keywords"]), "caption": lab["caption"], "category": lab["category"],
+                      "category_id": lab["category_id"]})
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, list(rows[0].keys()))
         w.writeheader()
@@ -290,19 +342,29 @@ def render_name(row: dict) -> str:
     return f"{row['day']}_{Path(row['raw']).stem}.jpg"
 
 
+def row_label(row: dict) -> dict:
+    """The Stock label stored in a candidates-csv row (tag_queue's label columns)."""
+    return {"title": row.get("title", ""), "keywords": [k for k in row.get("keywords", "").split(KEYWORD_SEP) if k], "caption": row.get("caption", ""),
+            "category": row.get("category", ""), "category_id": int(row["category_id"]) if row.get("category_id") else None}
+
+
 def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery_dir: Path, *, plain_decode: bool = False,
-                       floor_path: Path | None = None) -> dict:
+                       floor_path: Path | None = None, adobe_csv: Path | None = None) -> dict:
     """Link every stock_candidate row's RETOUCHED render into gallery_dir/<year>/<year-month>/ (the layout of the existing Stock gallery).
 
     The retouched render (LightCraft develop + export, full size, q95, sRGB, no location) is produced outside this package and expected at
     render_dir/<year>/<day>/<render_name>. A candidate without one is reported in 'missing' and NOT shipped: a plain raw decode is flat and
-    un-retouched, so it is only produced when plain_decode=True is passed explicitly. Every render is checked with bundle.validate_jpeg('stock')
-    and for exposure (median luma of the RETOUCHED render >= the floor's luma_p10, i.e. not darker than the weakest tenth of the approved
-    exports) before it is linked; violations go to 'failed'.
+    un-retouched, so it is only produced when plain_decode=True is passed explicitly.
+
+    Nothing is linked without its Stock label: each render must pass bundle.validate_jpeg('stock'), the exposure floor (median luma >= luma_p10 of
+    the approved exports) and inat_stock.label_problems; its title/caption/keywords are then written INTO the file (XMP + IPTC), read back and
+    compared, and only then is it hardlinked (a re-run replaces a stale link). violations go to 'failed'. The Adobe Stock CSV of every passing
+    file is written to adobe_csv (default render_dir/adobe_stock_metadata.csv).
     """
     from PIL import Image
 
     from .bundle import validate_jpeg
+    from .inat_stock import LabelError, embed_label, label_problems, read_label, write_adobe_csv
     from .render import ExportBoundsError, export_stock_jpeg
 
     floor = load_floor(floor_path)
@@ -312,11 +374,12 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
     with open(rows_csv, newline="", encoding="utf-8") as f:
         picks = [r for r in csv.DictReader(f) if r["stock_candidate"] == "True"]
     decoded = linked = 0
-    missing, failed = [], []
+    missing, failed, shipped = [], [], []
     for r in picks:
         name = render_name(r)
         dest = Path(render_dir) / r["day"][:4] / r["day"] / name
         link = Path(gallery_dir) / r["day"][:4] / r["day"][:7] / name
+        label = row_label(r)
         try:
             if not (dest.is_file() and dest.stat().st_size):
                 if not plain_decode:
@@ -325,7 +388,7 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 export_stock_jpeg(Path(raw_root) / r["raw"], dest)
                 decoded += 1
-            problems = validate_jpeg(dest, "stock")
+            problems = validate_jpeg(dest, "stock") + label_problems(name, label)
             with Image.open(dest) as im:
                 im.draft("RGB", (1024, 1024))
                 luma = median_luma(np.asarray(_small(im.convert("RGB"))))
@@ -334,10 +397,20 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
             if problems:
                 failed.append({"raw": r["raw"], "error": "; ".join(problems)})
                 continue
+            embed_label(dest, label)
+            back = read_label(dest)
+            if (back["title"], back["caption"], back["keywords"]) != (label["title"], label["caption"], label["keywords"]):
+                failed.append({"raw": r["raw"], "error": "embedded metadata does not read back as written"})
+                continue
             link.parent.mkdir(parents=True, exist_ok=True)
+            if link.exists() and not os.path.samefile(dest, link):
+                link.unlink()
             if not link.exists():
                 os.link(dest, link)
                 linked += 1
-        except (ExportBoundsError, OSError, ValueError) as e:
+            shipped.append((name, label))
+        except (ExportBoundsError, LabelError, OSError, ValueError) as e:
             failed.append({"raw": r["raw"], "error": f"{type(e).__name__}: {e}"})
-    return {"candidates": len(picks), "plain_decoded": decoded, "linked": linked, "missing": missing, "failed": failed}
+    if shipped:
+        write_adobe_csv(shipped, Path(adobe_csv or Path(render_dir) / "adobe_stock_metadata.csv"))
+    return {"candidates": len(picks), "plain_decoded": decoded, "linked": linked, "missing": missing, "failed": failed, "adobe_csv_rows": len(shipped)}

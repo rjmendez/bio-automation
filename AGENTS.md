@@ -46,20 +46,26 @@ process on the library). Do not drive the live GUI session.
 **iNat posting is human-approved per observation**; locations and taxa are chosen
 by the owner in iNat. Build upload sets (files + CSV), never auto-post.
 
-**Stock candidate tagging is automatic (2026-10-20).** `bio process` ends with
-`stock_select.tag_observation` (writes `metadata/stock_tags.json`; a missing sharpness
-floor is reported in the result and logged, never silently skipped). For the LightCraft
-iNat backlog: `bio stock-calibrate <approved exports folder>` once (saves the floor, env
-`BIO_STOCK_FLOOR`), then `bio stock-tag-queue <queue.json> --raw-root F:/Bio --out
-<csv>` (resumable, one row per frame with reasons) and `bio stock-publish <csv>
---raw-root ... --render-dir ... --gallery-dir ...` (hardlinks the RETOUCHED full-size renders
--- LightCraft develop + export, `render_stock_candidates.py` in the ops repo -- into the Stock
-gallery as `<year>/<year-month>/`, after checking each against the Stock standard and an
-exposure floor; a candidate with no retouched render is reported as missing, never replaced by
-a plain raw decode unless `--plain-decode` is passed, because that is flat and un-retouched). The tag is a measured heuristic (technical bounds,
-ISO, tile sharpness vs a floor from already-approved exports, top 2 per burst, and every group named in the flag notes is excluded -- people, signs and non-wildlife need releases the measurements cannot see), NOT a
-quality or release verdict: every row is `release: unscreened` and the owner's look in the
-gallery is the gate. The 2048 px iNat renders can never be Stock files.
+**Stock labelling comes from iNat, enforced in code (2026-10-20).** A frame is a Stock
+candidate ONLY if it matches one of the owner's live iNat observations by capture time
+(`inat_stock.match_frames`, 90 s) and that observation is labelled from its live-fetched
+iNat data (`fetch_inat_observation` -> `stock.build_metadata` -> title, 15-50 keywords,
+caption, Adobe category number). The backlog of frames not on iNat is never a candidate;
+the code says why (`no iNat observation within 90 s`). `bio stock-tag-queue` REQUIRES
+`--observations <live snapshot, at most 3 days old>`; `bio process` ends with
+`tag_observation`, which needs the folder to be fetch-inat'd. `stock-publish` writes the
+label INTO each render (XMP + IPTC), reads it back, and links nothing that fails
+validate_jpeg('stock'), the exposure floor or the label limits; it also writes the Adobe CSV
+(`adobe_stock_metadata.csv`, Filename/Title/Keywords/Category/Releases). Only casual
+observations are refused; genus/family IDs are labelled at that rank and `grade`/`rank` stay
+in the csv. Order of work: `bio stock-calibrate <approved exports>` once, `bio stock-tag-queue
+<frames.json> --raw-root F:/Bio --out <csv> --observations <snapshot>`, retouched renders
+(`render_stock_candidates.py` in the ops repo, LightCraft develop.auto, no CPU denoise),
+`bio stock-publish <csv> ... --gallery-dir <gallery>`. The sharpness/exposure floors are
+heuristics, releases (people/property) are NEVER checked here: every row is `release:
+unscreened` and the owner's look in the gallery is the gate. A plain raw decode is flat and
+un-retouched: `--plain-decode` exists but is off, and the 2048 px iNat renders can never be
+Stock files.
 
 **Upload-set flags (2026-10-20).** `bio flag-upload-set <set folder> [--notes json]` appends
 `flags`/`flag_notes` columns to the set's `observations.csv` (CRLF kept, re-run replaces them):
