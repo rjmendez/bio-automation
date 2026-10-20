@@ -218,6 +218,25 @@ class TestMatchPhotosToFrames:
         assert asked == ["p1"]
 
 
+class TestPhotoMatches:
+    VEC = {"p1": (1.0, 0.0), "p2": (0.0, 1.0), "f1": (1.0, 0.0), "f2": (0.6, 0.8)}
+
+    def test_every_photo_gets_its_best_frame_and_similarity_even_below_the_threshold(self, tmp_path):
+        T0 = epoch("2026-06-13T10:51:00-04:00")
+        for n in ("f1", "f2"):
+            (tmp_path / f"{n}.jpg").write_bytes(b"x")
+        frames = [{"id": "f1", "t": T0, "image": tmp_path / "f1.jpg"}, {"id": "f2", "t": T0 + 5, "image": tmp_path / "f2.jpg"}]
+        obs = [{"id": 7, "time": dt.datetime.fromtimestamp(T0).astimezone().isoformat(),
+                "photos": [{"id": "p1", "url": "https://x/photos/p1/square.jpg"}, {"id": "p2", "url": "https://x/photos/p2/square.jpg"}]},
+               {"id": 8, "time": dt.datetime.fromtimestamp(T0 + 86400).astimezone().isoformat(), "photos": [{"id": "p1", "url": "https://x/photos/p1/square.jpg"}]}]
+        asked = []
+        out = inat_stock.photo_matches(frames, obs, lambda p: np.array(self.VEC[Path(p).stem], dtype=np.float32),
+                                       lambda pid, url: asked.append(pid) or Path(f"{pid}.jpg"))
+        assert out[(7, "p1")] == ("f1", pytest.approx(1.0))
+        assert out[(7, "p2")] == ("f2", pytest.approx(0.8))                      # best available, well under 0.97: reported, not dropped
+        assert (8, "p1") not in out and asked == ["p1", "p2"]                    # an observation with no frame nearby is not even fetched
+
+
 class TestVisualCheck:
     def test_photo_urls_use_the_requested_size(self):
         rec = {"photos": [{"id": 5, "url": "https://x/photos/5/square.jpg"}, {"id": None, "url": "https://x/photos/6/square.jpg"}, {"id": 7, "url": ""}]}

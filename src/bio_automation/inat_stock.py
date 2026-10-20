@@ -212,15 +212,14 @@ def default_embedder() -> Callable[[Path], np.ndarray]:
     return embed
 
 
-def match_photos_to_frames(frames: list[dict], observations: list[dict], embed: Callable[[Path], np.ndarray],
-                           photo_for: Callable[[str, str], Path], *, window: float = PHOTO_MATCH_WINDOW_S,
-                           min_similarity: float = PHOTO_MATCH_MIN_SIMILARITY) -> dict:
-    """{frame id: (observation id, similarity)} for the frames that ARE photos of the owner's observations.
+def photo_matches(frames: list[dict], observations: list[dict], embed: Callable[[Path], np.ndarray],
+                  photo_for: Callable[[str, str], Path], *, window: float = PHOTO_MATCH_WINDOW_S) -> dict:
+    """{(observation id, photo id): (frame id, similarity) | None} for EVERY photo of every observation that has frames nearby.
 
-    frames: dicts with id, t (capture epoch) and image (a Path to a picture of the frame). For every observation with frames captured within `window`
-    seconds of its time, each of its iNat photos takes the one frame that looks most like it; the pair counts when the similarity is at least
-    min_similarity. A frame claimed by two observations keeps the closer one. Frames that are not an uploaded photo (siblings of a burst, or shots from
-    near an unrelated observation) are not in the result."""
+    frames: dicts with id, t (capture epoch) and image (a Path to a picture of the frame). For each observation with frames captured within `window`
+    seconds of its time, each of its iNat photos is paired with the one frame that looks most like it (argmax of the DA-CLIP cosine), whatever the
+    similarity -- the caller applies a threshold. A photo whose observation has no frame nearby maps to None. Photos of observations that are not
+    near any frame are not fetched at all."""
     ordered = sorted(frames, key=lambda f: f["t"])
     times = [f["t"] for f in ordered]
     vectors: dict = {}
@@ -230,7 +229,7 @@ def match_photos_to_frames(frames: list[dict], observations: list[dict], embed: 
             vectors[f["id"]] = embed(Path(f["image"]))
         return vectors[f["id"]]
 
-    claims: dict = {}
+    out: dict = {}
     for o in observations:
         if not o.get("time"):
             continue
@@ -241,6 +240,22 @@ def match_photos_to_frames(frames: list[dict], observations: list[dict], embed: 
         for pid, url in observation_photo_urls(o):
             pv = embed(photo_for(pid, url))
             sim, best = max(((float(vec(f) @ pv), f) for f in near), key=lambda x: x[0])
-            if sim >= min_similarity and (best["id"] not in claims or sim > claims[best["id"]][1]):
-                claims[best["id"]] = (o["id"], sim)
+            out[(o["id"], pid)] = (best["id"], sim)
+    return out
+
+
+def match_photos_to_frames(frames: list[dict], observations: list[dict], embed: Callable[[Path], np.ndarray],
+                           photo_for: Callable[[str, str], Path], *, window: float = PHOTO_MATCH_WINDOW_S,
+                           min_similarity: float = PHOTO_MATCH_MIN_SIMILARITY) -> dict:
+    """{frame id: (observation id, similarity)} for the frames that ARE photos of the owner's observations.
+
+    Built on photo_matches(): a pair counts when the similarity is at least min_similarity; a frame claimed by two observations keeps the closer one.
+    Frames that are not an uploaded photo (siblings of a burst, or shots from near an unrelated observation) are not in the result."""
+    claims: dict = {}
+    for (oid, _pid), hit in photo_matches(frames, observations, embed, photo_for, window=window).items():
+        if hit is None:
+            continue
+        fid, sim = hit
+        if sim >= min_similarity and (fid not in claims or sim > claims[fid][1]):
+            claims[fid] = (oid, sim)
     return claims
