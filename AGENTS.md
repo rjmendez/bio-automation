@@ -70,11 +70,17 @@ JPEG quality >= q93, >= 24 MP, not tentative. Originals download unchanged (byte
 verified). Listens on 127.0.0.1:8781 ONLY (the tailscale serve entry was removed at the
 owner's request); app login `owner` (password in `F:/services/bio-gallery/password.txt`; the
 default admin/admin was deleted by `gallery_secure.py`). Supervisor
-`F:/services/bio-gallery/run-gallery.ps1` (not registered as a task). LAN path (proposed,
-needs the owner's yes because it edits the front door): `photos.lab.floppydicks.net` already
-resolves to the LAN IP 172.16.100.11 and the Caddy site of that name already listens there
-with the wildcard Let's Encrypt cert; only its `reverse_proxy` still points at 8780 (the
-retired review console) instead of 8781.
+`F:/services/bio-gallery/run-gallery.ps1` (not registered as a task). **LAN access (applied
+2026-10-20 with the owner's yes):** https://photos.lab.floppydicks.net:4443/ . The name
+resolves to the LAN IP 172.16.100.11; the front-door Caddy block of that name now binds ONLY
+172.16.100.11, answers 403 unless the client is in 172.16.100.0/24 or loopback, and proxies
+to 127.0.0.1:8781 (wildcard Let's Encrypt cert, HSTS, PiGallery2 login behind it). Not on
+the tailnet. Verified from this host and from mrpink (172.16.100.20): TLS valid, front page
+200, anonymous API 401, original byte-identical, thumbnails cacheable. The 403 branch was
+confirmed in Caddy's compiled config only (no client outside the /24 could be sourced).
+Rollback: copy `F:/services/tls/caddy/Caddyfile.bak-photos-lan-20261020-091908` over
+`Caddyfile`, then Stop+Start scheduled task `Lab-TLS-FrontDoor` (blips the loci/litellm/ollama
+names ~5 s). Caddyfile has MIXED newlines (LF + one trailing CRLF): never assume one style.
 
 **No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
 are shelved: do not build, extend, audit or fix them. The focus is bulk photo
