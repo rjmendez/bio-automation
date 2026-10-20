@@ -169,7 +169,10 @@ def read_label(jpeg: Path) -> dict:
                         "-IPTC:Keywords", str(jpeg)], capture_output=True, check=True)
     d = json.loads(r.stdout.decode("utf-8"))[0]      # bytes decoded explicitly: text=True would use the Windows codepage and mangle accents
     kw = d.get("Keywords") or []
-    return {"title": d.get("Title") or "", "caption": d.get("Caption-Abstract") or "", "keywords": [kw] if isinstance(kw, str) else list(kw)}
+    kw = [kw] if not isinstance(kw, list) else kw
+    # exiftool's JSON turns the strings "true"/"false" and digit strings into booleans/numbers: read every value back as text.
+    text = lambda v: ("true" if v is True else "false" if v is False else str(v))
+    return {"title": text(d.get("Title") or ""), "caption": text(d.get("Caption-Abstract") or ""), "keywords": [text(k) for k in kw]}
 
 
 def write_adobe_csv(rows: list[tuple[str, dict]], path: Path) -> int:

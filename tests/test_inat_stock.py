@@ -135,6 +135,13 @@ class TestEmbed:
         inat_stock.embed_label(p, self.LABEL)
         assert inat_stock.read_label(p) == {"title": self.LABEL["title"], "caption": self.LABEL["caption"], "keywords": self.LABEL["keywords"]}
 
+    def test_keywords_that_look_like_json_literals_or_numbers_read_back_as_the_same_text(self, tmp_path):
+        p = tmp_path / "a.jpg"
+        Image.new("RGB", (32, 32)).save(p, "JPEG")
+        label = {**self.LABEL, "keywords": ["true", "false", "2026", "warty"]}
+        inat_stock.embed_label(p, label)
+        assert inat_stock.read_label(p)["keywords"] == ["true", "false", "2026", "warty"]
+
     def test_unlabelled_file_reads_back_empty(self, tmp_path):
         p = tmp_path / "a.jpg"
         Image.new("RGB", (32, 32)).save(p, "JPEG")
