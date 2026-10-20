@@ -15,7 +15,7 @@ import pytest
 
 from bio_automation import cli, pipeline, stock_select
 from bio_automation.io import read_json, write_json
-from bio_automation.models import Asset
+from bio_automation.models import Asset, Observation
 from bio_automation.paths import metadata_dir, source_raw_dir
 from bio_automation.render import ExportBoundsError
 from bio_automation.stock_select import FrameScore, StockFloorMissing
@@ -234,7 +234,9 @@ class TestRawHelpers:
         assert s.clip == pytest.approx(0.013399, rel=1e-3)
 
 
-def seed_folder(tmp_path):
+def seed_folder(tmp_path, *, observation_id=408509974, quality_grade="research", rank="species"):
+    from bio_automation.pipeline import save_observation
+
     pipeline.ensure_layout(tmp_path)
     raw_dir = source_raw_dir(tmp_path)
     for name in ("DSC_0001.NEF", "DSC_0002.NEF", "DSC_0003.NEF"):
@@ -244,23 +246,48 @@ def seed_folder(tmp_path):
         Asset(file="source/raw/DSC_0002.NEF", role="original", status="kept", selected=True),
         Asset(file="source/raw/DSC_0003.NEF", role="original", status="rejected", selected=False),
     ])
+    save_observation(tmp_path, Observation(
+        observation_id=observation_id, obsdate="2026-06-13", place_guess="Pennsylvania, US", quality_grade=quality_grade,
+        taxon={"name": "Leiobunum verrucosum", "common_name": "Warty Harvestman", "iconic_taxon_name": "Arachnida", "rank": rank}))
     write_json(tmp_path / "floor.json", FLOOR)
 
 
+def stub_raws(monkeypatch, measured=None):
+    scored = []
+    measured = measured or {"DSC_0001.NEF": FrameScore(80.0, 0.0), "DSC_0002.NEF": FrameScore(5.0, 0.0)}
+    monkeypatch.setattr(stock_select, "score_raw", lambda p: scored.append(p.name) or measured[p.name])
+    monkeypatch.setattr(stock_select, "raw_megapixels", lambda p: 45.4)
+    monkeypatch.setattr(stock_select, "raw_iso", lambda p: 400)
+    return scored
+
+
 class TestTagObservation:
-    def test_kept_raws_are_scored_tagged_and_written(self, tmp_path, monkeypatch):
+    def test_kept_raws_are_scored_labelled_and_written(self, tmp_path, monkeypatch):
         seed_folder(tmp_path)
-        measured = {"DSC_0001.NEF": FrameScore(80.0, 0.0), "DSC_0002.NEF": FrameScore(5.0, 0.0)}
-        scored = []
-        monkeypatch.setattr(stock_select, "score_raw", lambda p: scored.append(p.name) or measured[p.name])
-        monkeypatch.setattr(stock_select, "raw_megapixels", lambda p: 45.4)
-        monkeypatch.setattr(stock_select, "raw_iso", lambda p: 400)
+        scored = stub_raws(monkeypatch)
         result = stock_select.tag_observation(tmp_path, tmp_path / "floor.json")
         assert scored == ["DSC_0001.NEF", "DSC_0002.NEF"]                      # the rejected raw is never read
         by_id = {f["id"]: f for f in result["frames"]}
         assert by_id["source/raw/DSC_0001.NEF"]["stock_candidate"] is True
         assert by_id["source/raw/DSC_0002.NEF"]["reasons"] == ["sharpness 5.0 < floor 18.4"]
+        assert result["label_error"] is None
+        assert result["label"]["title"] == "Warty Harvestman Leiobunum verrucosum - Pennsylvania"
         assert read_json(metadata_dir(tmp_path) / "stock_tags.json") == result
+
+    def test_observation_not_linked_to_inat_has_no_candidates(self, tmp_path, monkeypatch):
+        seed_folder(tmp_path, observation_id=None)
+        stub_raws(monkeypatch)
+        result = stock_select.tag_observation(tmp_path, tmp_path / "floor.json")
+        assert result["label"] is None and result["label_error"] == "no iNat observation linked (run bio fetch-inat first)"
+        assert [f["stock_candidate"] for f in result["frames"]] == [False, False]
+        assert result["frames"][0]["reasons"] == ["group excluded: no iNat observation linked (run bio fetch-inat first)"]
+
+    def test_observation_the_label_policy_refuses_has_no_candidates(self, tmp_path, monkeypatch):
+        seed_folder(tmp_path, quality_grade="casual")
+        stub_raws(monkeypatch)
+        result = stock_select.tag_observation(tmp_path, tmp_path / "floor.json")
+        assert result["label_error"] == "observation 408509974: casual observation"
+        assert [f["stock_candidate"] for f in result["frames"]] == [False, False]
 
     def test_a_raw_that_cannot_be_decoded_is_tagged_unscored(self, tmp_path, monkeypatch):
         seed_folder(tmp_path)
@@ -270,9 +297,8 @@ class TestTagObservation:
                 raise RuntimeError("bad raw")
             return FrameScore(80.0, 0.0)
 
+        stub_raws(monkeypatch)
         monkeypatch.setattr(stock_select, "score_raw", decode)
-        monkeypatch.setattr(stock_select, "raw_megapixels", lambda p: 45.4)
-        monkeypatch.setattr(stock_select, "raw_iso", lambda p: 400)
         by_id = {f["id"]: f for f in stock_select.tag_observation(tmp_path, tmp_path / "floor.json")["frames"]}
         assert by_id["source/raw/DSC_0001.NEF"]["reasons"] == ["unscored"]
         assert by_id["source/raw/DSC_0002.NEF"]["stock_candidate"] is True
@@ -309,8 +335,19 @@ class TestPipelineHook:
             pipeline._tag_stock(tmp_path)
 
 
-def queue_item(lc_id, group, raw, iso=800, loc="none", w=8256, h=5504, tmp=None):
-    return {"lc_id": lc_id, "group": group, "raw": raw, "day": "2026-07-31", "w": w, "h": h, "loc_source": loc, "copy": str(tmp / f"{lc_id}.jpg")}
+def epoch(iso):
+    import datetime as dt
+
+    return dt.datetime.fromisoformat(iso).timestamp()
+
+
+BASE = "2026-07-31T09:00:00-04:00"
+
+
+def queue_item(lc_id, raw, seconds, loc="none", w=8256, h=5504, tmp=None):
+    """A LightCraft queue frame captured `seconds` after BASE."""
+    return {"lc_id": lc_id, "group": 99, "raw": raw, "day": "2026-07-31", "t": epoch(BASE) + seconds, "w": w, "h": h, "loc_source": loc,
+            "copy": str(tmp / f"{lc_id}.jpg")}
 
 
 def make_copy(path, iso):
@@ -321,48 +358,103 @@ def make_copy(path, iso):
     Image.new("RGB", (8, 8)).save(path, "JPEG", exif=ex.tobytes())
 
 
+def fake_fetch(calls, overrides=None):
+    overrides = overrides or {}
+
+    def fetch(obs_id):
+        calls.append(obs_id)
+        base = {"observation_id": obs_id, "source": "inaturalist", "place_guess": "Pennsylvania, US", "license": "cc-by", "quality_grade": "research",
+                "keywords_seed": [], "taxon": {"id": 1, "name": "Leiobunum verrucosum", "preferred_common_name": "Warty Harvestman",
+                                                  "common_name": "Warty Harvestman", "iconic_taxon_name": "Arachnida", "rank": "species"}}
+        return {**base, **overrides.get(obs_id, {})}
+
+    return fetch
+
+
+OBS = [{"id": 11, "time": "2026-07-31T09:00:10-04:00", "observed_on": "2026-07-31"},
+       {"id": 22, "time": "2026-07-31T09:10:00-04:00", "observed_on": "2026-07-31"}]
+
+
 class TestTagQueue:
     def seed(self, tmp_path):
-        items = [queue_item(1, 1, "2026/d/DSC_1.NEF", tmp=tmp_path), queue_item(2, 1, "2026/d/DSC_2.NEF", tmp=tmp_path),
-                 queue_item(3, 1, "2026/d/DSC_3.NEF", tmp=tmp_path), queue_item(4, 2, "2026/d/DSC_4.NEF", tmp=tmp_path, loc="phone")]
-        for i, iso in ((1, 100), (2, 200), (3, 6400), (4, 100)):
+        items = [queue_item(1, "2026/d/DSC_1.NEF", 0, tmp=tmp_path), queue_item(2, "2026/d/DSC_2.NEF", 30, tmp=tmp_path),
+                 queue_item(3, "2026/d/DSC_3.NEF", 20, tmp=tmp_path),                       # three frames of observation 11
+                 queue_item(4, "2026/d/DSC_4.NEF", 600, tmp=tmp_path),                      # observation 22
+                 queue_item(5, "2026/d/DSC_5.NEF", 3000, tmp=tmp_path)]                     # no observation within 90 s
+        for i, iso in ((1, 100), (2, 200), (3, 6400), (4, 100), (5, 100)):
             make_copy(tmp_path / f"{i}.jpg", iso)
         write_json(tmp_path / "q.json", items)
         write_json(tmp_path / "floor.json", FLOOR)
-        return items
 
-    def test_scores_picks_and_writes_the_csv(self, tmp_path, monkeypatch):
+    def run(self, tmp_path, monkeypatch, sharp=None, fetch=None, calls=None, **kw):
         self.seed(tmp_path)
-        sharp = {"DSC_1.NEF": 30.0, "DSC_2.NEF": 90.0, "DSC_3.NEF": 500.0, "DSC_4.NEF": 90.0}
+        sharp = sharp or {"DSC_1.NEF": 30.0, "DSC_2.NEF": 90.0, "DSC_3.NEF": 500.0, "DSC_4.NEF": 40.0, "DSC_5.NEF": 900.0}
         monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(sharp[p.name], 0.0))
-        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv",
-                                      floor_path=tmp_path / "floor.json", workers=1, top_per_group=1)
-        by = {r["id"]: r for r in rows}
-        assert [i for i, r in by.items() if r["stock_candidate"]] == [2]                 # 3 is sharper but ISO 6400; 4 carries a location
-        assert by[3]["reasons"] == "ISO 6400 > 3200"
-        assert by[4]["reasons"] == "carries a location"
-        assert by[1]["reasons"] == "burst: not among the 1 sharpest of its group"
-        with open(tmp_path / "out.csv", newline="", encoding="utf-8") as f:
-            written = list(csv.DictReader(f))
-        assert [(r["id"], r["stock_candidate"], r["day"], r["raw"]) for r in written][1] == ("2", "True", "2026-07-31", "2026/d/DSC_2.NEF")
+        calls = [] if calls is None else calls
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fetch or fake_fetch(calls),
+                                      floor_path=tmp_path / "floor.json", workers=1, top_per_group=1, **kw)
+        return {r["id"]: r for r in rows}, calls
 
-    def test_excluded_group_never_becomes_a_candidate(self, tmp_path, monkeypatch):
-        self.seed(tmp_path)
-        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
-        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", floor_path=tmp_path / "floor.json", workers=1,
-                                      excluded_groups={1: "flagged pet"})
-        by = {r["id"]: r for r in rows}
-        assert by[2]["stock_candidate"] is False and by[2]["reasons"] == "group excluded: flagged pet"
+    def test_matched_frames_are_labelled_and_the_burst_limit_is_per_observation(self, tmp_path, monkeypatch):
+        by, calls = self.run(tmp_path, monkeypatch)
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [2, 4]       # 3 is sharper but ISO 6400; 5 is sharper still but not on iNat
+        assert by[3]["reasons"] == "ISO 6400 > 3200"
+        assert by[1]["reasons"] == "burst: not among the 1 sharpest of its group"
+        assert (by[2]["group"], by[2]["obs_id"], by[2]["taxon"], by[2]["grade"], by[2]["rank"]) == (11, 11, "Leiobunum verrucosum", "research", "species")
+        assert by[2]["title"] == "Warty Harvestman Leiobunum verrucosum - Pennsylvania"
+        assert by[2]["keywords"].split("|")[:4] == ["warty", "harvestman", "leiobunum", "verrucosum"] and len(by[2]["keywords"].split("|")) == 16
+        assert (by[2]["category"], by[2]["category_id"]) == ("Animals", 1)
+        assert by[2]["caption"] == "Warty Harvestman (Leiobunum verrucosum) photographed at Pennsylvania, US on 2026-07-31."
+
+    def test_each_observation_is_fetched_once(self, tmp_path, monkeypatch):
+        _, calls = self.run(tmp_path, monkeypatch)
+        assert calls == [11, 22]
+
+    def test_a_frame_with_no_observation_is_never_a_candidate_however_sharp(self, tmp_path, monkeypatch):
+        by, _ = self.run(tmp_path, monkeypatch)
+        assert by[5]["stock_candidate"] is False
+        assert by[5]["reasons"] == "group excluded: no iNat observation within 90 s of the capture time"
+        assert (by[5]["obs_id"], by[5]["title"]) == ("", "")
+
+    def test_an_observation_the_policy_refuses_excludes_its_frames_with_the_reason(self, tmp_path, monkeypatch):
+        by, _ = self.run(tmp_path, monkeypatch, fetch=fake_fetch([], {22: {"quality_grade": "casual"}}))
+        assert by[4]["stock_candidate"] is False and by[4]["reasons"] == "group excluded: observation 22: casual observation"
+        assert by[2]["stock_candidate"] is True                                  # positive twin: the other observation is untouched
+
+    def test_a_label_too_thin_to_ship_excludes_the_observation(self, tmp_path, monkeypatch):
+        thin = {"taxon": {"id": 2, "name": "Amanita muscaria", "preferred_common_name": None, "common_name": None, "iconic_taxon_name": "Fungi",
+                          "rank": "species"}}
+        by, _ = self.run(tmp_path, monkeypatch, fetch=fake_fetch([], {22: thin}))
+        assert by[4]["reasons"] == "group excluded: label: 13 keywords (need at least 15)"
+        assert (by[4]["stock_candidate"], by[4]["title"]) == (False, "Amanita muscaria - Pennsylvania")      # the label stays visible so the owner sees why
+
+    def test_a_failed_fetch_excludes_the_observation(self, tmp_path, monkeypatch):
+        def fetch(i):
+            if i == 22:
+                raise ConnectionError("offline")
+            return fake_fetch([])(i)
+
+        by, _ = self.run(tmp_path, monkeypatch, fetch=fetch)
+        assert by[4]["reasons"] == "group excluded: observation 22: fetch failed: ConnectionError: offline"
+
+    def test_hand_flagged_observation_is_excluded(self, tmp_path, monkeypatch):
+        by, _ = self.run(tmp_path, monkeypatch, excluded_groups={11: "flagged people_visible"})
+        assert by[2]["stock_candidate"] is False and by[2]["reasons"] == "group excluded: flagged people_visible"
+
+    def test_csv_is_written_with_the_label_columns(self, tmp_path, monkeypatch):
+        self.run(tmp_path, monkeypatch)
+        with open(tmp_path / "out.csv", newline="", encoding="utf-8") as f:
+            rows = {r["id"]: r for r in csv.DictReader(f)}
+        assert rows["2"]["obs_id"] == "11" and rows["2"]["category_id"] == "1" and rows["2"]["stock_candidate"] == "True"
+        assert rows["5"]["obs_id"] == "" and rows["5"]["day"] == "2026-07-31" and rows["5"]["raw"] == "2026/d/DSC_5.NEF"
 
     def test_rerun_uses_the_cache_and_does_not_rescore(self, tmp_path, monkeypatch):
-        self.seed(tmp_path)
+        self.run(tmp_path, monkeypatch)
         calls = []
-        monkeypatch.setattr(stock_select, "score_raw", lambda p: calls.append(p.name) or FrameScore(90.0, 0.0))
-        kw = dict(floor_path=tmp_path / "floor.json", workers=1)
-        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", **kw)
-        assert len(calls) == 4
-        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", **kw)
-        assert len(calls) == 4
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: calls.append(p.name))
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                               floor_path=tmp_path / "floor.json", workers=1)
+        assert calls == []
 
     def test_unreadable_raw_is_an_unscored_row(self, tmp_path, monkeypatch):
         self.seed(tmp_path)
@@ -373,20 +465,31 @@ class TestTagQueue:
             return FrameScore(90.0, 0.0)
 
         monkeypatch.setattr(stock_select, "score_raw", decode)
-        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", floor_path=tmp_path / "floor.json", workers=1)
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1)
         assert {r["id"]: r["reasons"] for r in rows}[2] == "unscored"
 
     def test_limit_scores_only_that_many_and_marks_the_rest_unscored(self, tmp_path, monkeypatch):
         self.seed(tmp_path)
         monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
-        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", floor_path=tmp_path / "floor.json", workers=1, limit=2)
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1, limit=2)
         assert [r["reasons"] for r in rows if r["id"] in (3, 4)] == ["unscored", "unscored"]
+
+    def test_observations_are_required(self, tmp_path):
+        self.seed(tmp_path)
+        with pytest.raises(TypeError, match="observations"):
+            stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", floor_path=tmp_path / "floor.json", workers=1)
+
+
+LABEL_COLS = {"title": "Warty Harvestman Leiobunum verrucosum - Pennsylvania", "caption": "Warty Harvestman photographed at Pennsylvania, US.",
+              "keywords": "|".join(f"kw{i}" for i in range(16)), "category": "Animals", "category_id": "1"}
 
 
 class TestPublish:
-    ROWS = [{"raw": "2026/d/DSC_1.NEF", "day": "2026-07-31", "stock_candidate": "True"},
-            {"raw": "2026/d/DSC_2.NEF", "day": "2026-07-31", "stock_candidate": "False"},
-            {"raw": "2026/d/DSC_3.NEF", "day": "2026-08-01", "stock_candidate": "True"}]
+    ROWS = [{"raw": "2026/d/DSC_1.NEF", "day": "2026-07-31", "stock_candidate": "True", **LABEL_COLS},
+            {"raw": "2026/d/DSC_2.NEF", "day": "2026-07-31", "stock_candidate": "False", **LABEL_COLS},
+            {"raw": "2026/d/DSC_3.NEF", "day": "2026-08-01", "stock_candidate": "True", **LABEL_COLS}]
 
     @pytest.fixture(autouse=True)
     def floor_file(self, tmp_path, monkeypatch):
@@ -395,10 +498,11 @@ class TestPublish:
 
     def csv_file(self, tmp_path, rows=None):
         p = tmp_path / "c.csv"
+        rows = rows or self.ROWS
         with open(p, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, ["raw", "day", "stock_candidate"])
+            w = csv.DictWriter(f, list(rows[0].keys()))
             w.writeheader()
-            w.writerows(rows or self.ROWS)
+            w.writerows(rows)
         return p
 
     def render(self, tmp_path, day, name, size=(2000, 2000), quality=95, gps=False, color=(90, 120, 60)):
@@ -415,20 +519,55 @@ class TestPublish:
         Image.new("RGB", size, color).save(p, "JPEG", quality=quality, **kw)
         return p
 
+    def publish(self, tmp_path, rows=None, **kw):
+        return stock_select.publish_candidates(self.csv_file(tmp_path, rows), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery", **kw)
+
     def test_render_name_carries_the_day(self):
         assert stock_select.render_name(self.ROWS[0]) == "2026-07-31_DSC_1.jpg"
 
-    def test_retouched_renders_are_linked_into_year_month_folders_and_non_candidates_are_not(self, tmp_path):
+    def test_labelled_renders_are_embedded_linked_and_listed_in_the_adobe_csv(self, tmp_path):
+        from bio_automation import inat_stock
+
         src1 = self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_2.jpg")                       # a render exists for the non-candidate: still not shipped
         self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
-        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
-        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": []}
-        assert os.path.samefile(src1, tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg")
-        assert (tmp_path / "gallery/2026/2026-08/2026-08-01_DSC_3.jpg").is_file()
+        out = self.publish(tmp_path)
+        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": [], "adobe_csv_rows": 2}
+        link = tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg"
+        assert os.path.samefile(src1, link)
+        assert inat_stock.read_label(link) == {"title": LABEL_COLS["title"], "caption": LABEL_COLS["caption"], "keywords": LABEL_COLS["keywords"].split("|")}
         assert not (tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_2.jpg").exists()
-        again = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
-        assert again["linked"] == 0 and again["failed"] == []
+        assert inat_stock.read_label(tmp_path / "render/2026/2026-07-31/2026-07-31_DSC_2.jpg")["title"] == ""        # untouched, not a candidate
+        rows = list(csv.DictReader(open(tmp_path / "render" / "adobe_stock_metadata.csv", newline="", encoding="utf-8-sig")))
+        assert [(r["Filename"], r["Category"], r["Releases"]) for r in rows] == [("2026-07-31_DSC_1.jpg", "1", ""), ("2026-08-01_DSC_3.jpg", "1", "")]
+        assert rows[0]["Keywords"] == ",".join(f"kw{i}" for i in range(16))
+
+    def test_a_label_that_does_not_read_back_is_failed_and_never_linked(self, tmp_path, monkeypatch):
+        from bio_automation import inat_stock
+
+        embedded = []
+        monkeypatch.setattr(inat_stock, "embed_label", lambda jpeg, label: embedded.append(jpeg.name))      # the write silently does nothing
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert embedded == ["2026-07-31_DSC_1.jpg"]
+        assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "embedded metadata does not read back as written"}]
+        assert out["linked"] == 0 and out["adobe_csv_rows"] == 0 and not (tmp_path / "gallery").exists()
+
+    def test_rerun_keeps_one_link_per_file_and_refreshes_a_stale_one(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        self.publish(tmp_path, [self.ROWS[0]])
+        again = self.publish(tmp_path, [self.ROWS[0]])
+        assert again["failed"] == [] and again["adobe_csv_rows"] == 1
+        link = tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg"
+        assert os.path.samefile(tmp_path / "render/2026/2026-07-31/2026-07-31_DSC_1.jpg", link)       # re-embedding replaced the inode; the link followed
+
+    def test_a_candidate_without_a_label_is_failed_and_never_linked(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        bare = {"raw": "2026/d/DSC_1.NEF", "day": "2026-07-31", "stock_candidate": "True"}
+        out = self.publish(tmp_path, [bare])
+        assert out["linked"] == 0 and out["adobe_csv_rows"] == 0
+        assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "no title; 0 keywords (need at least 15); no caption; no Adobe category number for ''"}]
+        assert not (tmp_path / "gallery").exists() and not (tmp_path / "render" / "adobe_stock_metadata.csv").exists()
 
     def test_a_candidate_without_a_retouched_render_is_missing_and_never_decoded_plain(self, tmp_path, monkeypatch):
         from bio_automation import render
@@ -436,7 +575,7 @@ class TestPublish:
         decoded = []
         monkeypatch.setattr(render, "export_stock_jpeg", lambda raw, dest: decoded.append(raw))
         self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
-        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        out = self.publish(tmp_path)
         assert out["missing"] == ["2026/d/DSC_1.NEF"] and out["linked"] == 1
         assert decoded == []
         assert not (tmp_path / "gallery/2026/2026-07").exists()
@@ -453,8 +592,7 @@ class TestPublish:
             self.render(tmp_path, "2026-07-31", dest.name)
 
         monkeypatch.setattr(render, "export_stock_jpeg", fake)
-        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render",
-                                              tmp_path / "gallery", plain_decode=True)
+        out = self.publish(tmp_path, [self.ROWS[0]], plain_decode=True)
         assert decoded == ["DSC_1.NEF"]
         assert (out["plain_decoded"], out["linked"], out["missing"]) == (1, 1, [])
         assert Image.open(tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg").size == (2000, 2000)
@@ -462,7 +600,7 @@ class TestPublish:
     def test_renders_that_break_the_stock_standard_are_failed_not_linked(self, tmp_path):
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", size=(100, 100))                 # under 4 MP
         self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg", gps=True)                        # carries a GPS block
-        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        out = self.publish(tmp_path)
         assert out["linked"] == 0
         assert out["failed"] == [
             {"raw": "2026/d/DSC_1.NEF", "error": "100x100 = 0.01 MP is below the 4 MP minimum"},
@@ -472,45 +610,65 @@ class TestPublish:
     def test_dark_render_is_failed_and_one_just_bright_enough_is_linked(self, tmp_path):
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", color=(10, 10, 10))              # median luma 10 < 35
         self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg", color=(36, 36, 36))              # median luma 36 >= 35
-        out = stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path, tmp_path / "render", tmp_path / "gallery")
+        out = self.publish(tmp_path)
         assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "under-exposed: median luma 10.0 < floor 35.0"}]
         assert out["linked"] == 1 and (tmp_path / "gallery/2026/2026-08/2026-08-01_DSC_3.jpg").is_file()
 
     def test_floor_without_luma_is_refused(self, tmp_path):
         write_json(tmp_path / "pubfloor.json", FLOOR)
         with pytest.raises(StockFloorMissing, match="the sharpness floor has no luma_p10; re-run `bio stock-calibrate"):
-            stock_select.publish_candidates(self.csv_file(tmp_path), tmp_path, tmp_path / "render", tmp_path / "gallery")
+            self.publish(tmp_path)
 
     def test_low_quality_render_is_failed(self, tmp_path):
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", quality=80)
-        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path, tmp_path / "render", tmp_path / "gallery")
+        out = self.publish(tmp_path, [self.ROWS[0]])
         assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "JPEG quality below 95 (quantisation table coarser than q95)"}]
 
 
 class TestCli:
+    def args(self, *extra):
+        return cli.build_parser().parse_args(["stock-tag-queue", "q.json", "--raw-root", "r", "--out", "o.csv", *extra])
+
+    def test_observations_flag_is_required(self, capsys):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["stock-tag-queue", "q.json", "--raw-root", "r", "--out", "o.csv"])
+        assert "--observations" in capsys.readouterr().err
+
     def test_tag_queue_without_a_floor_exits_with_the_fix(self, tmp_path, monkeypatch):
         write_json(tmp_path / "q.json", [])
-        monkeypatch.setenv("BIO_STOCK_FLOOR", str(tmp_path / "none.json"))
+        write_json(tmp_path / "obs.json", {"observations": []})
         monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "none.json")
-        args = cli.build_parser().parse_args(["stock-tag-queue", str(tmp_path / "q.json"), "--raw-root", str(tmp_path), "--out", str(tmp_path / "o.csv")])
+        args = cli.build_parser().parse_args(["stock-tag-queue", str(tmp_path / "q.json"), "--raw-root", str(tmp_path), "--out", str(tmp_path / "o.csv"),
+                                               "--observations", str(tmp_path / "obs.json")])
         with pytest.raises(SystemExit, match=r"no sharpness floor at .*none\.json; run `bio stock-calibrate"):
             cli.cmd_stock_tag_queue(args)
 
-    def test_tag_queue_passes_the_notes_groups_as_exclusions(self, tmp_path, monkeypatch):
+    def test_stale_observation_snapshot_exits_with_the_fix(self, tmp_path):
+        import time
+
+        p = tmp_path / "obs.json"
+        write_json(p, {"observations": []})
+        old = time.time() - 5 * 86400
+        os.utime(p, (old, old))
+        with pytest.raises(SystemExit, match=r"obs\.json is 5\.0 days old \(limit 3\); refresh it from the live iNat account first"):
+            cli.cmd_stock_tag_queue(self.args("--observations", str(p)))
+
+    def test_tag_queue_passes_snapshot_and_notes_groups(self, tmp_path, monkeypatch):
         seen = {}
         monkeypatch.setattr(stock_select, "tag_queue", lambda *a, **k: seen.update(k) or [{"stock_candidate": False, "group": 1}])
+        write_json(tmp_path / "obs.json", {"observations": [{"id": 1, "time": "2026-07-31T09:00:00-04:00"}]})
         notes = tmp_path / "n.json"
         notes.write_text('{"92": {"flags": ["not_wildlife", "electronics"], "note": "board"}}', encoding="utf-8")
-        args = cli.build_parser().parse_args(["stock-tag-queue", "q.json", "--raw-root", "r", "--out", "o.csv", "--notes", str(notes)])
-        cli.cmd_stock_tag_queue(args)
+        cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json"), "--notes", str(notes)))
+        assert seen["observations"] == [{"id": 1, "time": "2026-07-31T09:00:00-04:00"}]
         assert seen["excluded_groups"] == {92: "flagged not_wildlife, electronics"}
 
     def test_tag_queue_prints_the_counts(self, tmp_path, monkeypatch, capsys):
         rows = [{"stock_candidate": True, "group": 1}, {"stock_candidate": False, "group": 1}, {"stock_candidate": True, "group": 2},
                 {"stock_candidate": False, "group": 3}]
         monkeypatch.setattr(stock_select, "tag_queue", lambda *a, **k: rows)
-        args = cli.build_parser().parse_args(["stock-tag-queue", "q.json", "--raw-root", "r", "--out", "o.csv"])
-        assert cli.cmd_stock_tag_queue(args) == 0
+        write_json(tmp_path / "obs.json", {"observations": []})
+        assert cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json"))) == 0
         assert capsys.readouterr().out == "2 Stock candidates of 4 frames in 2 of 3 groups -> o.csv\n"
 
     def test_publish_exit_code_reflects_failures_and_missing_renders(self, monkeypatch):
