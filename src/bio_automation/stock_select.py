@@ -63,12 +63,23 @@ def tile_sharpness(rgb: np.ndarray) -> FrameScore:
     return FrameScore(float(np.percentile(tiles.var(axis=1), TILE_PERCENTILE)), float((rgb.max(axis=2) >= 250).mean()))
 
 
-def calibrate_floor(sharp_values: list[float]) -> dict:
+def median_luma(rgb: np.ndarray) -> float:
+    """Median of the 0-255 luma (Rec.601) of an HxWx3 image: a frame whose median sits far below every approved export is under-exposed."""
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError(f"rgb must be HxWx3, got shape {rgb.shape}")
+    rgb = rgb.astype(np.float32, copy=False)
+    return float(np.median(rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114))
+
+
+def calibrate_floor(sharp_values: list[float], luma_values: list[float] | None = None) -> dict:
     if not sharp_values:
         raise ValueError("cannot calibrate a floor from zero measurements")
     v = np.asarray(sharp_values, dtype=np.float64)
-    return {"n": int(v.size), "p10": float(np.percentile(v, FLOOR_PERCENTILE)),
-            "p25": float(np.percentile(v, 25)), "median": float(np.median(v))}
+    floor = {"n": int(v.size), "p10": float(np.percentile(v, FLOOR_PERCENTILE)),
+             "p25": float(np.percentile(v, 25)), "median": float(np.median(v))}
+    if luma_values:
+        floor["luma_p10"] = float(np.percentile(np.asarray(luma_values, dtype=np.float64), FLOOR_PERCENTILE))
+    return floor
 
 
 def load_floor(path: Path | None = None) -> dict:
@@ -76,6 +87,13 @@ def load_floor(path: Path | None = None) -> dict:
     if not path.is_file():
         raise StockFloorMissing(f"no sharpness floor at {path}; run `bio stock-calibrate <folder of approved exports>` first")
     return read_json(path)
+
+
+def _small(im, edge: int = 512):
+    """Copy of a PIL image limited to *edge* px on its long side (luma is a global statistic, no need for the full frame)."""
+    out = im.copy()
+    out.thumbnail((edge, edge))
+    return out
 
 
 def calibrate_from_folder(folder: Path, out: Path | None = None, sample: int = 300) -> dict:
@@ -86,13 +104,14 @@ def calibrate_from_folder(folder: Path, out: Path | None = None, sample: int = 3
     if not files:
         raise ValueError(f"no JPEGs under {folder}")
     step = max(1, len(files) // sample)
-    vals = []
+    vals, lumas = [], []
     for p in files[::step][:sample]:
         with Image.open(p) as im:
             im = im.convert("RGB")
-            im = im.resize((im.width // 2, im.height // 2), Image.BOX)
-            vals.append(tile_sharpness(np.asarray(im)).sharp)
-    floor = calibrate_floor(vals)
+            half = im.resize((im.width // 2, im.height // 2), Image.BOX)
+            vals.append(tile_sharpness(np.asarray(half)).sharp)
+            lumas.append(median_luma(np.asarray(_small(im))))
+    floor = calibrate_floor(vals, lumas)
     write_json(Path(out or DEFAULT_FLOOR_PATH), floor)
     return floor
 
@@ -255,31 +274,61 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, floor_path: Pa
     return rows
 
 
-# ---- publish: full-size q95 renders of the candidates, hardlinked into the review gallery ----
+# ---- publish: retouched full-size renders, validated against the Stock standard, hardlinked into the review gallery ----
 
-def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery_dir: Path) -> dict:
-    """Render every stock_candidate row from its raw (render.export_stock_jpeg: full size, q95, sRGB, no GPS) into
-    render_dir/<year>/<day>/<stem>.jpg and hardlink it into gallery_dir (same volume). Existing renders are kept; a render that
-    violates the Stock bounds is reported, not shipped."""
+def render_name(row: dict) -> str:
+    """<day>_<raw stem>.jpg -- camera counters wrap, so the day keeps names unique (same convention as the existing gallery files)."""
+    return f"{row['day']}_{Path(row['raw']).stem}.jpg"
+
+
+def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery_dir: Path, *, plain_decode: bool = False,
+                       floor_path: Path | None = None) -> dict:
+    """Link every stock_candidate row's RETOUCHED render into gallery_dir/<year>/<year-month>/ (the layout of the existing Stock gallery).
+
+    The retouched render (LightCraft develop + export, full size, q95, sRGB, no location) is produced outside this package and expected at
+    render_dir/<year>/<day>/<render_name>. A candidate without one is reported in 'missing' and NOT shipped: a plain raw decode is flat and
+    un-retouched, so it is only produced when plain_decode=True is passed explicitly. Every render is checked with bundle.validate_jpeg('stock')
+    and for exposure (median luma of the RETOUCHED render >= the floor's luma_p10, i.e. not darker than the weakest tenth of the approved
+    exports) before it is linked; violations go to 'failed'.
+    """
+    from PIL import Image
+
+    from .bundle import validate_jpeg
     from .render import ExportBoundsError, export_stock_jpeg
+
+    floor = load_floor(floor_path)
+    if "luma_p10" not in floor:
+        raise StockFloorMissing("the sharpness floor has no luma_p10; re-run `bio stock-calibrate <folder of approved exports>`")
 
     with open(rows_csv, newline="", encoding="utf-8") as f:
         picks = [r for r in csv.DictReader(f) if r["stock_candidate"] == "True"]
-    made = linked = 0
-    failed = []
+    decoded = linked = 0
+    missing, failed = [], []
     for r in picks:
-        raw = Path(raw_root) / r["raw"]
-        dest = Path(render_dir) / r["day"][:4] / r["day"] / f"{raw.stem}.jpg"
-        link = Path(gallery_dir) / r["day"][:4] / r["day"] / dest.name
+        name = render_name(r)
+        dest = Path(render_dir) / r["day"][:4] / r["day"] / name
+        link = Path(gallery_dir) / r["day"][:4] / r["day"][:7] / name
         try:
             if not (dest.is_file() and dest.stat().st_size):
+                if not plain_decode:
+                    missing.append(r["raw"])
+                    continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                export_stock_jpeg(raw, dest)
-                made += 1
+                export_stock_jpeg(Path(raw_root) / r["raw"], dest)
+                decoded += 1
+            problems = validate_jpeg(dest, "stock")
+            with Image.open(dest) as im:
+                im.draft("RGB", (1024, 1024))
+                luma = median_luma(np.asarray(_small(im.convert("RGB"))))
+            if luma < floor["luma_p10"]:
+                problems.append(f"under-exposed: median luma {luma:.1f} < floor {floor['luma_p10']:.1f}")
+            if problems:
+                failed.append({"raw": r["raw"], "error": "; ".join(problems)})
+                continue
             link.parent.mkdir(parents=True, exist_ok=True)
             if not link.exists():
                 os.link(dest, link)
                 linked += 1
         except (ExportBoundsError, OSError, ValueError) as e:
             failed.append({"raw": r["raw"], "error": f"{type(e).__name__}: {e}"})
-    return {"candidates": len(picks), "rendered": made, "linked": linked, "failed": failed}
+    return {"candidates": len(picks), "plain_decoded": decoded, "linked": linked, "missing": missing, "failed": failed}
