@@ -196,9 +196,10 @@ def decide(frames: list[dict], scores: dict, floor: dict, *, max_iso: int = DEFA
     rows = []
     for f in frames:
         s = scores.get(f["id"])
-        reasons = technical_reasons(mp=f["mp"], iso=f["iso"], score=s, floor=floor, max_iso=max_iso, located=f.get("located", False))
         if f["group"] in excluded_groups:
-            reasons.append(f"group excluded: {excluded_groups[f['group']]}")
+            reasons = [f"group excluded: {excluded_groups[f['group']]}"]          # the exclusion is the reason; its frames are not measured for nothing
+        else:
+            reasons = technical_reasons(mp=f["mp"], iso=f["iso"], score=s, floor=floor, max_iso=max_iso, located=f.get("located", False))
         rows.append({"id": f["id"], "group": f["group"], "mp": round(f["mp"], 1), "iso": f["iso"],
                      "sharp": round(s.sharp, 2) if s else None, "clip": round(s.clip, 5) if s else None,
                      "tech_pass": not reasons, "reasons": reasons, "release": RELEASE_UNSCREENED})
@@ -312,7 +313,8 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     if cache_path.exists():
         with open(cache_path, newline="") as f:
             cached = {int(r["lc_id"]): r for r in csv.DictReader(f)}
-    todo = [dict(x, raw_abs=str(Path(raw_root) / x["raw"])) for x in queue if x["lc_id"] not in cached][:limit]
+    todo = [dict(x, raw_abs=str(Path(raw_root) / x["raw"])) for x in queue
+            if x["lc_id"] not in cached and x["lc_id"] in matches and matches[x["lc_id"]] not in exclusions][:limit]       # only frames that can still be candidates are measured
     for x in todo:                                   # ISO is read from the item's own render, which carries the raw's EXIF
         try:
             with Image.open(x["copy"]) as im:

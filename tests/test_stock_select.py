@@ -485,6 +485,14 @@ class TestTagQueue:
         assert by[2]["stock_candidate"] is False and by[2]["reasons"] == "group excluded: not one of the photos uploaded to an iNat observation"
         assert by[1]["stock_candidate"] is True and by[1]["obs_id"] == 11                       # the other photos still match
 
+    def test_only_frames_that_can_still_be_candidates_are_measured(self, tmp_path, monkeypatch):
+        scored = []
+        self.seed(tmp_path)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: scored.append(p.name) or FrameScore(90.0, 0.0))
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([], {22: {"quality_grade": "casual"}}),
+                               floor_path=tmp_path / "floor.json", workers=1)
+        assert scored == ["DSC_1.NEF", "DSC_2.NEF", "DSC_3.NEF"]          # 4 belongs to a refused observation; 5 and 6 are not uploaded photos
+
     def test_every_photo_is_fetched_once_and_each_observation_once(self, tmp_path, monkeypatch):
         _, calls = self.run(tmp_path, monkeypatch)
         assert calls == [11, 22]
