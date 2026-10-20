@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
+from .bundle import DEFAULT_DOWNLOAD_DIR, BundleError, build_bundle
+from .download_server import DEFAULT_ALLOW, load_or_create_password, make_server
 from .inat import fetch_inat_observation
 from .models import Asset, Observation
 from .paths import make_observation_path
@@ -154,6 +156,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_export_stock = sub.add_parser("export-stock")
     p_export_stock.add_argument("folder")
+
+    p_export_zip = sub.add_parser(
+        "export-zip",
+        help="Validate export-ready JPEGs against the iNat or Stock standard and write ONE flat zip (+ .sha256) "
+             "into the download folder, to fetch remotely with scp/sftp.")
+    p_export_zip.add_argument("--kind", required=True, choices=["inat", "stock"])
+    p_export_zip.add_argument("sources", nargs="+",
+                              help="folders (JPEGs + any .csv, not recursive) or files; names must be unique")
+    p_export_zip.add_argument("--out-dir", default=None,
+                              help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
+    p_export_zip.add_argument("--name", default=None, help="zip name (default: <kind>-<n>photos-<timestamp>.zip)")
+
+    p_serve_dl = sub.add_parser(
+        "serve-downloads",
+        help="Serve the zips in the download folder over HTTP (read-only, Basic auth, source-address allowlist, resumable). "
+             "Binds to 127.0.0.1 unless you pass --bind.")
+    p_serve_dl.add_argument("--dir", default=None, help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
+    p_serve_dl.add_argument("--bind", default="127.0.0.1", help="address to listen on; LAN exposure is an explicit choice")
+    p_serve_dl.add_argument("--port", type=int, default=8780)
+    p_serve_dl.add_argument("--allow", action="append", default=None, metavar="CIDR",
+                            help="allowed client network (repeatable); default: loopback, RFC1918 and 100.64.0.0/10")
+    p_serve_dl.add_argument("--password-file", default="F:/services/bio-downloads/password.txt",
+                            help="created on first start with a random password; read it from there")
+    p_serve_dl.add_argument("--user", default="owner")
 
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
@@ -403,6 +429,53 @@ def cmd_export_stock(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_zip(args: argparse.Namespace) -> int:
+    import getpass
+    import os
+    import socket
+    out_dir = Path(args.out_dir or os.environ.get("BIO_DOWNLOAD_DIR") or DEFAULT_DOWNLOAD_DIR)
+    try:
+        result = build_bundle(args.kind, [Path(s) for s in args.sources], out_dir, name=args.name)
+    except BundleError as e:
+        print(f"export-zip failed: {e}", file=sys.stderr)
+        return 1
+    print(f"{result.path}")
+    print(f"  {result.photos} photos + {len(result.extras)} extra file(s) {list(result.extras)}, "
+          f"{result.size_bytes / 1e6:.1f} MB, sha256 {result.sha256}")
+    print("  fetch from your remote machine (key auth over the existing sshd, no new service):")
+    print(f"    scp {getpass.getuser()}@{socket.gethostname()}:{result.path.as_posix()} .")
+    return 0
+
+
+def cmd_serve_downloads(args: argparse.Namespace) -> int:
+    import getpass
+    import os
+    import subprocess
+    directory = Path(args.dir or os.environ.get("BIO_DOWNLOAD_DIR") or DEFAULT_DOWNLOAD_DIR)
+    pw_file = Path(args.password_file)
+    created = not pw_file.exists()
+    try:
+        password = load_or_create_password(pw_file)
+        server = make_server(directory, args.bind, args.port, password, allow=tuple(args.allow or DEFAULT_ALLOW), user=args.user)
+    except (OSError, ValueError) as e:
+        print(f"serve-downloads failed: {e}", file=sys.stderr)
+        return 1
+    if created and os.name == "nt":                      # lock the new password file to this account + SYSTEM
+        acl = subprocess.run(["icacls", str(pw_file), "/inheritance:r", "/grant:r", f"{getpass.getuser()}:F", "SYSTEM:F"],
+                             capture_output=True, text=True)
+        print(f"password file created: {pw_file} (acl {'restricted' if acl.returncode == 0 else 'NOT restricted: ' + acl.stderr.strip()})")
+    print(f"serving {directory} on http://{args.bind}:{args.port}/  user={args.user}  allow={list(args.allow or DEFAULT_ALLOW)}")
+    print(f"  index:    curl -u {args.user}:<password from {pw_file}> http://{args.bind}:{args.port}/")
+    print(f"  download: curl -u {args.user}:<password> -C - -O http://{args.bind}:{args.port}/<name>.zip   (-C - resumes)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_build_keywords(args: argparse.Namespace) -> int:
     import json
 
@@ -497,6 +570,10 @@ def main() -> int:
         return cmd_export_inat(args)
     if args.command == "export-stock":
         return cmd_export_stock(args)
+    if args.command == "export-zip":
+        return cmd_export_zip(args)
+    if args.command == "serve-downloads":
+        return cmd_serve_downloads(args)
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
     if args.command == "process":
