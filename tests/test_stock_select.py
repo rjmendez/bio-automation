@@ -546,6 +546,20 @@ class TestTagQueue:
         assert [(o, w) for o, w, _ in seen] == [(11, True), (22, True)]
         assert len({c for _, _, c in seen}) == 1                                      # one shared cache, so a taxon is looked up once
 
+    def test_iso_comes_from_the_raw_when_the_picture_has_no_exif(self, tmp_path, monkeypatch):
+        from PIL import Image
+
+        self.seed(tmp_path)
+        Image.new("RGB", (8, 8)).save(tmp_path / "2.jpg", "JPEG")                       # frame 2's picture carries no EXIF at all
+        asked = []
+        monkeypatch.setattr(stock_select, "raw_iso", lambda p: asked.append(p.name) or 6400)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
+        rows = {r["id"]: r for r in stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS,
+                                                           fetch=fake_fetch([]), floor_path=tmp_path / "floor.json", workers=1)}
+        assert asked == ["DSC_2.NEF"]                                                    # only the picture without EXIF needed the raw
+        assert rows[2]["iso"] == 6400 and rows[2]["reasons"] == "ISO 6400 > 3200"
+        assert rows[1]["iso"] == 100
+
     def test_rerun_uses_the_cache_and_does_not_rescore(self, tmp_path, monkeypatch):
         self.run(tmp_path, monkeypatch)
         calls = []
@@ -780,6 +794,15 @@ class TestCli:
         cli.cmd_stock_calibrate(cli.build_parser().parse_args(["stock-calibrate", str(tmp_path)]))
         assert seen["exclude"] is None
 
+    def test_min_similarity_is_passed_through(self, tmp_path, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(stock_select, "tag_queue", lambda *a, **k: seen.update(k) or [{"stock_candidate": False, "group": 1}])
+        write_json(tmp_path / "obs.json", {"observations": []})
+        cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json"), "--min-similarity", "0.93"))
+        assert seen["min_similarity"] == 0.93
+        cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json")))
+        assert seen["min_similarity"] is None
+
     def test_tag_queue_prints_the_counts(self, tmp_path, monkeypatch, capsys):
         rows = [{"stock_candidate": True, "group": 1}, {"stock_candidate": False, "group": 1}, {"stock_candidate": True, "group": 2},
                 {"stock_candidate": False, "group": 3}]
@@ -812,8 +835,10 @@ class TestCli:
         assert cli.cmd_stock_publish(args) == 1                                           # a missing render is also not a clean run
         result = {**result, "missing": []}
         assert cli.cmd_stock_publish(args) == 0
-        assert seen == [{"plain_decode": False, "floor_path": None}] * 3
+        assert seen == [{"plain_decode": False, "floor_path": None, "adobe_csv": None}] * 3
         cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--plain-decode"]))
-        assert seen[-1] == {"plain_decode": True, "floor_path": None}
+        assert seen[-1] == {"plain_decode": True, "floor_path": None, "adobe_csv": None}
         cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--floor", "f.json"]))
-        assert seen[-1] == {"plain_decode": False, "floor_path": Path("f.json")}
+        assert seen[-1] == {"plain_decode": False, "floor_path": Path("f.json"), "adobe_csv": None}
+        cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--adobe-csv", "out.csv"]))
+        assert seen[-1]["adobe_csv"] == Path("out.csv")

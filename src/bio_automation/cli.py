@@ -193,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_stock_queue.add_argument("--workers", type=int, default=3)
     p_stock_queue.add_argument("--created-since", default=None, metavar="YYYY-MM-DD",
                                help="only consider observations created on or after this date (the newly identified ones)")
+    p_stock_queue.add_argument("--min-similarity", type=float, default=None,
+                               help="photo-to-frame similarity needed (default 0.97, for frames that are the uploaded picture; ~0.93 matches "
+                                    "Lightroom-edited or cropped versions of a frame)")
     p_stock_queue.add_argument("--top-per-group", type=int, default=None,
                                help="keep at most this many sharpest frames per observation (default: every uploaded photo that passes)")
     p_stock_queue.add_argument("--observations", required=True,
@@ -210,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_stock_pub.add_argument("--render-dir", required=True)
     p_stock_pub.add_argument("--gallery-dir", required=True)
     p_stock_pub.add_argument("--floor", default=None, help="floor file (default: env BIO_STOCK_FLOOR)")
+    p_stock_pub.add_argument("--adobe-csv", default=None, help="where to write the Adobe Stock csv (default: <render-dir>/adobe_stock_metadata.csv)")
     p_stock_pub.add_argument("--plain-decode", action="store_true",
                              help="Also produce a PLAIN raw decode (flat, no retouching) for candidates with no render. Off by default: not Stock-grade.")
 
@@ -528,6 +532,7 @@ def cmd_stock_tag_queue(args: argparse.Namespace) -> int:
             observations = [o for o in observations if (o.get("created_at") or "")[:10] >= args.created_since]
         rows = tag_queue(Path(args.queue_json), Path(args.raw_root), Path(args.out), observations=observations,
                          floor_path=Path(args.floor) if args.floor else None, workers=args.workers, top_per_group=args.top_per_group,
+                         min_similarity=args.min_similarity,
                          excluded_groups={g: "flagged " + ", ".join(v["flags"]) for g, v in notes.items()})
     except (StockFloorMissing, SnapshotStale, ValueError) as exc:
         raise SystemExit(str(exc))
@@ -543,7 +548,8 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
     from .stock_select import publish_candidates
 
     result = publish_candidates(Path(args.csv), Path(args.raw_root), Path(args.render_dir), Path(args.gallery_dir),
-                                plain_decode=args.plain_decode, floor_path=Path(args.floor) if args.floor else None)
+                                plain_decode=args.plain_decode, floor_path=Path(args.floor) if args.floor else None,
+                                adobe_csv=Path(args.adobe_csv) if args.adobe_csv else None)
     print(json.dumps(result, indent=2))
     return 1 if result["failed"] or result["missing"] else 0
 
