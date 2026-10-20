@@ -57,7 +57,7 @@ iNat backlog: `bio stock-calibrate <approved exports folder>` once (saves the fl
 gallery as `<year>/<year-month>/`, after checking each against the Stock standard and an
 exposure floor; a candidate with no retouched render is reported as missing, never replaced by
 a plain raw decode unless `--plain-decode` is passed, because that is flat and un-retouched). The tag is a measured heuristic (technical bounds,
-ISO, tile sharpness vs a floor from already-approved exports, top 2 per burst), NOT a
+ISO, tile sharpness vs a floor from already-approved exports, top 2 per burst, and every group named in the flag notes is excluded -- people, signs and non-wildlife need releases the measurements cannot see), NOT a
 quality or release verdict: every row is `release: unscreened` and the owner's look in the
 gallery is the gate. The 2048 px iNat renders can never be Stock files.
 
