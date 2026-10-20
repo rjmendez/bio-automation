@@ -21,7 +21,7 @@ from bio_automation.render import ExportBoundsError
 from bio_automation.stock_select import FrameScore, StockFloorMissing
 
 FIXTURES = Path(__file__).parent / "fixtures"
-FLOOR = {"n": 100, "p10": 18.4, "p25": 49.7, "median": 114.0}
+FLOOR = {"n": 100, "p10": 18.4, "p25": 49.7, "median": 114.0, "luma_p10": 35.0, "clip_p95": 0.02}
 CHECKER_VAR = 1020.0 ** 2
 
 
@@ -105,6 +105,16 @@ class TestFloor:
         assert f["luma_p10"] == pytest.approx(10.9)
         assert "luma_p10" not in stock_select.calibrate_floor([1.0, 2.0])
 
+    def test_clip_floor_is_the_95th_percentile(self):
+        f = stock_select.calibrate_floor([1.0, 2.0], [1.0], [float(i) / 100 for i in range(1, 101)])
+        assert f["clip_p95"] == pytest.approx(0.9505)
+        assert "clip_p95" not in stock_select.calibrate_floor([1.0, 2.0])
+
+    def test_complete_floor_passes_and_an_old_one_names_what_is_missing(self):
+        assert stock_select.require_complete_floor(FLOOR) is FLOOR
+        with pytest.raises(StockFloorMissing, match="has no clip_p95; re-run"):
+            stock_select.require_complete_floor({k: v for k, v in FLOOR.items() if k != "clip_p95"})
+
     def test_empty_calibration_is_refused(self):
         with pytest.raises(ValueError, match="cannot calibrate a floor from zero measurements"):
             stock_select.calibrate_floor([])
@@ -129,8 +139,22 @@ class TestFloor:
         assert floor["n"] == 1
         assert floor["p10"] == floor["median"] == floor["p25"]
         assert floor["p10"] == pytest.approx(CHECKER_VAR, rel=0.02)                                 # JPEG q100 is the only deviation from exact
+        assert floor["clip_p95"] == pytest.approx(0.5, abs=0.02)                                    # half of the pixels are 255
         assert floor["luma_p10"] == pytest.approx(127.5, abs=1.0)                                   # half the pixels 255, half 0: the median sits at the 127/128 midpoint
         assert read_json(tmp_path / "floor.json") == floor
+
+    def test_excluded_names_do_not_calibrate_the_floor(self, tmp_path):
+        from PIL import Image
+
+        folder = tmp_path / "approved"
+        folder.mkdir()
+        sharp = np.kron(checker(66, 66), np.ones((2, 2, 1), np.uint8))
+        Image.fromarray(sharp).save(folder / "keep.jpg", quality=100, subsampling=0)
+        Image.fromarray(np.full((132, 132, 3), 128, np.uint8)).save(folder / "mine.jpg", quality=100)         # flat: sharpness 0
+        both = stock_select.calibrate_from_folder(folder, tmp_path / "a.json")
+        only = stock_select.calibrate_from_folder(folder, tmp_path / "b.json", exclude_names={"mine.jpg"})
+        assert both["n"] == 2 and both["median"] == pytest.approx(CHECKER_VAR / 2, rel=0.02)
+        assert only["n"] == 1 and only["median"] == pytest.approx(CHECKER_VAR, rel=0.02)
 
     def test_calibrate_from_folder_without_jpegs(self, tmp_path):
         with pytest.raises(ValueError, match="no JPEGs under"):
@@ -167,6 +191,11 @@ class TestTechnicalReasons:
         assert passing(score=FrameScore(50.0, 0.02)) == []
         assert passing(score=FrameScore(50.0, 0.0201)) == ["2.0% clipped highlights"]
 
+    def test_the_clipping_limit_is_the_floors_not_a_constant(self):
+        loose = {**FLOOR, "clip_p95": 0.04}
+        assert passing(score=FrameScore(50.0, 0.033), floor=loose) == []
+        assert passing(score=FrameScore(50.0, 0.033)) == ["3.3% clipped highlights"]
+
     def test_location_is_a_reason(self):
         assert passing(located=True) == ["carries a location"]
 
@@ -189,10 +218,16 @@ class TestDecide:
     def test_sharpest_two_per_group_win_even_when_listed_last(self):
         frames = [frame(1, "a"), frame(2, "a"), frame(3, "a"), frame(4, "b")]
         scores = {1: FrameScore(40, 0), 2: FrameScore(90, 0), 3: FrameScore(60, 0), 4: FrameScore(25, 0)}
-        rows = {r["id"]: r for r in stock_select.decide(frames, scores, FLOOR)}
+        rows = {r["id"]: r for r in stock_select.decide(frames, scores, FLOOR, top_per_group=2)}
         assert [i for i, r in rows.items() if r["stock_candidate"]] == [2, 3, 4]
         assert rows[1]["reasons"] == ["burst: not among the 2 sharpest of its group"]
         assert rows[1]["tech_pass"] is True and rows[1]["stock_candidate"] is False
+
+    def test_by_default_every_frame_that_passes_is_kept(self):
+        frames = [frame(1, "a"), frame(2, "a"), frame(3, "a")]
+        scores = {1: FrameScore(40, 0), 2: FrameScore(90, 0), 3: FrameScore(60, 0)}
+        rows = stock_select.decide(frames, scores, FLOOR)
+        assert [r["stock_candidate"] for r in rows] == [True, True, True]
 
     def test_sharpest_frame_failing_the_bar_does_not_take_a_slot(self):
         frames = [frame(1, "a", iso=6400), frame(2, "a"), frame(3, "a")]
@@ -372,110 +407,88 @@ def fake_fetch(calls, overrides=None):
 
 
 OBS = [{"id": 11, "time": "2026-07-31T09:00:10-04:00", "observed_on": "2026-07-31",
-        "photos": [{"id": 1101, "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/1101/square.jpg"}]},
+        "photos": [{"id": 1101, "url": "https://x/photos/1101/square.jpg"}, {"id": 1102, "url": "https://x/photos/1102/square.jpg"},
+                   {"id": 1103, "url": "https://x/photos/1103/square.jpg"}]},
        {"id": 22, "time": "2026-07-31T09:10:00-04:00", "observed_on": "2026-07-31",
-        "photos": [{"id": 2201, "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/2201/square.jpg"},
-                   {"id": 2202, "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/2202/square.jpg"}]}]
+        "photos": [{"id": 2201, "url": "https://x/photos/2201/square.jpg"}]}]
 
-# Unit vectors standing in for DA-CLIP embeddings, keyed by file stem: frames 1-3 look like observation 11's photo, frame 4 like one of
-# observation 22's two photos; frame 5 (no observation) points elsewhere.
-VEC = {"1101": (1.0, 0.0, 0.0), "2201": (0.0, 1.0, 0.0), "2202": (0.0, 0.0, 1.0),
-       "1": (1.0, 0.0, 0.0), "2": (1.0, 0.0, 0.0), "3": (1.0, 0.0, 0.0), "4": (0.0, 0.0, 1.0), "5": (0.5, 0.5, 0.7071)}
+# Unit vectors standing in for DA-CLIP embeddings, keyed by file stem. Observation 11 has three photos that ARE frames 1, 2, 3; observation 22's photo is
+# frame 4. Frame 6 is a sibling shot (similar to photo 1101, 0.8) that was never uploaded; frame 5 is far from every observation in time.
+E = [(1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0)]
+VEC = {"1101": E[0], "1102": E[1], "1103": E[2], "2201": E[3], "1": E[0], "2": E[1], "3": E[2], "4": E[3], "5": (0.5, 0.5, 0.5, 0.5), "6": (0.8, 0.6, 0.0, 0.0)}
 
 
 class TestTagQueue:
     @pytest.fixture(autouse=True)
     def fake_visual_check(self, monkeypatch):
-        """The embedder (GPU model) and the photo download are the dependencies; everything else in the visual check runs for real."""
+        """The embedder (GPU model) and the photo download are the dependencies; the matching, labelling and gating run for real."""
         import numpy as np
 
         from bio_automation import inat_stock
 
+        self.downloaded = []
         monkeypatch.setattr(inat_stock, "default_embedder", lambda: (lambda path: np.array(VEC[Path(path).stem], dtype=np.float32)))
-        monkeypatch.setattr(inat_stock, "cached_photo", lambda pid, url, cache_dir, **kw: Path(cache_dir) / f"{pid}.jpg")
+        monkeypatch.setattr(inat_stock, "cached_photo", lambda pid, url, cache_dir, **kw: self.downloaded.append(pid) or Path(cache_dir) / f"{pid}.jpg")
 
     def seed(self, tmp_path):
         items = [queue_item(1, "2026/d/DSC_1.NEF", 0, tmp=tmp_path), queue_item(2, "2026/d/DSC_2.NEF", 30, tmp=tmp_path),
-                 queue_item(3, "2026/d/DSC_3.NEF", 20, tmp=tmp_path),                       # three frames of observation 11
-                 queue_item(4, "2026/d/DSC_4.NEF", 600, tmp=tmp_path),                      # observation 22
-                 queue_item(5, "2026/d/DSC_5.NEF", 3000, tmp=tmp_path)]                     # no observation within 90 s
-        for i, iso in ((1, 100), (2, 200), (3, 6400), (4, 100), (5, 100)):
+                 queue_item(3, "2026/d/DSC_3.NEF", 20, tmp=tmp_path),                       # three uploaded photos of observation 11
+                 queue_item(4, "2026/d/DSC_4.NEF", 600, tmp=tmp_path),                      # the photo of observation 22
+                 queue_item(5, "2026/d/DSC_5.NEF", 3000, tmp=tmp_path),                     # nowhere near an observation
+                 queue_item(6, "2026/d/DSC_6.NEF", 40, tmp=tmp_path)]                       # a sibling shot that was never uploaded
+        for i, iso in ((1, 100), (2, 200), (3, 6400), (4, 100), (5, 100), (6, 100)):
             make_copy(tmp_path / f"{i}.jpg", iso)
         write_json(tmp_path / "q.json", items)
         write_json(tmp_path / "floor.json", FLOOR)
 
     def run(self, tmp_path, monkeypatch, sharp=None, fetch=None, calls=None, **kw):
         self.seed(tmp_path)
-        sharp = sharp or {"DSC_1.NEF": 30.0, "DSC_2.NEF": 90.0, "DSC_3.NEF": 500.0, "DSC_4.NEF": 40.0, "DSC_5.NEF": 900.0}
+        sharp = sharp or {"DSC_1.NEF": 30.0, "DSC_2.NEF": 90.0, "DSC_3.NEF": 500.0, "DSC_4.NEF": 40.0, "DSC_5.NEF": 900.0, "DSC_6.NEF": 800.0}
         monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(sharp[p.name], 0.0))
         calls = [] if calls is None else calls
         rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fetch or fake_fetch(calls),
-                                      floor_path=tmp_path / "floor.json", workers=1, top_per_group=1, **kw)
+                                      floor_path=tmp_path / "floor.json", workers=1, **kw)
         return {r["id"]: r for r in rows}, calls
 
-    def test_matched_frames_are_labelled_and_the_burst_limit_is_per_observation(self, tmp_path, monkeypatch):
+    def test_exactly_the_uploaded_photos_are_labelled_candidates(self, tmp_path, monkeypatch):
         by, calls = self.run(tmp_path, monkeypatch)
-        assert [i for i, r in by.items() if r["stock_candidate"]] == [2, 4]       # 3 is sharper but ISO 6400; 5 is sharper still but not on iNat
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 2, 4]       # 3 is ISO 6400; 5 and 6 were never uploaded, however sharp
         assert by[3]["reasons"] == "ISO 6400 > 3200"
-        assert by[1]["reasons"] == "burst: not among the 1 sharpest of its group"
-        assert (by[2]["group"], by[2]["obs_id"], by[2]["taxon"], by[2]["grade"], by[2]["rank"]) == (11, 11, "Leiobunum verrucosum", "research", "species")
+        assert (by[2]["group"], by[2]["obs_id"], by[2]["taxon"], by[2]["grade"], by[2]["rank"], by[2]["similarity"]) == (11, 11, "Leiobunum verrucosum", "research", "species", 1.0)
         assert by[2]["title"] == "Warty Harvestman Leiobunum verrucosum - Pennsylvania"
         assert by[2]["keywords"].split("|")[:4] == ["warty", "harvestman", "leiobunum", "verrucosum"] and len(by[2]["keywords"].split("|")) == 16
         assert (by[2]["category"], by[2]["category_id"]) == ("Animals", 1)
         assert by[2]["caption"] == "Warty Harvestman (Leiobunum verrucosum) photographed at Pennsylvania, US on 2026-07-31."
 
-    def test_default_fetch_asks_for_the_lineage_and_shares_one_cache(self, tmp_path, monkeypatch):
-        from bio_automation import inat
+    def test_every_photo_of_an_observation_is_used_not_just_the_sharpest_two(self, tmp_path, monkeypatch):
+        by, _ = self.run(tmp_path, monkeypatch, sharp={"DSC_1.NEF": 30.0, "DSC_2.NEF": 90.0, "DSC_3.NEF": 500.0, "DSC_4.NEF": 40.0, "DSC_5.NEF": 9.0, "DSC_6.NEF": 8.0})
+        assert by[1]["stock_candidate"] is True and by[2]["stock_candidate"] is True        # observation 11 keeps both of its passing photos
 
-        seen = []
+    def test_the_burst_cap_is_optional(self, tmp_path, monkeypatch):
+        by, _ = self.run(tmp_path, monkeypatch, top_per_group=1)
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [2, 4]
+        assert by[1]["reasons"] == "burst: not among the 1 sharpest of its group"
 
-        def real(obs_id, **kw):
-            seen.append((obs_id, kw["with_lineage"], id(kw["lineage_cache"])))
-            return fake_fetch([])(obs_id)
-
-        monkeypatch.setattr(inat, "fetch_inat_observation", real)
-        self.seed(tmp_path)
-        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
-        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json", workers=1)
-        assert [(o, w) for o, w, _ in seen] == [(11, True), (22, True)]
-        assert len({c for _, _, c in seen}) == 1                                      # one shared cache, so a taxon is looked up once
-
-    def test_a_time_match_that_does_not_look_like_the_observation_is_dropped(self, tmp_path, monkeypatch):
-        VEC["2"] = (0.0, 1.0, 0.0)                                                 # frame 2 is a different subject than observation 11's photo
-        try:
-            by, calls = self.run(tmp_path, monkeypatch)
-        finally:
-            VEC["2"] = (1.0, 0.0, 0.0)
-        assert by[2]["stock_candidate"] is False
-        assert by[2]["reasons"] == "group excluded: frame does not look like observation 11's photos (similarity 0.00 < 0.90)"
-        assert (by[2]["obs_id"], by[2]["title"], by[2]["similarity"]) == ("", "", 0.0)
-        assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 4]         # frame 1 (verified, passing) now takes observation 11's burst slot
-        assert by[1]["obs_id"] == 11 and by[1]["similarity"] == 1.0
-
-    def test_similarity_is_the_best_of_the_observations_photos_and_is_written(self, tmp_path, monkeypatch):
+    def test_a_frame_that_is_not_an_uploaded_photo_is_never_a_candidate(self, tmp_path, monkeypatch):
         by, _ = self.run(tmp_path, monkeypatch)
-        assert (by[2]["similarity"], by[4]["similarity"]) == (1.0, 1.0)             # frame 4 matches photo 2202, not 2201: the max is taken
-        assert by[5]["similarity"] == ""
+        for i in (5, 6):
+            assert by[i]["stock_candidate"] is False
+            assert by[i]["reasons"] == "group excluded: not one of the photos uploaded to an iNat observation"
+            assert (by[i]["obs_id"], by[i]["title"], by[i]["similarity"]) == ("", "", "")
 
-    def test_an_observation_with_only_unverified_frames_is_never_fetched(self, tmp_path, monkeypatch):
-        for k in ("1", "2", "3"):
-            VEC[k] = (0.0, 1.0, 0.0)
+    def test_a_photo_with_no_look_alike_frame_claims_nothing(self, tmp_path, monkeypatch):
+        VEC["2"] = (0.0, 0.5, 0.5, 0.7071)                      # frame 2 no longer looks like photo 1102 (similarity 0.5)
         try:
-            _, calls = self.run(tmp_path, monkeypatch)
+            by, _ = self.run(tmp_path, monkeypatch)
         finally:
-            for k in ("1", "2", "3"):
-                VEC[k] = (1.0, 0.0, 0.0)
-        assert calls == [22]
+            VEC["2"] = E[1]
+        assert by[2]["stock_candidate"] is False and by[2]["reasons"] == "group excluded: not one of the photos uploaded to an iNat observation"
+        assert by[1]["stock_candidate"] is True and by[1]["obs_id"] == 11                       # the other photos still match
 
-    def test_each_observation_is_fetched_once(self, tmp_path, monkeypatch):
+    def test_every_photo_is_fetched_once_and_each_observation_once(self, tmp_path, monkeypatch):
         _, calls = self.run(tmp_path, monkeypatch)
         assert calls == [11, 22]
-
-    def test_a_frame_with_no_observation_is_never_a_candidate_however_sharp(self, tmp_path, monkeypatch):
-        by, _ = self.run(tmp_path, monkeypatch)
-        assert by[5]["stock_candidate"] is False
-        assert by[5]["reasons"] == "group excluded: no iNat observation within 90 s of the capture time"
-        assert (by[5]["obs_id"], by[5]["title"]) == ("", "")
+        assert sorted(self.downloaded) == ["1101", "1102", "1103", "2201"]
 
     def test_an_observation_the_policy_refuses_excludes_its_frames_with_the_reason(self, tmp_path, monkeypatch):
         by, _ = self.run(tmp_path, monkeypatch, fetch=fake_fetch([], {22: {"quality_grade": "casual"}}))
@@ -508,6 +521,22 @@ class TestTagQueue:
             rows = {r["id"]: r for r in csv.DictReader(f)}
         assert rows["2"]["obs_id"] == "11" and rows["2"]["category_id"] == "1" and rows["2"]["stock_candidate"] == "True"
         assert rows["5"]["obs_id"] == "" and rows["5"]["day"] == "2026-07-31" and rows["5"]["raw"] == "2026/d/DSC_5.NEF"
+
+    def test_default_fetch_asks_for_the_lineage_and_shares_one_cache(self, tmp_path, monkeypatch):
+        from bio_automation import inat
+
+        seen = []
+
+        def real(obs_id, **kw):
+            seen.append((obs_id, kw["with_lineage"], id(kw["lineage_cache"])))
+            return fake_fetch([])(obs_id)
+
+        monkeypatch.setattr(inat, "fetch_inat_observation", real)
+        self.seed(tmp_path)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json", workers=1)
+        assert [(o, w) for o, w, _ in seen] == [(11, True), (22, True)]
+        assert len({c for _, _, c in seen}) == 1                                      # one shared cache, so a taxon is looked up once
 
     def test_rerun_uses_the_cache_and_does_not_rescore(self, tmp_path, monkeypatch):
         self.run(tmp_path, monkeypatch)
@@ -554,7 +583,7 @@ class TestPublish:
 
     @pytest.fixture(autouse=True)
     def floor_file(self, tmp_path, monkeypatch):
-        write_json(tmp_path / "pubfloor.json", {**FLOOR, "luma_p10": 35.0})
+        write_json(tmp_path / "pubfloor.json", FLOOR)
         monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "pubfloor.json")
 
     def csv_file(self, tmp_path, rows=None):
@@ -675,9 +704,9 @@ class TestPublish:
         assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "under-exposed: median luma 10.0 < floor 35.0"}]
         assert out["linked"] == 1 and (tmp_path / "gallery/2026/2026-08/2026-08-01_DSC_3.jpg").is_file()
 
-    def test_floor_without_luma_is_refused(self, tmp_path):
-        write_json(tmp_path / "pubfloor.json", FLOOR)
-        with pytest.raises(StockFloorMissing, match="the sharpness floor has no luma_p10; re-run `bio stock-calibrate"):
+    def test_floor_without_luma_or_clip_is_refused(self, tmp_path):
+        write_json(tmp_path / "pubfloor.json", {k: v for k, v in FLOOR.items() if k not in ("luma_p10", "clip_p95")})
+        with pytest.raises(StockFloorMissing, match="the sharpness floor has no luma_p10, clip_p95; re-run `bio stock-calibrate"):
             self.publish(tmp_path)
 
     def test_low_quality_render_is_failed(self, tmp_path):
@@ -723,6 +752,25 @@ class TestCli:
         cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json"), "--notes", str(notes)))
         assert seen["observations"] == [{"id": 1, "time": "2026-07-31T09:00:00-04:00"}]
         assert seen["excluded_groups"] == {92: "flagged not_wildlife, electronics"}
+
+    def test_created_since_keeps_only_the_newer_observations_and_top_per_group_is_passed(self, tmp_path, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(stock_select, "tag_queue", lambda *a, **k: seen.update(k) or [{"stock_candidate": False, "group": 1}])
+        write_json(tmp_path / "obs.json", {"observations": [{"id": 1, "created_at": "2026-10-11T23:59:59-04:00"},
+                                                              {"id": 2, "created_at": "2026-10-12T00:00:01-04:00"}, {"id": 3}]})
+        cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json"), "--created-since", "2026-10-12", "--top-per-group", "3"))
+        assert [o["id"] for o in seen["observations"]] == [2] and seen["top_per_group"] == 3
+        cli.cmd_stock_tag_queue(self.args("--observations", str(tmp_path / "obs.json")))
+        assert [o["id"] for o in seen["observations"]] == [1, 2, 3] and seen["top_per_group"] is None
+
+    def test_calibrate_command_leaves_out_the_files_named_in_the_csv(self, tmp_path, monkeypatch, capsys):
+        seen = {}
+        monkeypatch.setattr(stock_select, "calibrate_from_folder", lambda folder, out, sample, exclude: seen.update(exclude=exclude) or {"n": 1})
+        (tmp_path / "a.csv").write_text("Filename,Title\nx.jpg,T\ny.jpg,U\n", encoding="utf-8-sig")
+        cli.cmd_stock_calibrate(cli.build_parser().parse_args(["stock-calibrate", str(tmp_path), "--exclude-csv", str(tmp_path / "a.csv")]))
+        assert seen["exclude"] == {"x.jpg", "y.jpg"}
+        cli.cmd_stock_calibrate(cli.build_parser().parse_args(["stock-calibrate", str(tmp_path)]))
+        assert seen["exclude"] is None
 
     def test_tag_queue_prints_the_counts(self, tmp_path, monkeypatch, capsys):
         rows = [{"stock_candidate": True, "group": 1}, {"stock_candidate": False, "group": 1}, {"stock_candidate": True, "group": 2},

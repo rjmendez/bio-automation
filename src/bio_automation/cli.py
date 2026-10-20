@@ -180,6 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stock_cal.add_argument("folder")
     p_stock_cal.add_argument("--out", default=None, help="floor file (default: env BIO_STOCK_FLOOR)")
     p_stock_cal.add_argument("--sample", type=int, default=300)
+    p_stock_cal.add_argument("--exclude-csv", default=None,
+                             help="an Adobe Stock csv (Filename column) whose files are to be left out, e.g. the ones stock-publish already linked into the folder")
 
     p_stock_queue = sub.add_parser(
         "stock-tag-queue",
@@ -189,9 +191,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_stock_queue.add_argument("--out", required=True, help="csv with one row per frame, reasons included")
     p_stock_queue.add_argument("--floor", default=None)
     p_stock_queue.add_argument("--workers", type=int, default=3)
+    p_stock_queue.add_argument("--created-since", default=None, metavar="YYYY-MM-DD",
+                               help="only consider observations created on or after this date (the newly identified ones)")
+    p_stock_queue.add_argument("--top-per-group", type=int, default=None,
+                               help="keep at most this many sharpest frames per observation (default: every uploaded photo that passes)")
     p_stock_queue.add_argument("--observations", required=True,
-                               help="the owner's live iNat observations json (must be at most 3 days old); frames match it by capture time, "
-                                    "each match is fetched live and labelled -- a frame with no observation is never a candidate")
+                               help="the owner's live iNat observations json (must be at most 3 days old); each iNat photo picks the frame that looks like it, "
+                                    "each observation is fetched live and labelled -- a frame that is not an uploaded photo is never a candidate")
     p_stock_queue.add_argument("--notes", default=None,
                                help="the upload set's manual flag notes json (see flag-upload-set): every group named in it is excluded from the candidates")
 
@@ -499,7 +505,13 @@ def cmd_stock_calibrate(args: argparse.Namespace) -> int:
 
     from .stock_select import calibrate_from_folder
 
-    print(json.dumps(calibrate_from_folder(Path(args.folder), Path(args.out) if args.out else None, args.sample), indent=2))
+    exclude = None
+    if args.exclude_csv:
+        import csv
+
+        with open(args.exclude_csv, newline="", encoding="utf-8-sig") as f:
+            exclude = {row["Filename"] for row in csv.DictReader(f)}
+    print(json.dumps(calibrate_from_folder(Path(args.folder), Path(args.out) if args.out else None, args.sample, exclude), indent=2))
     return 0
 
 
@@ -512,8 +524,10 @@ def cmd_stock_tag_queue(args: argparse.Namespace) -> int:
     try:
         notes = load_manual_notes(Path(args.notes) if args.notes else None)
         observations = load_snapshot(Path(args.observations))
+        if args.created_since:
+            observations = [o for o in observations if (o.get("created_at") or "")[:10] >= args.created_since]
         rows = tag_queue(Path(args.queue_json), Path(args.raw_root), Path(args.out), observations=observations,
-                         floor_path=Path(args.floor) if args.floor else None, workers=args.workers,
+                         floor_path=Path(args.floor) if args.floor else None, workers=args.workers, top_per_group=args.top_per_group,
                          excluded_groups={g: "flagged " + ", ".join(v["flags"]) for g, v in notes.items()})
     except (StockFloorMissing, SnapshotStale, ValueError) as exc:
         raise SystemExit(str(exc))
