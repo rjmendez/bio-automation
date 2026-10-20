@@ -250,18 +250,22 @@ KEYWORD_SEP = "|"
 
 def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: list[dict], fetch=None, floor_path: Path | None = None,
               workers: int = 3, max_iso: int = DEFAULT_MAX_ISO, top_per_group: int = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
-              excluded_groups: dict | None = None) -> list[dict]:
+              excluded_groups: dict | None = None, embedder=None, photo_cache: Path | None = None, get_bytes=None,
+              min_similarity: float | None = None) -> list[dict]:
     """Score every frame of a LightCraft queue (items with lc_id, raw, day, t = capture epoch, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
 
     `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED: a frame is only a candidate when it matches one by
     capture time. Each matched observation is fetched live (fetch, default inat.fetch_inat_observation) and labelled; an unmatched frame, or one whose
-    observation cannot be labelled (no taxon, casual, genus-only needs-ID), is excluded with the reason. The burst limit applies per observation.
+    observation cannot be labelled (no taxon, casual), is excluded with the reason. A time match is only kept when the frame also LOOKS like the
+    observation's own iNat photos (inat_stock.FRAME_MATCH_MIN_SIMILARITY, DA-CLIP on the GPU; embedder/photo_cache/get_bytes are the injectable
+    dependencies): a frame shot within 90 s of an unrelated observation would otherwise carry that observation's species. The burst limit applies per observation.
     excluded_groups (keyed by observation id here): see decide().
     """
     from PIL import Image
 
     from .inat import fetch_inat_observation
-    from .inat_stock import LabelError, label_observation, label_problems, match_frames
+    from .inat_stock import (FRAME_MATCH_MIN_SIMILARITY, PHOTO_CACHE_DEFAULT, LabelError, cached_photo, default_embedder, frame_similarity,
+                             label_observation, label_problems, match_frames, observation_photo_urls)
 
     lineage_cache: dict = {}
     fetch = fetch or (lambda i: fetch_inat_observation(i, with_lineage=True, lineage_cache=lineage_cache))
@@ -270,6 +274,22 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     matches = match_frames([{"id": x["lc_id"], "t": x["t"]} for x in queue], observations)
     observed_on = {o["id"]: o.get("observed_on") for o in observations}
     labels, exclusions = {}, dict(excluded_groups or {})
+    similarity: dict = {}
+    if matches:
+        embed = embedder or default_embedder()
+        threshold = FRAME_MATCH_MIN_SIMILARITY if min_similarity is None else min_similarity
+        by_obs = {o["id"]: o for o in observations}
+        queue_by_id = {x["lc_id"]: x for x in queue}
+        photo_kw = {"get_bytes": get_bytes} if get_bytes else {}
+        for lc_id, obs_id in list(matches.items()):
+            photos = [cached_photo(pid, url, photo_cache or PHOTO_CACHE_DEFAULT, **photo_kw) for pid, url in observation_photo_urls(by_obs[obs_id])]
+            frame_image = Path(queue_by_id[lc_id].get("copy") or "")
+            sim = frame_similarity(frame_image, photos, embed) if frame_image.is_file() else None
+            similarity[lc_id] = sim
+            if sim is None or sim < threshold:
+                del matches[lc_id]
+                why = "no frame image or observation photo to compare with" if sim is None else f"similarity {sim:.2f} < {threshold:.2f}"
+                exclusions[-lc_id] = f"frame does not look like observation {obs_id}'s photos ({why})"
     for obs_id in sorted(set(matches.values())):
         try:
             labels[obs_id] = label_observation(obs_id, observed_on.get(obs_id), fetch=lambda i: fetch(i))
@@ -281,7 +301,7 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
             exclusions.setdefault(obs_id, "label: " + "; ".join(problems))
     for x in queue:
         if x["lc_id"] not in matches:
-            exclusions[-x["lc_id"]] = "no iNat observation within 90 s of the capture time"
+            exclusions.setdefault(-x["lc_id"], "no iNat observation within 90 s of the capture time")
     cache_path = Path(str(out_csv) + ".raw")
     cached: dict = {}
     if cache_path.exists():
@@ -323,6 +343,8 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
         obs_id = matches.get(r["id"])
         lab = labels.get(obs_id) if obs_id else None
         r.update({c: "" for c in LABEL_COLUMNS})
+        sim = similarity.get(r["id"])
+        r["similarity"] = "" if sim is None else round(sim, 3)
         if obs_id:
             r["obs_id"] = obs_id
         if lab:

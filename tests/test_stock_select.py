@@ -371,11 +371,29 @@ def fake_fetch(calls, overrides=None):
     return fetch
 
 
-OBS = [{"id": 11, "time": "2026-07-31T09:00:10-04:00", "observed_on": "2026-07-31"},
-       {"id": 22, "time": "2026-07-31T09:10:00-04:00", "observed_on": "2026-07-31"}]
+OBS = [{"id": 11, "time": "2026-07-31T09:00:10-04:00", "observed_on": "2026-07-31",
+        "photos": [{"id": 1101, "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/1101/square.jpg"}]},
+       {"id": 22, "time": "2026-07-31T09:10:00-04:00", "observed_on": "2026-07-31",
+        "photos": [{"id": 2201, "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/2201/square.jpg"},
+                   {"id": 2202, "url": "https://inaturalist-open-data.s3.amazonaws.com/photos/2202/square.jpg"}]}]
+
+# Unit vectors standing in for DA-CLIP embeddings, keyed by file stem: frames 1-3 look like observation 11's photo, frame 4 like one of
+# observation 22's two photos; frame 5 (no observation) points elsewhere.
+VEC = {"1101": (1.0, 0.0, 0.0), "2201": (0.0, 1.0, 0.0), "2202": (0.0, 0.0, 1.0),
+       "1": (1.0, 0.0, 0.0), "2": (1.0, 0.0, 0.0), "3": (1.0, 0.0, 0.0), "4": (0.0, 0.0, 1.0), "5": (0.5, 0.5, 0.7071)}
 
 
 class TestTagQueue:
+    @pytest.fixture(autouse=True)
+    def fake_visual_check(self, monkeypatch):
+        """The embedder (GPU model) and the photo download are the dependencies; everything else in the visual check runs for real."""
+        import numpy as np
+
+        from bio_automation import inat_stock
+
+        monkeypatch.setattr(inat_stock, "default_embedder", lambda: (lambda path: np.array(VEC[Path(path).stem], dtype=np.float32)))
+        monkeypatch.setattr(inat_stock, "cached_photo", lambda pid, url, cache_dir, **kw: Path(cache_dir) / f"{pid}.jpg")
+
     def seed(self, tmp_path):
         items = [queue_item(1, "2026/d/DSC_1.NEF", 0, tmp=tmp_path), queue_item(2, "2026/d/DSC_2.NEF", 30, tmp=tmp_path),
                  queue_item(3, "2026/d/DSC_3.NEF", 20, tmp=tmp_path),                       # three frames of observation 11
@@ -421,6 +439,33 @@ class TestTagQueue:
         stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json", workers=1)
         assert [(o, w) for o, w, _ in seen] == [(11, True), (22, True)]
         assert len({c for _, _, c in seen}) == 1                                      # one shared cache, so a taxon is looked up once
+
+    def test_a_time_match_that_does_not_look_like_the_observation_is_dropped(self, tmp_path, monkeypatch):
+        VEC["2"] = (0.0, 1.0, 0.0)                                                 # frame 2 is a different subject than observation 11's photo
+        try:
+            by, calls = self.run(tmp_path, monkeypatch)
+        finally:
+            VEC["2"] = (1.0, 0.0, 0.0)
+        assert by[2]["stock_candidate"] is False
+        assert by[2]["reasons"] == "group excluded: frame does not look like observation 11's photos (similarity 0.00 < 0.90)"
+        assert (by[2]["obs_id"], by[2]["title"], by[2]["similarity"]) == ("", "", 0.0)
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 4]         # frame 1 (verified, passing) now takes observation 11's burst slot
+        assert by[1]["obs_id"] == 11 and by[1]["similarity"] == 1.0
+
+    def test_similarity_is_the_best_of_the_observations_photos_and_is_written(self, tmp_path, monkeypatch):
+        by, _ = self.run(tmp_path, monkeypatch)
+        assert (by[2]["similarity"], by[4]["similarity"]) == (1.0, 1.0)             # frame 4 matches photo 2202, not 2201: the max is taken
+        assert by[5]["similarity"] == ""
+
+    def test_an_observation_with_only_unverified_frames_is_never_fetched(self, tmp_path, monkeypatch):
+        for k in ("1", "2", "3"):
+            VEC[k] = (0.0, 1.0, 0.0)
+        try:
+            _, calls = self.run(tmp_path, monkeypatch)
+        finally:
+            for k in ("1", "2", "3"):
+                VEC[k] = (1.0, 0.0, 0.0)
+        assert calls == [22]
 
     def test_each_observation_is_fetched_once(self, tmp_path, monkeypatch):
         _, calls = self.run(tmp_path, monkeypatch)

@@ -19,8 +19,11 @@ import os
 import subprocess
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 from typing import Callable
+
+import numpy as np
 
 from .exif import _exiftool_binary
 from .inat import fetch_inat_observation
@@ -33,6 +36,14 @@ MAX_SNAPSHOT_AGE_DAYS = 3
 MAX_FILENAME, MAX_TITLE, MAX_KEYWORDS = 30, 70, 50
 ADOBE_CATEGORY_IDS = {"Animals": 1, "Plants and Flowers": 14, "Science": 16}
 ADOBE_CSV_FIELDS = ("Filename", "Title", "Keywords", "Category", "Releases")
+
+
+# Visual check that a time-matched frame really is the observation's subject. Measured 2026-10-20 on 266 frames (DA-CLIP content vectors, frame vs
+# the observation's own iNat photos, best of them): frames that ARE the uploaded photo score ~0.99; at 0.89 and below every pair inspected by eye was a
+# different subject (a moth against a mushroom, a morning glory against another herb); from 0.90 up the pairs were other shots of the same organism.
+FRAME_MATCH_MIN_SIMILARITY = 0.90
+PHOTO_CACHE_DEFAULT = Path(os.environ.get("BIO_INAT_PHOTO_CACHE", r"D:\bio-cache\photos\inat_photos"))
+PHOTO_USER_AGENT = "bio-automation-owner-sync/1.0 (own account rjmendez; read-only)"
 
 
 class SnapshotStale(Exception):
@@ -170,3 +181,52 @@ def write_adobe_csv(rows: list[tuple[str, dict]], path: Path) -> int:
             w.writerow({"Filename": name, "Title": label["title"], "Keywords": ",".join(label["keywords"]),
                         "Category": label["category_id"], "Releases": ""})
     return len(rows)
+
+
+# ---- visual verification of time matches ----
+
+def observation_photo_urls(record: dict, size: str = "medium") -> list[tuple[str, str]]:
+    """[(photo id, url)] of an observation snapshot record's photos at the given iNat size (the snapshot stores 'square' urls)."""
+    out = []
+    for ph in record.get("photos") or []:
+        url = (ph.get("url") or "").replace("/square.", f"/{size}.")
+        if url and ph.get("id") is not None:
+            out.append((str(ph["id"]), url))
+    return out
+
+
+def _http_get(url: str) -> bytes:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": PHOTO_USER_AGENT}), timeout=60) as r:
+        return r.read()
+
+
+def cached_photo(photo_id: str, url: str, cache_dir: Path, *, get_bytes: Callable[[str], bytes] = _http_get,
+                 sleep: Callable[[float], None] = time.sleep, delay: float = 0.4) -> Path:
+    """The photo from the cache, downloading it (politely: one request per `delay` seconds) when it is not there yet."""
+    path = Path(cache_dir) / f"{photo_id}.jpg"
+    if not (path.is_file() and path.stat().st_size):
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        sleep(delay)
+        path.write_bytes(get_bytes(url))
+    return path
+
+
+def default_embedder() -> Callable[[Path], np.ndarray]:
+    """DA-CLIP content-vector embedder on the GPU (daclip.load_session fails loudly without CUDA: no CPU fallback). Unit vectors."""
+    from . import daclip
+
+    session = daclip.load_session()
+
+    def embed(path: Path) -> np.ndarray:
+        v, _ = daclip.embed_path(Path(path), session)
+        return v / np.linalg.norm(v)
+
+    return embed
+
+
+def frame_similarity(frame_image: Path, photo_paths: list[Path], embed: Callable[[Path], np.ndarray]) -> float | None:
+    """Best cosine similarity between the frame and any of the observation's photos; None when there are no photos to compare with."""
+    if not photo_paths:
+        return None
+    f = embed(Path(frame_image))
+    return max(float(f @ embed(Path(p))) for p in photo_paths)
