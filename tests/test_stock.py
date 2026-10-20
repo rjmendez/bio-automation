@@ -437,3 +437,12 @@ def test_lineage_lifts_a_family_level_observation_over_the_keyword_minimum():
     bare = Observation(observation_id=2, obsdate="2026-07-30", place_guess="Pennsylvania, US",
                        taxon={"name": "Russulaceae", "common_name": None, "iconic_taxon_name": "Fungi", "rank": "family"})
     assert len(build_metadata(bare).keywords) == 12
+
+
+def test_filler_words_true_typical_and_common_never_become_keywords():
+    obs = _ramaria([{"rank": "suborder", "name": "Heteroptera", "common_name": "True Bugs"},
+                    {"rank": "family", "name": "Strigidae", "common_name": "Typical Owls"},
+                    {"rank": "order", "name": "Odonata", "common_name": "Common Dragonflies"}])
+    kws = build_metadata(obs).keywords
+    assert {"true", "typical", "common"} & set(kws) == set()
+    assert {"bugs", "owls", "dragonflies", "heteroptera", "strigidae", "odonata"} <= set(kws)

@@ -49,7 +49,7 @@ _MACRO_TAXA: set[str] = {"insecta", "arachnida", "plantae", "fungi"}
 
 # Ranks of the iNat lineage used as keywords (genus is already covered by the taxon name; kingdom/phylum are too broad to help a buyer).
 _LINEAGE_RANKS = {"subfamily", "family", "superfamily", "suborder", "order", "subclass", "class"}
-_COMMON_STOPWORDS = {"and", "the", "of", "with", "including", "allies", "their", "other", "related"}
+_COMMON_STOPWORDS = {"and", "the", "of", "with", "including", "allies", "their", "other", "related", "true", "typical", "common"}
 
 
 def _lineage_common_words(common_name: str | None) -> list[str]:
