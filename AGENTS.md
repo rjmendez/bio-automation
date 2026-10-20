@@ -9,7 +9,8 @@ starting work, then verify against live code and data.
 
 **Before processing photos, check what is already on iNat.** Pull the owner's
 live observations (public API, read-only, 1 req/s, identifying User-Agent) and
-match by capture time. Local snapshots go stale (`inat_observations.json` lacked
+match photos to frames by analyzed similarity (DA-CLIP), using capture time only to
+bracket which frames to compare (see "Stock labelling comes from iNat" below). Local snapshots go stale (`inat_observations.json` lacked
 113 observations created after it was built). Never re-upload a frame that is on iNat.
 
 **Export standards** (`render.py`): real raw decode to sRGB, never the embedded
@@ -47,15 +48,18 @@ process on the library). Do not drive the live GUI session.
 by the owner in iNat. Build upload sets (files + CSV), never auto-post.
 
 **Stock labelling comes from iNat, enforced in code (2026-10-20).** A frame is a Stock
-candidate ONLY if it matches one of the owner's live iNat observations by capture time
-(`inat_stock.match_frames`, 90 s) and that observation is labelled from its live-fetched
-iNat data (`fetch_inat_observation` -> `stock.build_metadata` -> title, 15-50 keywords,
-caption, Adobe category number). A time match alone is NOT enough (a frame shot within 90 s
-of an unrelated observation carried its species, found 2026-10-20): the frame must also look
-like the observation's own iNat photos (DA-CLIP on the GPU, similarity >= 0.90, measured).
-Keywords include the family/order/class names and common names from iNat's taxonomy
-(`fetch_taxon_lineage`, also stored by `bio fetch-inat`). The backlog of frames not on iNat is
-never a candidate; the code says why (`no iNat observation within 90 s`). `bio stock-tag-queue` REQUIRES
+candidate ONLY if it IS one of the photos the owner uploaded to a live iNat observation.
+**Match photos by analyzed similarity; timestamps only bracket (owner rule, 2026-10-20).**
+Each iNat photo takes the frame that looks most like it (DA-CLIP content vectors on the GPU,
+argmax, >= 0.97), searching only frames captured within +-15 min of the observation
+(`inat_stock.match_photos_to_frames`). Never match by timestamp alone: a 90 s time match used
+two frames that were never uploaded and missed three that were (observation 409468156) and put
+a species on frames shot near an unrelated observation. Every uploaded photo that passes the
+gates is used; unuploaded sibling shots are not. Each matched observation is labelled from its
+live-fetched iNat data (`fetch_inat_observation` -> `stock.build_metadata` -> title, 15-50 keywords,
+caption, Adobe category number). Keywords include the family/order/class names and common names from iNat's taxonomy
+(`fetch_taxon_lineage`, also stored by `bio fetch-inat`). Frames that are not an uploaded photo
+are never candidates; the code says why (`not one of the photos uploaded to an iNat observation`). `bio stock-tag-queue` REQUIRES
 `--observations <live snapshot, at most 3 days old>`; `bio process` ends with
 `tag_observation`, which needs the folder to be fetch-inat'd. `stock-publish` writes the
 label INTO each render (XMP + IPTC), reads it back, and links nothing that fails
