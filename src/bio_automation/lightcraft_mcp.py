@@ -106,6 +106,50 @@ class LightCraftLibrary:
         self.close()
 
 
+def has_live_edits(inspect: dict) -> bool:
+    """True when the photo carries edits right now. LightCraft's 'edited' field is only a last-edit timestamp and stays set after a Reset, so
+    live edits = the history is not empty and does not end in 'Reset'."""
+    hist = (inspect or {}).get("history") or []
+    return bool(hist) and hist[-1] != "Reset"
+
+
+EXPORT_SETTINGS = {"format": "jpeg", "quality": 95, "longEdge": 0, "colorSpace": "srgb", "metadata": "all", "removeLocation": True,
+                   "conflict": "overwrite"}     # the Stock render: full size, q95, sRGB, metadata kept, location removed
+
+
+def render_retouched(lib, photo_id: int, out: Path, *, wait_s: float = 420, poll_s: float = 3, sleep=None, clock=None) -> dict:
+    """Export `photo_id` retouched to `out`: the owner's own edits as they are, else develop.auto (reset afterwards, so the library keeps
+    no edit this made). Returns {'owner_edited', 'iso'}; raises LightCraftLibraryError if no non-empty file appears within wait_s
+    (the export may finish after the call returns, so the file is polled until its size is stable)."""
+    import time
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    ins = lib.call("cmd_photo_inspect", {"id": photo_id}) or {}
+    owner_edited = has_live_edits(ins)
+    touched = False
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not owner_edited:
+            lib.call("select_photos", {"ids": [photo_id], "active": photo_id})
+            lib.call("command_run", {"id": "develop.auto", "params": {}})
+            touched = True
+        res = lib.call("export", {"id": photo_id, "path": str(out), **EXPORT_SETTINGS})
+        t0, last = clock(), -1
+        while clock() - t0 < wait_s:
+            if out.exists():
+                size = out.stat().st_size
+                if size > 0 and size == last:
+                    break
+                last = size
+            sleep(poll_s)
+        if not (out.is_file() and out.stat().st_size > 0):
+            raise LightCraftLibraryError(f"photo {photo_id}: no export at {out} after {wait_s:.0f} s ({str(res)[:160]})")
+    finally:
+        if touched:
+            lib.call("command_run", {"id": "develop.reset", "params": {"ids": [photo_id]}})
+    return {"owner_edited": owner_edited, "iso": ((ins.get("meta") or {}).get("iso") if isinstance(ins, dict) else None) or 0}
+
+
 def import_files(lib: LightCraftLibrary, paths: list[str]) -> dict[str, int]:
     """Reference `paths` in place (mode add) and return {path: photo id} for every one, new or already in the library.
     A path that is neither imported nor a live duplicate raises: a frame without an id cannot be rendered."""

@@ -159,6 +159,23 @@ class TestCounts:
         assert q.counts(topic="b") == {"pending": 1}
 
 
+class TestOpenPayloads:
+    def test_pending_and_claimed_are_open_done_and_failed_are_not(self, q):
+        for day in ("d1", "d2", "d3", "d4"):
+            q.publish("t", {"day": day})
+        q.publish("other", {"day": "x"})
+        m1 = q.claim(["t"], worker_id="w")
+        q.ack(m1.id)                                      # d1 done
+        m2 = q.claim(["t"], worker_id="w")
+        q.fail(m2.id, "boom")                             # d2 failed
+        q.claim(["t"], worker_id="w")                     # d3 claimed
+        assert q.open_payloads("t") == [{"day": "d3"}, {"day": "d4"}]
+
+    def test_an_unknown_topic_has_none(self, q):
+        q.publish("t", {"day": "d1"})
+        assert q.open_payloads("nope") == []
+
+
 class TestConcurrency:
     def test_two_threads_claiming_at_once_never_both_get_the_same_message(self, tmp_path):
         with Queue(tmp_path / "q.sqlite3") as q:
