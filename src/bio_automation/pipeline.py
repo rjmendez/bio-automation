@@ -533,7 +533,7 @@ def process_observation(folder: Path, *, method: str = "focus-stack", timeout: f
     optionally linked to iNat (via `bio fetch-inat`):
 
         stack -> write_sidecars -> render_review -> export_inat (if linked)
-        -> export_stock -> build_and_save_keywords
+        -> export_stock -> build_and_save_keywords -> tag_stock
 
     This is the ONLY new auto-chaining this orchestrator adds. It
     deliberately does NOT call ingest/copy_into_raw, delete_rejected_raws
@@ -569,7 +569,10 @@ def process_observation(folder: Path, *, method: str = "focus-stack", timeout: f
     Returns a dict on success: {folder: str, stack_asset: str,
     sidecars: list[str], review: list[str],
     inat: list[str] | None (None means "skipped, not iNat-linked"),
-    stock: list[str], keywords: dict}.
+    stock: list[str], keywords: dict, stock_tags: dict} -- stock_tags is
+    stock_select.tag_observation()'s record (also written to
+    metadata/stock_tags.json), or {"skipped": reason} when no sharpness floor
+    has been calibrated.
     """
     folder = Path(folder)
 
@@ -593,6 +596,7 @@ def process_observation(folder: Path, *, method: str = "focus-stack", timeout: f
 
     stock = export_stock(folder)
     keywords = build_and_save_keywords(folder)
+    stock_tags = _tag_stock(folder)
 
     return {
         "folder": str(folder),
@@ -602,7 +606,22 @@ def process_observation(folder: Path, *, method: str = "focus-stack", timeout: f
         "inat": None if inat is None else [str(p) for p in inat],
         "stock": [str(p) for p in stock],
         "keywords": keywords,
+        "stock_tags": stock_tags,
     }
+
+
+def _tag_stock(folder: Path) -> dict:
+    """Stock candidate tagging (stock_select.tag_observation) as the last, automatic step. A missing sharpness floor is reported in the
+    result and logged as a warning, never silently skipped; any other failure propagates like every other stage."""
+    import logging
+
+    from .stock_select import StockFloorMissing, tag_observation
+
+    try:
+        return tag_observation(folder)
+    except StockFloorMissing as exc:
+        logging.getLogger(__name__).warning("stock tagging skipped: %s", exc)
+        return {"skipped": str(exc)}
 
 
 def process_all(base_dir: Path, *, method: str = "focus-stack", timeout: float = 1800.0,

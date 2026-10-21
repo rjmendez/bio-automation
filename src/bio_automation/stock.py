@@ -47,6 +47,21 @@ _CATEGORY_MAP: dict[str, str] = {
 _MACRO_TAXA: set[str] = {"insecta", "arachnida", "plantae", "fungi"}
 
 
+# Ranks of the iNat lineage used as keywords (genus is already covered by the taxon name; kingdom/phylum are too broad to help a buyer).
+_LINEAGE_RANKS = {"subfamily", "family", "superfamily", "suborder", "order", "subclass", "class"}
+_COMMON_STOPWORDS = {"and", "the", "of", "with", "including", "allies", "their", "other", "related", "true", "typical", "common"}
+
+
+def _lineage_common_words(common_name: str | None) -> list[str]:
+    """Words of an iNat common name (which can be a phrase such as 'Mushrooms, Bracket Fungi, Puffballs, and Allies'), minus filler."""
+    words = []
+    for word in (common_name or "").lower().replace(",", " ").split():
+        word = word.strip("()[]")
+        if word and word not in _COMMON_STOPWORDS:
+            words.append(word)
+    return words
+
+
 MIN_KEYWORDS = 15
 _SHORT_KEYWORD_OK = {"uk"}
 _ANIMAL_CATEGORY = "Animals"
@@ -164,6 +179,16 @@ def _build_keywords(observation: Observation) -> list[str]:
     # 5. Manual seed keywords → priority
     for kw in (observation.keywords_seed or []):
         add(kw.lower().strip(), is_priority=True)
+
+    # 5b. Taxonomic lineage from iNat (taxon["lineage"], root first): the names and common names of the family, order and class
+    #     above the identified taxon, nearest rank first, so a genus-level or common-name-less observation still has relevant terms.
+    for entry in reversed(taxon.get("lineage") or []):
+        if (entry.get("rank") or "").lower() not in _LINEAGE_RANKS:
+            continue
+        for word in (entry.get("name") or "").lower().split():
+            add(word)
+        for word in _lineage_common_words(entry.get("common_name")):
+            add(word)
 
     # 6. Always-include photography/nature terms → rest
     if _category_from_taxon(taxon) == [_ANIMAL_CATEGORY]:

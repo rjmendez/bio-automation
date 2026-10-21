@@ -167,6 +167,56 @@ def build_parser() -> argparse.ArgumentParser:
                               help="download folder (default: env BIO_DOWNLOAD_DIR, else D:/bio-cache/downloads)")
     p_export_zip.add_argument("--name", default=None, help="zip name (default: <kind>-<n>photos-<timestamp>.zip)")
 
+    p_flag = sub.add_parser(
+        "flag-upload-set",
+        help="Append `flags`/`flag_notes` columns to an iNat upload set's observations.csv: black frames (measured) plus manual per-group notes. "
+             "Nothing is removed.")
+    p_flag.add_argument("folder", help="upload set folder holding the JPEGs and observations.csv")
+    p_flag.add_argument("--notes", default=None, help='json {"<group>": {"flags": [...], "note": "..."}}')
+
+    p_stock_cal = sub.add_parser(
+        "stock-calibrate",
+        help="Measure a folder of already-approved Stock exports and save the sharpness floor candidates are judged against.")
+    p_stock_cal.add_argument("folder")
+    p_stock_cal.add_argument("--out", default=None, help="floor file (default: env BIO_STOCK_FLOOR)")
+    p_stock_cal.add_argument("--sample", type=int, default=300)
+    p_stock_cal.add_argument("--exclude-csv", default=None,
+                             help="an Adobe Stock csv (Filename column) whose files are to be left out, e.g. the ones stock-publish already linked into the folder")
+
+    p_stock_queue = sub.add_parser(
+        "stock-tag-queue",
+        help="Score every frame of a LightCraft iNat queue json from its raw, tag the Stock candidates, write a csv (resumable).")
+    p_stock_queue.add_argument("queue_json")
+    p_stock_queue.add_argument("--raw-root", required=True)
+    p_stock_queue.add_argument("--out", required=True, help="csv with one row per frame, reasons included")
+    p_stock_queue.add_argument("--floor", default=None)
+    p_stock_queue.add_argument("--workers", type=int, default=3)
+    p_stock_queue.add_argument("--created-since", default=None, metavar="YYYY-MM-DD",
+                               help="only consider observations created on or after this date (the newly identified ones)")
+    p_stock_queue.add_argument("--min-similarity", type=float, default=None,
+                               help="photo-to-frame similarity needed (default 0.97, for frames that are the uploaded picture; ~0.93 matches "
+                                    "Lightroom-edited or cropped versions of a frame)")
+    p_stock_queue.add_argument("--top-per-group", type=int, default=None,
+                               help="keep at most this many sharpest frames per observation (default: every uploaded photo that passes)")
+    p_stock_queue.add_argument("--observations", required=True,
+                               help="the owner's live iNat observations json (must be at most 3 days old); each iNat photo picks the frame that looks like it, "
+                                    "each observation is fetched live and labelled -- a frame that is not an uploaded photo is never a candidate")
+    p_stock_queue.add_argument("--notes", default=None,
+                               help="the upload set's manual flag notes json (see flag-upload-set): every group named in it is excluded from the candidates")
+
+    p_stock_pub = sub.add_parser(
+        "stock-publish",
+        help="Hardlink the csv's Stock candidates' RETOUCHED full-size renders (render-dir/<year>/<day>/<day>_<stem>.jpg) into the gallery "
+             "as <year>/<year-month>/, after validating each against the Stock standard. Candidates with no render are reported, not shipped.")
+    p_stock_pub.add_argument("csv")
+    p_stock_pub.add_argument("--raw-root", required=True)
+    p_stock_pub.add_argument("--render-dir", required=True)
+    p_stock_pub.add_argument("--gallery-dir", required=True)
+    p_stock_pub.add_argument("--floor", default=None, help="floor file (default: env BIO_STOCK_FLOOR)")
+    p_stock_pub.add_argument("--adobe-csv", default=None, help="where to write the Adobe Stock csv (default: <render-dir>/adobe_stock_metadata.csv)")
+    p_stock_pub.add_argument("--plain-decode", action="store_true",
+                             help="Also produce a PLAIN raw decode (flat, no retouching) for candidates with no render. Off by default: not Stock-grade.")
+
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
 
@@ -346,7 +396,7 @@ def cmd_fetch_inat(args: argparse.Namespace) -> int:
             f"{folder} is already linked to iNat observation {existing.observation_id}; "
             f"pass --force to relink to {args.observation_id}"
         )
-    fetched = fetch_inat_observation(args.observation_id)
+    fetched = fetch_inat_observation(args.observation_id, with_lineage=True)
     save_observation(folder, merge_inat_fields(existing, fetched))
     print(folder / "metadata" / "observation.json")
     return 0
@@ -440,6 +490,70 @@ def cmd_build_keywords(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_flag_upload_set(args: argparse.Namespace) -> int:
+    import json
+
+    from .upload_flags import flag_observations_csv, load_manual_notes
+
+    try:
+        manual = load_manual_notes(Path(args.notes) if args.notes else None)
+        result = flag_observations_csv(Path(args.folder), manual)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc))
+    print(json.dumps(result))
+    return 0
+
+
+def cmd_stock_calibrate(args: argparse.Namespace) -> int:
+    import json
+
+    from .stock_select import calibrate_from_folder
+
+    exclude = None
+    if args.exclude_csv:
+        import csv
+
+        with open(args.exclude_csv, newline="", encoding="utf-8-sig") as f:
+            exclude = {row["Filename"] for row in csv.DictReader(f)}
+    print(json.dumps(calibrate_from_folder(Path(args.folder), Path(args.out) if args.out else None, args.sample, exclude), indent=2))
+    return 0
+
+
+def cmd_stock_tag_queue(args: argparse.Namespace) -> int:
+    from .stock_select import StockFloorMissing, tag_queue
+
+    from .inat_stock import SnapshotStale, load_snapshot
+    from .upload_flags import load_manual_notes
+
+    try:
+        notes = load_manual_notes(Path(args.notes) if args.notes else None)
+        observations = load_snapshot(Path(args.observations))
+        if args.created_since:
+            observations = [o for o in observations if (o.get("created_at") or "")[:10] >= args.created_since]
+        rows = tag_queue(Path(args.queue_json), Path(args.raw_root), Path(args.out), observations=observations,
+                         floor_path=Path(args.floor) if args.floor else None, workers=args.workers, top_per_group=args.top_per_group,
+                         min_similarity=args.min_similarity,
+                         excluded_groups={g: "flagged " + ", ".join(v["flags"]) for g, v in notes.items()})
+    except (StockFloorMissing, SnapshotStale, ValueError) as exc:
+        raise SystemExit(str(exc))
+    picked = [r for r in rows if r["stock_candidate"]]
+    print(f"{len(picked)} Stock candidates of {len(rows)} frames in {len({r['group'] for r in picked})} of "
+          f"{len({r['group'] for r in rows})} groups -> {args.out}")
+    return 0
+
+
+def cmd_stock_publish(args: argparse.Namespace) -> int:
+    import json
+
+    from .stock_select import publish_candidates
+
+    result = publish_candidates(Path(args.csv), Path(args.raw_root), Path(args.render_dir), Path(args.gallery_dir),
+                                plain_decode=args.plain_decode, floor_path=Path(args.floor) if args.floor else None,
+                                adobe_csv=Path(args.adobe_csv) if args.adobe_csv else None)
+    print(json.dumps(result, indent=2))
+    return 1 if result["failed"] or result["missing"] else 0
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     import json
 
@@ -529,6 +643,14 @@ def main() -> int:
         return cmd_export_stock(args)
     if args.command == "export-zip":
         return cmd_export_zip(args)
+    if args.command == "flag-upload-set":
+        return cmd_flag_upload_set(args)
+    if args.command == "stock-calibrate":
+        return cmd_stock_calibrate(args)
+    if args.command == "stock-tag-queue":
+        return cmd_stock_tag_queue(args)
+    if args.command == "stock-publish":
+        return cmd_stock_publish(args)
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
     if args.command == "process":
