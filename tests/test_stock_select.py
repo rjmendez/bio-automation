@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 
 import numpy as np
+import json
+
 import pytest
 
 from bio_automation import cli, pipeline, stock_select
@@ -786,7 +788,7 @@ class TestCli:
         assert "--observations" in capsys.readouterr().err
 
     def test_tag_queue_without_a_floor_exits_with_the_fix(self, tmp_path, monkeypatch):
-        write_json(tmp_path / "q.json", [])
+        write_json(tmp_path / "q.json", [{"lc_id": 1, "raw": "a.nef", "day": "2026-07-31", "t": 1.0, "w": 10, "h": 10}])
         write_json(tmp_path / "obs.json", {"observations": []})
         monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "none.json")
         args = cli.build_parser().parse_args(["stock-tag-queue", str(tmp_path / "q.json"), "--raw-root", str(tmp_path), "--out", str(tmp_path / "o.csv"),
@@ -908,3 +910,53 @@ class TestCli:
         cli.cmd_stock_publish(cli.build_parser().parse_args(argv))
         assert seen[-1]["queue"].path == qdb
         assert qdb.is_file()
+
+
+class TestQueueItemContract:
+    """tag_queue's input contract is checked at the door: lc_id is a LightCraft photo id (int); a file-name id fails loudly, naming the item."""
+
+    def _item(self, lc_id):
+        return {"lc_id": lc_id, "raw": "2025/2025-04-23/a.nef", "day": "2025-04-23", "t": 1.0, "w": 8256, "h": 5504}
+
+    def test_int_ids_with_every_field_pass(self):
+        assert stock_select.validate_queue_items([self._item(16621), self._item(16622)]) is None
+
+    def test_a_file_name_id_is_rejected_with_its_index_and_value(self):
+        with pytest.raises(stock_select.QueueItemError,
+                           match=r"1 of 2 queue items are invalid: item 1: lc_id 'DSC_8236 \(x\)' is str, not a LightCraft photo id \(int\)"):
+            stock_select.validate_queue_items([self._item(16621), self._item("DSC_8236 (x)")])
+
+    def test_a_bool_is_not_accepted_as_an_id(self):
+        with pytest.raises(stock_select.QueueItemError, match=r"item 0: lc_id True is bool"):
+            stock_select.validate_queue_items([self._item(True)])
+
+    def test_the_cli_reports_a_bad_queue_as_an_exit_message(self, tmp_path):
+        write_json(tmp_path / "q.json", [self._item("DSC_1")])
+        write_json(tmp_path / "obs.json", {"observations": []})
+        args = cli.build_parser().parse_args(["stock-tag-queue", str(tmp_path / "q.json"), "--raw-root", str(tmp_path), "--out", str(tmp_path / "o.csv"),
+                                               "--observations", str(tmp_path / "obs.json")])
+        with pytest.raises(SystemExit, match=r"1 of 1 queue items are invalid: item 0: lc_id 'DSC_1' is str"):
+            cli.cmd_stock_tag_queue(args)
+
+    def test_an_empty_queue_is_refused_by_name(self):
+        with pytest.raises(stock_select.QueueItemError, match=r"^the queue is empty: nothing to tag$"):
+            stock_select.validate_queue_items([])
+
+    def test_a_missing_field_is_named(self):
+        item = self._item(5)
+        del item["w"]
+        with pytest.raises(stock_select.QueueItemError, match=r"item 0: missing w"):
+            stock_select.validate_queue_items([item])
+
+    def test_tag_queue_rejects_a_bad_queue_before_any_matching_or_floor_load(self, tmp_path):
+        q = tmp_path / "q.json"
+        q.write_text(json.dumps([self._item("DSC_1")]), encoding="utf-8")
+        with pytest.raises(stock_select.QueueItemError, match=r"item 0: lc_id 'DSC_1' is str"):
+            stock_select.tag_queue(q, tmp_path, tmp_path / "out.csv", observations=[], floor_path=tmp_path / "no-floor.json")
+        assert not (tmp_path / "out.csv.raw").exists()
+
+
+def test_publish_uses_the_shared_topic_name():
+    from bio_automation import topics
+    assert topics.GALLERY_REINDEX == "gallery.reindex"                        # the literal the deployed gallery worker consumes today
+    assert len(set(topics.ALL)) == len(topics.ALL)

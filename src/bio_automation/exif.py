@@ -6,7 +6,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-EXIFTOOL_BINARY_ENV = "EXIFTOOL_BINARY"
+from . import settings
+
+EXIFTOOL_BINARY_ENV = settings.EXIFTOOL_ENV
 
 # Bare "exiftool" only resolves when the caller's own interactive shell
 # profile happens to put it on PATH -- it is NOT on PATH for this machine's
@@ -17,9 +19,7 @@ EXIFTOOL_BINARY_ENV = "EXIFTOOL_BINARY"
 # focus_stack.DEFAULT_BINARY: an env var override, else a real installed
 # copy already on this machine (bundled with Zerene Stacker, which this
 # pipeline already depends on -- not a new dependency).
-_DEFAULT_EXIFTOOL_CANDIDATES = (
-    r"C:\Program Files\ZereneStacker\exiftool\exiftool.exe",
-)
+_DEFAULT_EXIFTOOL_CANDIDATES = (str(settings.EXIFTOOL_DEFAULT),)
 
 
 def _exiftool_binary() -> str:

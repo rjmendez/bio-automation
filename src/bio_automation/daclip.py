@@ -16,9 +16,9 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image
 
-from bio_automation import ort_providers
+from bio_automation import ort_providers, settings
 
-CACHE_DIR = Path(r"C:\TopazModels")
+CACHE_DIR = settings.MODEL_CACHE_DIR
 _MODEL_DIR = CACHE_DIR / "daclip-v2-fp32-224x224-1x-ox"
 _ONNX_NAME = "daclip-v2-fp32-224x224-1x.onnx"
 

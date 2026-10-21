@@ -33,10 +33,11 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from . import settings
 from .paths import work_dir
 
-LIGHTCRAFT_CLI_ENV = "LIGHTCRAFT_CLI_BINARY"
-DEFAULT_LIGHTCRAFT_CLI = r"C:\Program Files\LightCraft\lightcraft-cli.exe"
+LIGHTCRAFT_CLI_ENV = settings.LIGHTCRAFT_CLI_ENV
+DEFAULT_LIGHTCRAFT_CLI = str(settings.LIGHTCRAFT_CLI_DEFAULT)
 
 DEFAULT_LONG_EDGE = 1024
 DEFAULT_QUALITY = 70

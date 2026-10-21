@@ -23,6 +23,8 @@ from typing import Callable
 import numpy as np
 from PIL import Image
 
+from . import settings
+
 _PASSWORD = b"a0331add513e4e6fae035cb12e4b11e5"
 _TZ2_IKM   = b"a0331add513e4e6f"   # first 16 bytes of password; hardcoded in aiengine.dll .rdata
 _TZ2_INFO  = b"payload"            # separate 7-byte constant in .rdata
@@ -30,8 +32,8 @@ _TZ2_MAGIC = b"com.topazlabs.tz2\x00"
 _TZ2_BLOCK = 64 * 1024 * 1024      # 64 MiB per ChaCha20-Poly1305 block
 _TZ2_TAG   = 16                    # Poly1305 tag bytes
 
-MODELS_DIR = Path(r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
-CACHE_DIR  = Path(r"C:\TopazModels")
+MODELS_DIR = settings.TOPAZ_MODELS_DIR
+CACHE_DIR = settings.MODEL_CACHE_DIR
 
 DEFAULT_DEVICE: str = os.environ.get("TOPAZ_DEVICE", "CPU")
 # NOTE: topaz.py models are all OpenVINO IR (.xml/.bin). CPU is the default.
