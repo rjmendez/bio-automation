@@ -654,6 +654,36 @@ class TestTagQueue:
             False, "same frame as 2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng (id 2), which is the candidate")
         assert [i for i, r in by.items() if r["stock_candidate"]] == [2, 4]
 
+    def crop_and_original(self, tmp_path, monkeypatch, variant_link=True, crop_size=(1597, 1250)):
+        """Frame 1 is the matched Enhanced-NR crop (its export is crop_size); frame 6 is the same exposure's original NEF, which DA-CLIP
+        did not match (a full frame does not look like the cropped iNat photo)."""
+        self.seed(tmp_path)
+        items = read_json(tmp_path / "q.json")
+        items[0].update(raw="2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng", out_w=crop_size[0], out_h=crop_size[1])
+        items[5].update(raw="2026/d/DSC_1 (2026_07_31 13_00_00 UTC).NEF")
+        if variant_link:
+            items[5]["variant_of"] = 1
+        write_json(tmp_path / "q.json", items)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(100.0, 0.0))
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1)
+        return {r["id"]: r for r in rows}
+
+    def test_a_crop_below_the_stock_minimum_gives_way_to_its_full_size_original(self, tmp_path, monkeypatch):
+        by = self.crop_and_original(tmp_path, monkeypatch)
+        assert (by[6]["stock_candidate"], by[6]["obs_id"], by[6]["mp"]) == (True, 11, 45.4)          # inherited the crop's match
+        assert (by[1]["stock_candidate"], by[1]["reasons"]) == (False, "2.0 MP outside 4-100")           # the crop is too small on its own
+
+    def test_a_crop_big_enough_for_stock_is_still_preferred_over_its_original(self, tmp_path, monkeypatch):
+        by = self.crop_and_original(tmp_path, monkeypatch, crop_size=(4000, 3000))
+        assert (by[1]["stock_candidate"], by[1]["mp"]) == (True, 12.0)
+        assert (by[6]["stock_candidate"], by[6]["reasons"]) == (
+            False, "same frame as 2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng (id 1), which is the candidate")
+
+    def test_without_the_variant_link_the_unmatched_original_is_not_a_candidate(self, tmp_path, monkeypatch):
+        by = self.crop_and_original(tmp_path, monkeypatch, variant_link=False)
+        assert (by[6]["stock_candidate"], by[6]["obs_id"]) == (False, "")
+
     def test_the_same_stem_matched_to_another_observation_is_not_collapsed(self, tmp_path, monkeypatch):
         by = self.tag_with_raws(tmp_path, monkeypatch, {4: "2026/d/DSC_1-Enhanced-NR.dng"})       # frame 4 is observation 22's photo
         assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 2, 4]

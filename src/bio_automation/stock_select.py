@@ -329,6 +329,10 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
         min_similarity=PHOTO_MATCH_MIN_SIMILARITY if min_similarity is None else min_similarity)
     matches = {lc_id: obs_id for lc_id, (obs_id, _) in claims.items()}
     similarity = {lc_id: sim for lc_id, (_, sim) in claims.items()}
+    for x in queue:              # the original raw of a matched crop is the same exposure: it inherits the match DA-CLIP made for its variant
+        v = x.get("variant_of")
+        if v is not None and x["lc_id"] not in matches and v in matches:
+            matches[x["lc_id"]], similarity[x["lc_id"]] = matches[v], similarity[v]
     labels, exclusions = {}, dict(excluded_groups or {})
     for obs_id in sorted(set(matches.values())):
         try:
@@ -438,7 +442,9 @@ def frame_stem(raw: str) -> str:
 
 def collapse_raw_variants(candidates: list[dict]) -> dict:
     """{dropped row id: kept row} for candidates that are one frame twice: same day, same frame_stem, same obs_id. The kept one is the
-    Enhanced-NR variant (the owner's own denoised version), then the sharper, then the lower id; every other is dropped."""
+    Enhanced-NR variant (the owner's own denoised version), then the sharper, then the lower id; every other is dropped. A variant below the
+    Stock size minimum (an Enhanced-NR export can be a small crop) is never a candidate in the first place, so its full-size original wins."""
+
     def sharp(r):
         try:
             return float(r.get("sharp") or 0.0)
