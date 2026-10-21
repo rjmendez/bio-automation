@@ -171,6 +171,7 @@ class TestDaclipLoadSession:
         model = self._model(tmp_path)
         ort = FakeOrt()
         monkeypatch.setattr(daclip, "ort", ort)
+        monkeypatch.setattr(daclip, "_MISSING_CUDA_DIRS", [])
         monkeypatch.setenv(ort_providers.DEVICE_ENV, "1")
         sess = daclip.load_session(tmp_path)
         assert sess.get_providers() == [CUDA, CPU]
@@ -179,13 +180,23 @@ class TestDaclipLoadSession:
         assert opts.graph_optimization_level == "ENABLE_ALL"
         assert providers == [(CUDA, {"device_id": 1}), CPU]
 
-    def test_cpu_result_is_reported_not_silent(self, tmp_path, monkeypatch, caplog):
+    def test_a_cpu_session_raises_and_is_still_reported(self, tmp_path, monkeypatch, caplog):
         self._model(tmp_path)
         monkeypatch.setattr(daclip, "ort", FakeOrt(got=[CPU]))
+        monkeypatch.setattr(daclip, "_MISSING_CUDA_DIRS", [])
         with caplog.at_level(logging.WARNING, logger=LOGGER):
-            daclip.load_session(tmp_path)
+            with pytest.raises(RuntimeError, match=r"daclip: CUDA was requested \(device_id=0\) but the session runs on \['CPUExecutionProvider'\]"):
+                daclip.load_session(tmp_path)
         assert ort_providers.degraded_counts() == {"daclip:cuda-not-obtained": 1}
-        assert "daclip: CUDA was requested (device_id=0) but the session runs on ['CPUExecutionProvider']" in _warnings(caplog)[0]
+
+    def test_missing_cuda_dll_folders_raise_before_any_session(self, tmp_path, monkeypatch):
+        self._model(tmp_path)
+        ort = FakeOrt()
+        monkeypatch.setattr(daclip, "ort", ort)
+        monkeypatch.setattr(daclip, "_MISSING_CUDA_DIRS", [Path(r"E:\no-cuda")])
+        with pytest.raises(RuntimeError, match=r"daclip: CUDA DLL folders not found: \['E:\\\\no-cuda'\] \(set BIO_CUDA_DLL_DIRS\)"):
+            daclip.load_session(tmp_path)
+        assert ort.session_calls == []
 
     def test_missing_model_still_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="DA-CLIP model not found"):
