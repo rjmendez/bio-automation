@@ -13,6 +13,9 @@ dependencies = [
     "tzdata; sys_platform == 'win32'",   # settings.LOCAL_TZ: Windows has no system zoneinfo database
 ]
 
+[project.optional-dependencies]
+social = ["atproto==0.0.73"]   # bio social-post (Bluesky); everything else in social.py runs without it
+
 [project.scripts]
 bio = "bio_automation.cli:main"
 
