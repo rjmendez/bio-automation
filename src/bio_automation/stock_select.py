@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import os
+import re
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -373,8 +374,16 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
 # ---- publish: retouched full-size renders, validated against the Stock standard, hardlinked into the review gallery ----
 
 def render_name(row: dict) -> str:
-    """<day>_<raw stem>.jpg -- camera counters wrap, so the day keeps names unique (same convention as the existing gallery files)."""
-    return f"{row['day']}_{Path(row['raw']).stem}.jpg"
+    """<day>_<raw stem>.jpg -- camera counters wrap, so the day keeps names unique (same convention as the existing gallery files).
+
+    A raw that is itself a Lightroom 'Enhanced-NR' export has a long name ("DSC_3770 (2025_06_03 19_23_22 UTC)-Enhanced-NR"), over Adobe's 30-character
+    limit and not unique per frame: the parenthesised export stamp and the suffix are dropped and the frame id is appended instead
+    ("2025-04-25_DSC_3770_14081.jpg"). Anything else keeps its plain name."""
+    stem = Path(row["raw"]).stem
+    clean = re.sub(r"\s*\(.*?\)", "", stem).replace("-Enhanced-NR", "").strip()
+    if clean != stem:
+        return f"{row['day']}_{clean}_{row['id']}.jpg"
+    return f"{row['day']}_{stem}.jpg"
 
 
 def row_label(row: dict) -> dict:
