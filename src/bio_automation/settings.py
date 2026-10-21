@@ -30,6 +30,10 @@ EXPORT_DIR = env_path("BIO_EXPORT_DIR", r"F:\Bio-export")
 STOCK_DIR = env_path("BIO_STOCK_DIR", EXPORT_DIR / "adobe-stock")
 GALLERY_DIR = env_path("BIO_GALLERY_DIR", STOCK_DIR / "gallery")       # the PiGallery2 media folder (<year>/<year-month>/)
 CACHE_DIR = env_path("BIO_CACHE_DIR", r"D:\bio-cache")
+# new results (renders, published Stock files, pipeline outputs) go here; what is already under EXPORT_DIR stays where it is
+RESULTS_DIR = env_path("BIO_RESULTS_DIR", r"D:\bio-results")
+RESULTS_GALLERY_DIR = env_path("BIO_RESULTS_GALLERY_DIR", RESULTS_DIR / "gallery")      # <year>/<year-month>/ published from RESULTS_DIR
+GALLERY_RESULTS_MOUNT = env("BIO_GALLERY_RESULTS_MOUNT", "results")     # RESULTS_GALLERY_DIR appears in the gallery as this folder (a junction)
 PHOTOS_CACHE = env_path("BIO_PHOTOS_CACHE", CACHE_DIR / "photos")
 DOWNLOAD_DIR_ENV = "BIO_DOWNLOAD_DIR"                                    # read at call time by bio export-zip
 DOWNLOAD_DIR = CACHE_DIR / "downloads"
@@ -72,3 +76,8 @@ DAY_BRACKET_S = env_float("BIO_DAY_BRACKET_S", 12 * 3600)                # brack
 
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space
+
+
+def gallery_results_mount() -> Path:
+    """Where RESULTS_GALLERY_DIR shows up inside the gallery: publishing into this path writes the files on RESULTS_GALLERY_DIR's drive."""
+    return GALLERY_DIR / GALLERY_RESULTS_MOUNT
