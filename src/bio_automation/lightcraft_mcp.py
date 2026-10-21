@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import settings
@@ -150,14 +151,22 @@ def render_retouched(lib, photo_id: int, out: Path, *, wait_s: float = 420, poll
     return {"owner_edited": owner_edited, "iso": ((ins.get("meta") or {}).get("iso") if isinstance(ins, dict) else None) or 0}
 
 
-def import_files(lib: LightCraftLibrary, paths: list[str]) -> dict[str, int]:
-    """Reference `paths` in place (mode add) and return {path: photo id} for every one, new or already in the library.
-    A path that is neither imported nor a live duplicate raises: a frame without an id cannot be rendered."""
+@dataclass(frozen=True)
+class Imported:
+    ids: dict            # {path: photo id} for every path asked for
+    duplicates: dict     # {path: library path of the photo it duplicates} -- LightCraft matches by content, so that path can differ
+
+
+def import_files(lib: LightCraftLibrary, paths: list[str]) -> Imported:
+    """Reference `paths` in place (mode add); every path gets an id, new or the existing photo LightCraft says it duplicates.
+    A path that failed, or whose duplicate is only in Recently Deleted, raises: a frame without an id cannot be rendered."""
     r = lib.call("import", {"paths": list(paths), "mode": "add"})
     ids = list(r.get("imported", []))
     dups = {d["path"]: d for d in r.get("duplicates", [])}
     failed = {(f["path"] if isinstance(f, dict) else f): f for f in r.get("failed", [])}
-    new_paths = [p for p in paths if p not in dups and p not in failed]
+    if failed:
+        raise LightCraftLibraryError(f"{len(failed)} files failed to import: {list(failed.values())[:3]}")
+    new_paths = [p for p in paths if p not in dups]
     if len(new_paths) != len(ids):
         raise LightCraftLibraryError(f"import returned {len(ids)} ids for {len(new_paths)} new files: cannot map ids to paths")
     out = dict(zip(new_paths, ids))
@@ -165,6 +174,4 @@ def import_files(lib: LightCraftLibrary, paths: list[str]) -> dict[str, int]:
         if d.get("existingDeleted") or d.get("existing") is None:
             raise LightCraftLibraryError(f"{p} is in the library only as a deleted photo ({d})")
         out[p] = int(d["existing"])
-    if failed:
-        raise LightCraftLibraryError(f"{len(failed)} files failed to import: {list(failed.values())[:3]}")
-    return out
+    return Imported(ids=out, duplicates={p: d.get("existingPath") or d.get("reason", "") for p, d in dups.items()})
