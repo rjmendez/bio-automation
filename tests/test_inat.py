@@ -19,6 +19,8 @@ from bio_automation.inat import (
 RAW_OBSERVATION = {
     "id": 123456,
     "place_guess": "Marin County, CA",
+    "observed_on": "2024-10-08",
+    "geoprivacy": "obscured",
     "license_code": "cc-by-nc",
     "quality_grade": "research",
     "tags": ["burrowing", "nocturnal"],
@@ -66,6 +68,8 @@ class TestFetchInatObservation:
                 "rank": "order",
             },
             "place_guess": "Marin County, CA",
+            "observed_on": "2024-10-08",
+            "geoprivacy": "obscured",
             "license": "cc-by-nc",
             "quality_grade": "research",
             "keywords_seed": ["burrowing", "nocturnal"],

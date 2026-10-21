@@ -222,6 +222,47 @@ def build_parser() -> argparse.ArgumentParser:
                                   "files on its own -- no manual folder-browse or scheduled rescan needed).")
     p_stock_pub.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
 
+    p_social_index = sub.add_parser(
+        "social-index",
+        help="Map every gallery file to its iNat observation (from the audit and Stock-candidate csvs, each row checked against the title "
+             "embedded in the file) and write the index social-draft reads. Unresolved files are listed with the reason.")
+    p_social_index.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_social_index.add_argument("--audit", nargs="*", default=[], help="audit csv(s) with file,obs_id columns (glob patterns allowed)")
+    p_social_index.add_argument("--candidates", nargs="*", default=[], help="Stock candidate csv(s) (glob patterns allowed)")
+    p_social_index.add_argument("--out", default=str(settings.GALLERY_OBS_INDEX))
+
+    p_social_draft = sub.add_parser(
+        "social-draft",
+        help="Top up this month's unposted Bluesky drafts: observations with gallery photos in this month of any year, fetched live, "
+             "alt text from the local vision model. Writes drafts for the owner to approve; posts nothing.")
+    p_social_draft.add_argument("--keep-pending", type=int, default=None, help="default: env BIO_SOCIAL_KEEP_PENDING")
+    p_social_draft.add_argument("--date", default=None, help="draft for this day's month (YYYY-MM-DD; default today)")
+    p_social_draft.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_social_draft.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+
+    p_social_list = sub.add_parser("social-list", help="List drafts and their state (drafted/approved/rejected/posting/posted/failed).")
+    p_social_list.add_argument("--state", default=None)
+    p_social_list.add_argument("--full", action="store_true", help="also print each draft's whole post text, images and alt text")
+
+    p_social_approve = sub.add_parser("social-approve", help="Approve drafts for posting (bound to their current files).")
+    p_social_approve.add_argument("draft_ids", nargs="+")
+
+    p_social_reject = sub.add_parser("social-reject", help="Reject drafts; their observations are never drafted again.")
+    p_social_reject.add_argument("draft_ids", nargs="+")
+    p_social_reject.add_argument("--reason", default="")
+
+    p_social_resolve = sub.add_parser("social-resolve", help="Settle a post whose outcome is unknown, after checking the profile.")
+    p_social_resolve.add_argument("draft_id")
+    g = p_social_resolve.add_mutually_exclusive_group(required=True)
+    g.add_argument("--posted-uri", default=None)
+    g.add_argument("--not-posted", action="store_true")
+
+    p_social_post = sub.add_parser(
+        "social-post",
+        help="Post the oldest approved draft of this month (at most BIO_SOCIAL_POSTS_PER_DAY a day). Dry-run unless --live; --live needs "
+             "env BSKY_HANDLE and BSKY_APP_PASSWORD.")
+    p_social_post.add_argument("--live", action="store_true")
+
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
 
@@ -568,6 +609,104 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
     return 1 if result["failed"] or result["missing"] or result.get("refused") else 0      # skipped NEF/Enhanced-NR twins are not a failure
 
 
+def _expand(patterns: list[str]) -> list[Path]:
+    import glob
+
+    out = []
+    for pat in patterns:
+        hits = sorted(glob.glob(pat))
+        if not hits:
+            raise SystemExit(f"no file matches {pat}")
+        out += [Path(h) for h in hits]
+    return out
+
+
+def cmd_social_index(args: argparse.Namespace) -> int:
+    from collections import Counter
+
+    from .social import build_obs_index, write_index
+
+    index = build_obs_index(Path(args.gallery_dir), _expand(args.audit), _expand(args.candidates))
+    write_index(index, Path(args.out))
+    reasons = Counter(r.split(":")[0] for r in index["unresolved"].values())
+    print(f"{len(index['files'])} files mapped to {len(set(index['files'].values()))} observations, {len(index['unresolved'])} unresolved "
+          f"{dict(reasons)} -> {args.out}")
+    return 0
+
+
+def cmd_social_draft(args: argparse.Namespace) -> int:
+    import datetime as dt
+    import json
+
+    from .social import Ledger, draft_month, load_index
+
+    today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
+    report = draft_month(load_index(Path(args.index)), Ledger(), today=today, gallery_dir=Path(args.gallery_dir),
+                         drafts_dir=settings.SOCIAL_DIR / "drafts", keep_pending=args.keep_pending)
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def cmd_social_list(args: argparse.Namespace) -> int:
+    from .social import Ledger, load_draft, segments_text
+
+    for draft_id, d in Ledger().drafts().items():
+        if args.state and d["state"] != args.state:
+            continue
+        line = f"{d['state']:9} {draft_id}"
+        ddir = settings.SOCIAL_DIR / "drafts" / draft_id
+        if not (ddir / "draft.json").is_file():
+            print(line + "  (draft folder missing)")
+            continue
+        draft = load_draft(ddir)
+        print(line + "  " + segments_text(draft["text"]).splitlines()[0])
+        if args.full:
+            print("    " + segments_text(draft["text"]).replace("\n", "\n    "))
+            for img in draft["images"]:
+                print(f"    [{ddir / img['file']}] from {img['source']}\n      alt: {img['alt']}")
+            print()
+    return 0
+
+
+def cmd_social_approve(args: argparse.Namespace) -> int:
+    from .social import Ledger, approve
+
+    ledger = Ledger()
+    for draft_id in args.draft_ids:
+        approve(ledger, settings.SOCIAL_DIR / "drafts", draft_id)
+        print(f"approved {draft_id}")
+    return 0
+
+
+def cmd_social_reject(args: argparse.Namespace) -> int:
+    from .social import Ledger, reject
+
+    ledger = Ledger()
+    for draft_id in args.draft_ids:
+        reject(ledger, draft_id, args.reason)
+        print(f"rejected {draft_id}")
+    return 0
+
+
+def cmd_social_resolve(args: argparse.Namespace) -> int:
+    from .social import Ledger, resolve
+
+    rec = resolve(Ledger(), args.draft_id, posted_uri=None if args.not_posted else args.posted_uri)
+    print(f"{args.draft_id}: {rec['event']}")
+    return 0
+
+
+def cmd_social_post(args: argparse.Namespace) -> int:
+    import datetime as dt
+    import json
+
+    from .social import Ledger, post_next
+
+    result = post_next(Ledger(), settings.SOCIAL_DIR / "drafts", now=dt.datetime.now(settings.LOCAL_TZ), live=args.live)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     import json
 
@@ -665,6 +804,20 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
+    if args.command == "social-index":
+        return cmd_social_index(args)
+    if args.command == "social-draft":
+        return cmd_social_draft(args)
+    if args.command == "social-list":
+        return cmd_social_list(args)
+    if args.command == "social-approve":
+        return cmd_social_approve(args)
+    if args.command == "social-reject":
+        return cmd_social_reject(args)
+    if args.command == "social-resolve":
+        return cmd_social_resolve(args)
+    if args.command == "social-post":
+        return cmd_social_post(args)
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
     if args.command == "process":

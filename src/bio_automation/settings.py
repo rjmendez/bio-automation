@@ -82,6 +82,25 @@ INAT_RETRIES = int(env("BIO_INAT_RETRIES", 5))                            # retr
 INAT_BACKOFF_S = env_float("BIO_INAT_BACKOFF_S", 2.0)                     # first wait; doubles each retry
 INAT_BACKOFF_MAX_S = env_float("BIO_INAT_BACKOFF_MAX_S", 120.0)           # no single wait is longer than this
 
+# --- social posts (Bluesky): drafts the owner approves, one posted a day, from the current month of every year in the gallery
+SOCIAL_DIR = env_path("BIO_SOCIAL_DIR", RESULTS_DIR / "social")                     # drafts/<draft id>/: draft.json + the post's images
+SOCIAL_LEDGER = env_path("BIO_SOCIAL_LEDGER", CACHE_DIR / "state" / "social_ledger.jsonl")   # append-only draft/approve/post events
+GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gallery_obs_index.json")   # gallery file -> iNat observation
+SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
+SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 1))
+# app.bsky.embed.images allows 2,000,000 B per image (raised from 1 MB in 2026); 1 MB also passes a PDS still on the old cap
+BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 1_000_000))
+BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 2000))
+BSKY_HANDLE_ENV = "BSKY_HANDLE"                                    # read at post time, never stored
+BSKY_APP_PASSWORD_ENV = "BSKY_APP_PASSWORD"                        # a Bluesky app password, not the account password
+
+# --- local vision model (Ollama, GPU only). No model is named here: env BIO_VISION_MODEL, else the best-ranked installed "vision" model of
+# Loci's pool file
+OLLAMA_URL = env("BIO_OLLAMA", "http://127.0.0.1:11440")         # the server itself: the resident proxy on :11435 rewrites model names
+VISION_MODEL_ENV = "BIO_VISION_MODEL"
+MODEL_POOL_FILE = env_path("BIO_MODEL_POOL", HOME / ".loci" / "backends.toml")
+VISION_IMAGE_EDGE = int(env("BIO_VISION_IMAGE_EDGE", 1024))       # long edge of the copy the vision model sees
+
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space
 
