@@ -637,6 +637,12 @@ class TestPublish:
     def test_render_name_carries_the_day(self):
         assert stock_select.render_name(self.ROWS[0]) == "2026-07-31_DSC_1.jpg"
 
+    def test_lightroom_export_names_are_shortened_and_made_unique_with_the_frame_id(self):
+        row = {"raw": "2025/2025-04-25/DSC_3770 (2025_06_03 19_23_22 UTC)-Enhanced-NR.dng", "day": "2025-04-25", "id": "14081"}
+        name = stock_select.render_name(row)
+        assert name == "2025-04-25_DSC_3770_14081.jpg" and len(name) <= 30
+        assert stock_select.render_name({**row, "id": "14082"}) == "2025-04-25_DSC_3770_14082.jpg"          # two frames of one day never collide
+
     def test_labelled_renders_are_embedded_linked_and_listed_in_the_adobe_csv(self, tmp_path):
         from bio_automation import inat_stock
 
