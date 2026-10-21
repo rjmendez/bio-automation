@@ -53,6 +53,9 @@ LIGHTCRAFT_CLI = env_path(LIGHTCRAFT_CLI_ENV, LIGHTCRAFT_CLI_DEFAULT)
 LIGHTCRAFT_LIBRARY = env_path("BIO_LC_LIBRARY", HOME / "Pictures" / "LightCraft Library")   # the persistent catalog every render uses
 LIGHTCRAFT_GUI = env("BIO_LC_GUI", "127.0.0.1:7980")                    # the desktop app's control channel
 LIGHTCRAFT_GPU = env("BIO_LC_GPU", "1") not in ("0", "false", "no")     # headless develop/export on the GPU (LightCraft falls back to CPU per render)
+LIGHTCRAFT_RENDER_DIR = env_path("BIO_LC_RENDER_DIR", CACHE_DIR / "lightcraft-render")   # one scratch library per parallel render engine
+RENDER_ENGINES = int(env("BIO_RENDER_ENGINES", 4))       # measured 2026-10-21: 1/4/6/8 CPU engines = 12/19/22/23 renders/min; GPU engines contend
+RENDER_ENGINE_GPU = env("BIO_RENDER_ENGINE_GPU", "0") not in ("0", "false", "no")   # several engines on the shared GPUs were slower than one
 EXIFTOOL_ENV = "BIO_EXIFTOOL"
 EXIFTOOL_DEFAULT = PROGRAM_FILES / "ZereneStacker" / "exiftool" / "exiftool.exe"
 FOCUS_STACK_ENV = "BIO_FOCUS_STACK"
