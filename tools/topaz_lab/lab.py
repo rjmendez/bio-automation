@@ -3,12 +3,9 @@ Models and their extracted cache stay on C:\\TopazModels; everything written her
 import os, glob, time
 os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
 import numpy as np
-# onnxruntime 1.31's CUDA provider is a CUDA 13 build (needs cudart64_13 / cublas64_13), NOT the CUDA 12 pip nvidia packages.
-for _d in (r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin\x64',
-           r'C:\Program Files\NVIDIA\CUDNN\v9.13\bin\13.0'):
-    if os.path.isdir(_d):
-        os.add_dll_directory(_d)
-        os.environ['PATH'] = _d + os.pathsep + os.environ.get('PATH', '')   # cuDNN loads its sub-libraries via PATH
+from bio_automation import cuda_dlls
+
+cuda_dlls.add_cuda_dll_dirs()      # onnxruntime's CUDA provider is a CUDA 13 build: settings.CUDA_DLL_DIRS before importing it
 import onnxruntime as ort
 from PIL import Image
 from scipy.ndimage import gaussian_filter, uniform_filter
