@@ -54,6 +54,11 @@ FOCUS_STACK_ENV = "BIO_FOCUS_STACK"
 FOCUS_STACK_DEFAULT = HOME / "AppData" / "Local" / "Programs" / "focus-stack" / "focus-stack" / "focus-stack.exe"
 TOPAZ_MODELS_DIR = env_path("BIO_TOPAZ_MODELS_DIR", r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
 MODEL_CACHE_DIR = env_path("BIO_MODEL_CACHE_DIR", r"C:\TopazModels")   # extracted ONNX models (DA-CLIP, Topaz)
+# onnxruntime's CUDA provider here is a CUDA 13 build: these DLL folders must be on the DLL path before onnxruntime is imported
+# (os.pathsep-separated list; the CUDA 12 pip `nvidia` packages do not satisfy it)
+CUDA_DLL_DIRS = tuple(Path(p) for p in env("BIO_CUDA_DLL_DIRS", os.pathsep.join([
+    str(PROGRAM_FILES / "NVIDIA GPU Computing Toolkit" / "CUDA" / "v13.0" / "bin" / "x64"),
+    str(PROGRAM_FILES / "NVIDIA" / "CUDNN" / "v9.13" / "bin" / "13.0")])).split(os.pathsep) if p)
 
 # --- local time: iNat observed_on days and camera clocks are local
 LOCAL_TZ = ZoneInfo(env("BIO_LOCAL_TZ", "America/New_York"))

@@ -13,10 +13,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import onnxruntime as ort
 from PIL import Image
 
-from bio_automation import ort_providers, settings
+from bio_automation import cuda_dlls, ort_providers, settings
+
+_MISSING_CUDA_DIRS = cuda_dlls.add_cuda_dll_dirs()       # before onnxruntime loads its CUDA provider
+import onnxruntime as ort  # noqa: E402
 
 CACHE_DIR = settings.MODEL_CACHE_DIR
 _MODEL_DIR = CACHE_DIR / "daclip-v2-fp32-224x224-1x-ox"
@@ -30,16 +32,17 @@ _SIZE = 224
 
 
 def load_session(cache_dir: Path = CACHE_DIR) -> ort.InferenceSession:
-    """Load the DA-CLIP ONNX model and return an InferenceSession on CUDA when it can get it.
+    """Load the DA-CLIP ONNX model on CUDA, or raise: GPU only, never a silent CPU fallback.
 
-    The CUDA device comes from BIO_ORT_CUDA_DEVICE (default 0).  A session that ends up on CPU is reported
-    (WARNING + ort_providers.degraded_counts()) rather than returned silently."""
+    The CUDA device comes from BIO_ORT_CUDA_DEVICE (default 0); the CUDA DLL folders from BIO_CUDA_DLL_DIRS."""
     model_path = Path(cache_dir) / "daclip-v2-fp32-224x224-1x-ox" / _ONNX_NAME
     if not model_path.exists():
         raise FileNotFoundError(f"DA-CLIP model not found: {model_path}")
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    return ort_providers.open_session(ort, model_path, sess_options=opts, label="daclip")
+    if _MISSING_CUDA_DIRS:
+        raise RuntimeError(f"daclip: CUDA DLL folders not found: {[str(d) for d in _MISSING_CUDA_DIRS]} (set BIO_CUDA_DLL_DIRS)")
+    return ort_providers.open_session(ort, model_path, sess_options=opts, label="daclip", require_cuda=True)
 
 
 def preprocess(img_bgr_uint8: np.ndarray) -> np.ndarray:
