@@ -28,10 +28,10 @@ def env_float(name: str, default: float) -> float:
 LIBRARY = env_path("BIO_LIBRARY", r"F:\Bio")                            # the raw library: <year>/<day>/<file>
 EXPORT_DIR = env_path("BIO_EXPORT_DIR", r"F:\Bio-export")
 STOCK_DIR = env_path("BIO_STOCK_DIR", EXPORT_DIR / "adobe-stock")
-GALLERY_DIR = env_path("BIO_GALLERY_DIR", STOCK_DIR / "gallery")       # the PiGallery2 media folder (<year>/<year-month>/)
 CACHE_DIR = env_path("BIO_CACHE_DIR", r"D:\bio-cache")
 # new results (renders, published Stock files, pipeline outputs) go here; what is already under EXPORT_DIR stays where it is
 RESULTS_DIR = env_path("BIO_RESULTS_DIR", r"D:\bio-results")
+GALLERY_DIR = env_path("BIO_GALLERY_DIR", RESULTS_DIR / "gallery")     # the PiGallery2 media folder: ONE <year>/<year-month>/ tree, on D:
 PHOTOS_CACHE = env_path("BIO_PHOTOS_CACHE", CACHE_DIR / "photos")
 DOWNLOAD_DIR_ENV = "BIO_DOWNLOAD_DIR"                                    # read at call time by bio export-zip
 DOWNLOAD_DIR = CACHE_DIR / "downloads"
