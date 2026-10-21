@@ -25,7 +25,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-SYNC_DIR = Path(r"D:\nikon_stack_sync")
+from . import settings
+
+SYNC_DIR = settings.SYNC_DIR
 TOKEN_FILE = Path.home() / ".nikon_sync_token"
 
 # Filenames and stack ids both come from the network -- only allow the

@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import settings
 from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
 from .bundle import DEFAULT_DOWNLOAD_DIR, BundleError, build_bundle
 from .inat import fetch_inat_observation
@@ -39,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ingest = sub.add_parser("ingest")
     p_ingest.add_argument("source")
-    p_ingest.add_argument("--base-dir", default=r"F:\Bio")
+    p_ingest.add_argument("--base-dir", default=str(settings.LIBRARY))
     p_ingest.add_argument("--obsdate", required=True)
     p_ingest.add_argument("--slug", required=True)
 
@@ -52,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
              "or an already-linked iNat observation. See bio_automation.auto_ingest.",
     )
     p_auto_ingest.add_argument("volume_path")
-    p_auto_ingest.add_argument("--base-dir", default=r"F:\Bio")
+    p_auto_ingest.add_argument("--base-dir", default=str(settings.LIBRARY))
 
     p_sync_stacks = sub.add_parser(
         "sync-stacks",
@@ -61,8 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
              "on arrival. Idempotent: a stack already ingested is skipped on rerun. "
              "See bio_automation.stack_sync.",
     )
-    p_sync_stacks.add_argument("--sync-dir", default=r"D:\nikon_stack_sync")
-    p_sync_stacks.add_argument("--base-dir", default=r"F:\Bio")
+    p_sync_stacks.add_argument("--sync-dir", default=str(settings.SYNC_DIR))
+    p_sync_stacks.add_argument("--base-dir", default=str(settings.LIBRARY))
     p_sync_stacks.add_argument("--no-cleanup", action="store_true",
                                 help="Keep the D:\\ landing copy after a successful "
                                      "ingest+process instead of deleting it.")
@@ -285,7 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
              "through a reverse proxy that restricts by source IP, not by "
              "binding this process to a public interface. See review_console.py.",
     )
-    p_review_console.add_argument("--base-dir", default=r"F:\Bio")
+    p_review_console.add_argument("--base-dir", default=str(settings.LIBRARY))
     p_review_console.add_argument("--host", default="127.0.0.1")
     p_review_console.add_argument("--port", type=int, default=8780)
 
@@ -473,7 +474,7 @@ def cmd_export_zip(args: argparse.Namespace) -> int:
     import getpass
     import os
     import socket
-    out_dir = Path(args.out_dir or os.environ.get("BIO_DOWNLOAD_DIR") or DEFAULT_DOWNLOAD_DIR)
+    out_dir = Path(args.out_dir or settings.env(settings.DOWNLOAD_DIR_ENV, DEFAULT_DOWNLOAD_DIR))
     try:
         result = build_bundle(args.kind, [Path(s) for s in args.sources], out_dir, name=args.name)
     except BundleError as e:

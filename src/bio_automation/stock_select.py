@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import settings, topics
 from .io import read_json, write_json
 from .paths import metadata_dir
 
@@ -33,7 +34,7 @@ CLIP_PERCENTILE = 95          # the share of near-white pixels that only 5% of t
 DEFAULT_MAX_ISO = 3200
 DEFAULT_TOP_PER_GROUP = None          # None = every frame that passes; a number keeps only that many sharpest per group (Stock rejects near-duplicates)
 STOCK_MIN_MP, STOCK_MAX_MP = 4.0, 100.0
-DEFAULT_FLOOR_PATH = Path(os.environ.get("BIO_STOCK_FLOOR", r"D:\bio-cache\photos\stock_floor.json"))
+DEFAULT_FLOOR_PATH = settings.STOCK_FLOOR
 TAGS_FILENAME = "stock_tags.json"
 RAW_CACHE_FIELDS = ["lc_id", "sharp", "clip", "iso", "error"]
 RELEASE_UNSCREENED = "unscreened"
@@ -251,6 +252,29 @@ def tag_observation(folder: Path, floor_path: Path | None = None, *, max_iso: in
 
 # ---- batch step: the LightCraft iNat backlog queue ----
 
+QUEUE_ITEM_FIELDS = ("lc_id", "raw", "day", "t", "w", "h")
+
+
+class QueueItemError(ValueError):
+    """A tag_queue item breaks the contract: lc_id must be a LightCraft photo id (int) and the fields tag_queue reads must be present."""
+
+
+def validate_queue_items(items: list[dict]) -> None:
+    """Reject a queue up front, naming every bad item, instead of failing deep inside matching/caching on the first one.
+    lc_id is the LightCraft catalog id the render step drives (photo.inspect/export): a file name or any non-int cannot be rendered."""
+    if not items:
+        raise QueueItemError("the queue is empty: nothing to tag")
+    bad = []
+    for i, x in enumerate(items):
+        missing = [k for k in QUEUE_ITEM_FIELDS if k not in x]
+        if missing:
+            bad.append(f"item {i}: missing {', '.join(missing)}")
+        elif type(x["lc_id"]) is not int:
+            bad.append(f"item {i}: lc_id {x['lc_id']!r} is {type(x['lc_id']).__name__}, not a LightCraft photo id (int)")
+    if bad:
+        shown = "; ".join(bad[:5]) + (f"; ... {len(bad) - 5} more" if len(bad) > 5 else "")
+        raise QueueItemError(f"{len(bad)} of {len(items)} queue items are invalid: {shown}")
+
 def _score_item(item: dict) -> dict:
     try:
         s = score_raw(Path(item["raw_abs"]))
@@ -283,10 +307,11 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     from .inat_stock import (PHOTO_CACHE_DEFAULT, PHOTO_MATCH_MIN_SIMILARITY, PHOTO_MATCH_WINDOW_S, LabelError, cached_photo, default_embedder,
                              label_observation, label_problems, match_photos_to_frames)
 
+    queue = read_json(Path(queue_json))
+    validate_queue_items(queue)
     lineage_cache: dict = {}
     fetch = fetch or (lambda i: fetch_inat_observation(i, with_lineage=True, lineage_cache=lineage_cache))
     floor = require_complete_floor(load_floor(floor_path))
-    queue = read_json(Path(queue_json))
     observed_on = {o["id"]: o.get("observed_on") for o in observations}
     photo_kw = {"get_bytes": get_bytes} if get_bytes else {}
     claims = match_photos_to_frames(
@@ -464,7 +489,7 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
         write_adobe_csv(shipped, Path(adobe_csv or Path(render_dir) / "adobe_stock_metadata.csv"))
     queued = False
     if queue is not None and touched_folders:
-        queue.publish("gallery.reindex", {"gallery_dir": str(gallery_dir), "folders": sorted(touched_folders)})
+        queue.publish(topics.GALLERY_REINDEX, {"gallery_dir": str(gallery_dir), "folders": sorted(touched_folders)})
         queued = True
     return {"candidates": len(picks), "plain_decoded": decoded, "linked": linked, "missing": missing, "failed": failed,
             "adobe_csv_rows": len(shipped), "queued_reindex": queued}

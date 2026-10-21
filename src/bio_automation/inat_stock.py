@@ -23,6 +23,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from . import settings
+
 import numpy as np
 
 from .exif import _exiftool_binary
@@ -41,9 +43,9 @@ ADOBE_CSV_FIELDS = ("Filename", "Title", "Keywords", "Category", "Releases")
 # within PHOTO_MATCH_WINDOW_S of the observation's time, whose DA-CLIP content vector is closest (argmax); the match counts at >= 0.97. Measured on
 # observation 409468156 (13 photos): every photo had one frame at 0.993-1.000 and the nearest sibling shot at <= 0.987, whereas time matching (90 s) used two
 # frames that were never uploaded and missed three that were. Time-only matching also put a species on frames shot near an unrelated observation.
-PHOTO_MATCH_MIN_SIMILARITY = 0.97
-PHOTO_MATCH_WINDOW_S = 900.0
-PHOTO_CACHE_DEFAULT = Path(os.environ.get("BIO_INAT_PHOTO_CACHE", r"D:\bio-cache\photos\inat_photos"))
+PHOTO_MATCH_MIN_SIMILARITY = settings.EXACT_FRAME_SIMILARITY
+PHOTO_MATCH_WINDOW_S = settings.PHOTO_MATCH_WINDOW_S
+PHOTO_CACHE_DEFAULT = settings.INAT_PHOTO_CACHE
 PHOTO_USER_AGENT = "bio-automation-owner-sync/1.0 (own account rjmendez; read-only)"
 
 

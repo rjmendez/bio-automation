@@ -199,4 +199,6 @@ class TestBuildBundle:
             build_bundle("stock", [src], tmp_path / "out", name="s2")
 
     def test_default_download_dir_has_no_control_characters(self):
-        assert bundle.DEFAULT_DOWNLOAD_DIR == "D:/bio-cache/downloads"
+        from bio_automation import settings
+        assert bundle.DEFAULT_DOWNLOAD_DIR == str(settings.CACHE_DIR / "downloads")
+        assert not any(ord(c) < 32 for c in bundle.DEFAULT_DOWNLOAD_DIR)

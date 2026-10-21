@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import settings
+
 MIGRATIONS = (
     """
     CREATE TABLE messages (
@@ -38,7 +40,7 @@ MIGRATIONS = (
 )
 
 DEFAULT_LEASE_S = 60.0
-DEFAULT_DB = Path(os.environ.get("BIO_QUEUE_DB", os.path.join(os.environ.get("BIO_CACHE_DIR", r"D:\bio-cache"), "state", "queue.sqlite3")))
+DEFAULT_DB = settings.QUEUE_DB
 
 
 class QueueError(RuntimeError):

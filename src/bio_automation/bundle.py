@@ -21,9 +21,10 @@ from pathlib import Path
 
 from PIL import Image, ImageCms
 
+from . import settings
 from .render import INAT_MAX_BYTES, STOCK_MAX_BYTES, STOCK_MAX_PIXELS, STOCK_MIN_PIXELS
 
-DEFAULT_DOWNLOAD_DIR = "D:/bio-cache/downloads"      # deliverables, not originals; D: has the free space (forward slashes: no escape pitfalls)
+DEFAULT_DOWNLOAD_DIR = str(settings.DOWNLOAD_DIR)    # deliverables, not originals
 INAT_MAX_LONG_EDGE = 2048
 KINDS = ("inat", "stock")
 _JPEG_SUFFIXES = (".jpg", ".jpeg")
