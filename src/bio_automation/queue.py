@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from . import settings
+from . import settings, topics
 
 MIGRATIONS = (
     """
@@ -45,6 +45,11 @@ DEFAULT_DB = settings.QUEUE_DB
 
 class QueueError(RuntimeError):
     """The queue cannot be used as asked (newer schema than this code, unknown message, wrong status transition)."""
+
+
+class QueueLeaseLost(QueueError):
+    """ack()/fail() by a worker that no longer holds the message's claim (its lease expired and another worker reclaimed it, or it is
+    already done/failed/pending)."""
 
 
 @dataclass(frozen=True)
@@ -102,7 +107,9 @@ class Queue:
 
     # -- producer side
     def publish(self, topic: str, payload: dict) -> int:
-        """Enqueue one message, pending immediately. Returns its id."""
+        """Enqueue one message, pending immediately. Returns its id. A payload for a topic named in topics.PAYLOAD_KEYS must carry exactly
+        that topic's keys (topics.TopicPayloadError otherwise, and nothing is enqueued)."""
+        topics.check_payload(topic, payload)
         with self._lock:
             cur = self._db.execute(
                 "INSERT INTO messages (topic, payload, status, created, attempts) VALUES (?, ?, 'pending', ?, 0)",
@@ -140,19 +147,30 @@ class Queue:
                 raise
         return Message(id=m["id"], topic=m["topic"], payload=json.loads(m["payload"]), attempts=m["attempts"], created=m["created"])
 
-    def ack(self, message_id: int) -> None:
+    def _finish(self, message_id: int, worker_id: str, sql: str, args: tuple) -> None:
+        """Run a done/failed transition only while `worker_id` still holds the claim; otherwise say exactly why not."""
         with self._lock:
-            cur = self._db.execute("UPDATE messages SET status='done' WHERE id=? AND status='claimed'", (message_id,))
-            if cur.rowcount != 1:
-                raise QueueError(f"message {message_id} does not exist or is not claimed")
+            cur = self._db.execute(sql + " WHERE id=? AND status='claimed' AND claimed_by=?", (*args, message_id, worker_id))
+            if cur.rowcount == 1:
+                return
+            row = self._db.execute("SELECT status, claimed_by FROM messages WHERE id=?", (message_id,)).fetchone()
+        if row is None:
+            raise QueueError(f"message {message_id} does not exist")
+        if row["status"] == "claimed":
+            raise QueueLeaseLost(f"message {message_id} is claimed by {row['claimed_by']!r}, not by {worker_id!r}: its lease expired and "
+                                 "another worker took it over, so this worker's result is not recorded")
+        raise QueueLeaseLost(f"message {message_id} is not claimed (status {row['status']!r}, last claimed by {row['claimed_by']!r}): "
+                             f"{worker_id!r} no longer holds it")
 
-    def fail(self, message_id: int, error: str) -> None:
+    def ack(self, message_id: int, *, worker_id: str) -> None:
+        """Done -- only by the worker that holds the claim (claim()'s worker_id). A worker whose lease expired and whose message was
+        reclaimed gets QueueLeaseLost and changes nothing: the new claimant's result is the one that counts."""
+        self._finish(message_id, worker_id, "UPDATE messages SET status='done'", ())
+
+    def fail(self, message_id: int, error: str, *, worker_id: str) -> None:
         """Terminal: a worker decided this message cannot be processed. It stays in the table as status='failed' with its reason, visible
-        to requeue_failed() or direct inspection -- never silently dropped."""
-        with self._lock:
-            cur = self._db.execute("UPDATE messages SET status='failed', error=? WHERE id=? AND status='claimed'", (error, message_id))
-            if cur.rowcount != 1:
-                raise QueueError(f"message {message_id} does not exist or is not claimed")
+        to requeue_failed() or direct inspection -- never silently dropped. Like ack(), only the claim holder may do this (QueueLeaseLost)."""
+        self._finish(message_id, worker_id, "UPDATE messages SET status='failed', error=?", (error,))
 
     def requeue_failed(self, topic: str | None = None) -> int:
         """Move every `failed` message (in `topic`, or all topics) back to `pending` for another attempt. Returns how many."""

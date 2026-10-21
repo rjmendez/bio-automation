@@ -3,9 +3,14 @@
 Every render/import script goes through open_library(), which refuses to work on the wrong catalog: a Claude session's own `lightcraft`
 MCP server can be a non-persistent scratch catalog (ids from 1, gone on restart), and a desktop app holding the same library open would be a
 second writer. Both are checked before the first command runs.
+
+The engine's stderr goes to settings.LIGHTCRAFT_LOG_DIR/<library name>.stderr.log. With gpu=True the engine must report the GPU as enabled
+and available at start, and render_retouched() checks after every export that LightCraft did not redo it on the CPU (app.gpu lastFallback).
+A failed develop.reset and a CPU fallback are each appended to settings.LIGHTCRAFT_EVENTS and raised: never left silent.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import socket
@@ -14,10 +19,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import settings
+from .io import append_jsonl
 
 
 class LightCraftLibraryError(RuntimeError):
     """The engine is not on the persistent library this pipeline expects, or another writer may have it open."""
+
+
+class LightCraftGpuError(LightCraftLibraryError):
+    """GPU rendering was asked for, but the engine is not on the GPU, or a render was redone on the CPU."""
+
+
+class LightCraftResetError(LightCraftLibraryError):
+    """develop.reset of an edit this package made failed, or the photo still carries live edits afterwards: the library was left modified."""
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def record_event(kind: str, **fields) -> None:
+    """One JSON line in settings.LIGHTCRAFT_EVENTS (read at call time): what went wrong, where, when."""
+    append_jsonl(Path(settings.LIGHTCRAFT_EVENTS), {"kind": kind, "time": _now(), **fields})
 
 
 def check_library_info(info: dict, expected: Path) -> None:
@@ -32,6 +55,21 @@ def check_library_info(info: dict, expected: Path) -> None:
     damaged = (info.get("load") or {}).get("damaged")
     if damaged:
         raise LightCraftLibraryError(f"library at {actual!r} loaded damaged: {damaged!r}")
+
+
+def gpu_state(lib) -> dict:
+    """The engine's app.gpu state: {enabled, available, adapter, reason, lastFallback}."""
+    state = lib.call("cmd_app_gpu", {})
+    if not isinstance(state, dict):
+        raise LightCraftGpuError(f"app.gpu returned {state!r}, not a GPU state")
+    return state
+
+
+def check_gpu_state(state: dict) -> None:
+    """Raise unless the engine renders on the GPU (enabled and available)."""
+    if state.get("enabled") is not True or state.get("available") is not True:
+        raise LightCraftGpuError(f"GPU rendering was asked for but the engine is not on the GPU: enabled={state.get('enabled')!r}, "
+                                 f"available={state.get('available')!r}, reason={state.get('reason')!r}")
 
 
 def gui_listening(address: str = settings.LIGHTCRAFT_GUI, timeout: float = 0.5) -> bool:
@@ -62,15 +100,34 @@ class LightCraftLibrary:
             raise LightCraftLibraryError(f"the LightCraft app is listening on {settings.LIGHTCRAFT_GUI}; a headless engine on the same library "
                                          "would be a second writer (close the app, or pass allow_gui=True if it has another library open)")
         self.library = Path(library)
-        self._p = subprocess.Popen([str(cli), "mcp", "--library", str(self.library)], env=dict(os.environ, LIGHTCRAFT_GPU="1" if gpu else "0"),
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+        self.gpu = bool(gpu)
+        log_dir = Path(settings.LIGHTCRAFT_LOG_DIR)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self.stderr_log = log_dir / f"{self.library.name}.stderr.log"
+        self._stderr = open(self.stderr_log, "a", encoding="utf-8")
+        self._stderr.write(f"--- {_now()} engine start: library={self.library} gpu={self.gpu}\n")
+        self._stderr.flush()
+        try:
+            self._p = subprocess.Popen([str(cli), "mcp", "--library", str(self.library)],
+                                       env=dict(os.environ, LIGHTCRAFT_GPU="1" if gpu else "0"), stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=self._stderr, text=True, encoding="utf-8", bufsize=1)
+        except BaseException:
+            self._stderr.close()
+            raise
         self._n = 1
-        self._send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                    "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "bio-automation", "version": "1"}}})
-        self._recv(1)
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        self.info = self.call("cmd_library_info", {})
-        check_library_info(self.info, self.library)
+        try:
+            self._send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "bio-automation", "version": "1"}}})
+            self._recv(1)
+            self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            self.info = self.call("cmd_library_info", {})
+            check_library_info(self.info, self.library)
+            if self.gpu:
+                self.gpu_at_start = gpu_state(self)
+                check_gpu_state(self.gpu_at_start)
+        except BaseException:
+            self.close()
+            raise
 
     def _send(self, obj: dict) -> None:
         self._p.stdin.write(json.dumps(obj) + "\n")
@@ -80,7 +137,8 @@ class LightCraftLibrary:
         while True:
             line = self._p.stdout.readline()
             if not line:
-                raise LightCraftLibraryError(f"lightcraft engine exited (code {self._p.poll()}) before answering request {msg_id}")
+                raise LightCraftLibraryError(f"lightcraft engine exited (code {self._p.poll()}) before answering request {msg_id} "
+                                             f"(its stderr: {self.stderr_log})")
             d = json.loads(line)
             if d.get("id") == msg_id:
                 return d
@@ -100,6 +158,12 @@ class LightCraftLibrary:
                 self._p.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 self._p.kill()
+                self._p.wait(timeout=60)
+        for stream in (self._p.stdin, self._p.stdout):
+            if stream is not None and not stream.closed:
+                stream.close()
+        if not self._stderr.closed:
+            self._stderr.close()
 
     def __enter__(self):
         return self
@@ -119,32 +183,79 @@ EXPORT_SETTINGS = {"format": "jpeg", "quality": 95, "longEdge": 0, "colorSpace":
                    "conflict": "overwrite"}     # the Stock render: full size, q95, sRGB, metadata kept, location removed
 
 
+def reset_own_edit(lib, photo_id: int) -> None:
+    """Undo an edit this package made (develop.reset) and prove it: afterwards the photo must carry no live edits (has_live_edits), or a
+    later run would take the leftover for the owner's own edit. A failure is recorded (record_event 'reset_failed') and raised as
+    LightCraftResetError -- never swallowed."""
+    library = str(getattr(lib, "library", ""))
+    try:
+        lib.call("command_run", {"id": "develop.reset", "params": {"ids": [photo_id]}})
+        after = lib.call("cmd_photo_inspect", {"id": photo_id})
+    except Exception as e:
+        record_event("reset_failed", photo_id=photo_id, library=library, error=f"{type(e).__name__}: {e}")
+        raise LightCraftResetError(f"photo {photo_id}: develop.reset failed ({type(e).__name__}: {e}); the library keeps this package's "
+                                   f"edit (recorded in {settings.LIGHTCRAFT_EVENTS})") from e
+    if not isinstance(after, dict) or has_live_edits(after):
+        history = after.get("history") if isinstance(after, dict) else after
+        record_event("reset_failed", photo_id=photo_id, library=library, error=f"history after reset: {history!r}")
+        raise LightCraftResetError(f"photo {photo_id}: still carries live edits after develop.reset (history {history!r}); "
+                                   f"recorded in {settings.LIGHTCRAFT_EVENTS}")
+
+
+def _iso(ins: dict) -> int | None:
+    value = (ins.get("meta") or {}).get("iso")
+    try:
+        return int(float(value)) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 def render_retouched(lib, photo_id: int, out: Path, *, wait_s: float = 420, poll_s: float = 3, sleep=None, clock=None) -> dict:
-    """Export `photo_id` retouched to `out`: the owner's own edits as they are, else develop.auto (reset afterwards, so the library keeps
-    no edit this made). Returns {'owner_edited', 'iso'}; raises LightCraftLibraryError if no non-empty file appears within wait_s
-    (a headless export blocks until the file is written; the poll is only a fallback)."""
+    """Export `photo_id` retouched to `out`: the owner's own edits as they are, else develop.auto (reset afterwards and verified, so the
+    library keeps no edit this made: reset_own_edit). Returns {'owner_edited', 'iso', 'warnings'}: iso is None when the photo has no
+    readable ISO -- unknown, never 0 -- and warnings then says so. Raises LightCraftLibraryError if no non-empty file appears within wait_s
+    (a headless export blocks until the file is written; the poll is only a fallback).
+
+    With lib.gpu (an engine started with gpu=True), app.gpu is read before and after the export: a new lastFallback means LightCraft
+    redid this render on the CPU, so the file is deleted, the event recorded and LightCraftGpuError raised."""
     import time
     sleep, clock = sleep or time.sleep, clock or time.monotonic
-    ins = lib.call("cmd_photo_inspect", {"id": photo_id}) or {}
+    ins = lib.call("cmd_photo_inspect", {"id": photo_id})
+    if not isinstance(ins, dict):
+        raise LightCraftLibraryError(f"photo {photo_id}: photo.inspect returned {ins!r}: cannot tell whether the owner edited it")
     owner_edited = has_live_edits(ins)
+    on_gpu = getattr(lib, "gpu", False) is True
     touched = False
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
+        before = gpu_state(lib).get("lastFallback") if on_gpu else None
         if not owner_edited:
             lib.call("select_photos", {"ids": [photo_id], "active": photo_id})
+            touched = True                                   # set before the call: a partly applied auto edit must still be reset
             lib.call("command_run", {"id": "develop.auto", "params": {}})
-            touched = True
         res = lib.call("export", {"id": photo_id, "path": str(out), **EXPORT_SETTINGS})
         t0 = clock()
         while not (out.is_file() and out.stat().st_size > 0) and clock() - t0 < wait_s:   # headless exports block: normally already written
             sleep(poll_s)
         if not (out.is_file() and out.stat().st_size > 0):
             raise LightCraftLibraryError(f"photo {photo_id}: no export at {out} after {wait_s:.0f} s ({str(res)[:160]})")
+        if on_gpu:
+            after = gpu_state(lib)
+            fallback = after.get("lastFallback")
+            if (fallback and fallback != before) or after.get("enabled") is not True:
+                out.unlink()
+                record_event("cpu_fallback", photo_id=photo_id, library=str(getattr(lib, "library", "")), out=str(out),
+                             last_fallback=fallback, enabled=after.get("enabled"), reason=after.get("reason"))
+                raise LightCraftGpuError(f"photo {photo_id}: rendered on the CPU, not the GPU (lastFallback {fallback!r}, enabled "
+                                         f"{after.get('enabled')!r}); {out} deleted, recorded in {settings.LIGHTCRAFT_EVENTS}")
     finally:
         if touched:
-            lib.call("command_run", {"id": "develop.reset", "params": {"ids": [photo_id]}})
-    return {"owner_edited": owner_edited, "iso": ((ins.get("meta") or {}).get("iso") if isinstance(ins, dict) else None) or 0}
+            reset_own_edit(lib, photo_id)
+    iso = _iso(ins)
+    warnings = [] if iso is not None else [f"ISO unknown (photo.inspect meta.iso = {(ins.get('meta') or {}).get('iso')!r}): "
+                                           "high-ISO handling cannot be decided for this frame"]
+    return {"owner_edited": owner_edited, "iso": iso, "warnings": warnings}
 
 
 @dataclass(frozen=True)
