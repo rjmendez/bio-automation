@@ -28,7 +28,7 @@ from . import settings
 import numpy as np
 
 from .exif import _exiftool_binary
-from .inat import fetch_inat_observation
+from .inat import InatNotFoundError, fetch_inat_observation
 from .models import Observation
 from .pipeline import merge_inat_fields
 from .stock import MIN_KEYWORDS, build_metadata
@@ -54,7 +54,8 @@ class SnapshotStale(Exception):
 
 
 class LabelError(Exception):
-    """An observation could not be labelled for Stock (fetch failed, no taxon, ...)."""
+    """An observation could not be labelled for Stock: it no longer exists on iNat, has no taxon, or the label policy refuses it. A refusal
+    of the observation itself -- never a transient fetch problem (rate limit, server or network error), which propagates instead."""
 
 
 def load_snapshot(path: Path, *, max_age_days: float = MAX_SNAPSHOT_AGE_DAYS, now: float | None = None) -> list[dict]:
@@ -84,10 +85,12 @@ def label_policy(quality_grade: str | None, rank: str | None) -> str | None:
 
 def label_observation(obs_id: int, observed_on: str | None, *, fetch: Callable[[int], dict] = fetch_inat_observation) -> dict:
     """Fetch one observation live and build its Stock label {title, keywords, caption, category, category_id, taxon, grade, rank}.
-    Raises LabelError when it cannot be labelled (the reason is the message)."""
+    Raises LabelError when it cannot be labelled (the reason is the message). Only a missing observation (InatNotFoundError) is such a
+    refusal; every other fetch error (InatTransientError after its retries, any other API or network error) propagates unchanged, so the
+    caller fails or retries its work instead of recording a throttle as a permanent exclusion."""
     try:
         fetched = fetch(obs_id)
-    except Exception as e:                       # network / 404: report which observation, never label from nothing
+    except InatNotFoundError as e:               # the observation is gone: a real refusal, reported with its id
         raise LabelError(f"observation {obs_id}: fetch failed: {type(e).__name__}: {e}") from e
     return label_from_observation(merge_inat_fields(Observation(obsdate=observed_on), fetched), obs_id)
 

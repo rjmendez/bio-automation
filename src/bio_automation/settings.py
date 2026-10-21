@@ -54,6 +54,8 @@ LIGHTCRAFT_LIBRARY = env_path("BIO_LC_LIBRARY", HOME / "Pictures" / "LightCraft 
 LIGHTCRAFT_GUI = env("BIO_LC_GUI", "127.0.0.1:7980")                    # the desktop app's control channel
 LIGHTCRAFT_GPU = env("BIO_LC_GPU", "1") not in ("0", "false", "no")     # headless develop/export on the GPU (LightCraft falls back to CPU per render)
 LIGHTCRAFT_RENDER_DIR = env_path("BIO_LC_RENDER_DIR", CACHE_DIR / "lightcraft-render")   # one scratch library per parallel render engine
+LIGHTCRAFT_LOG_DIR = env_path("BIO_LC_LOG_DIR", CACHE_DIR / "logs" / "lightcraft")   # each engine's stderr (<library name>.stderr.log)
+LIGHTCRAFT_EVENTS = env_path("BIO_LC_EVENTS", LIGHTCRAFT_LOG_DIR / "events.jsonl")   # failed resets, CPU fallbacks: one JSON line each
 RENDER_ENGINES = int(env("BIO_RENDER_ENGINES", 4))       # measured 2026-10-21: 1/4/6/8 CPU engines = 12/19/22/23 renders/min; GPU engines contend
 RENDER_ENGINE_GPU = env("BIO_RENDER_ENGINE_GPU", "0") not in ("0", "false", "no")   # several engines on the shared GPUs were slower than one
 EXIFTOOL_ENV = "BIO_EXIFTOOL"
@@ -76,6 +78,11 @@ EXACT_FRAME_SIMILARITY = env_float("BIO_EXACT_FRAME_SIMILARITY", 0.97)   # the v
 SOURCE_OR_CROP_SIMILARITY = env_float("BIO_SOURCE_SIMILARITY", 0.93)     # the source raw of an uploaded crop / edit
 PHOTO_MATCH_WINDOW_S = env_float("BIO_PHOTO_MATCH_WINDOW_S", 15 * 60)    # time bracket when the frame's capture time is known
 DAY_BRACKET_S = env_float("BIO_DAY_BRACKET_S", 12 * 3600)                # bracket when only the day is known (frame stamped at local noon)
+
+# --- iNaturalist API: a 429 (rate limit), a 5xx or a network error is retried with exponential backoff (Retry-After honoured, capped)
+INAT_RETRIES = int(env("BIO_INAT_RETRIES", 5))                            # retries after the first attempt
+INAT_BACKOFF_S = env_float("BIO_INAT_BACKOFF_S", 2.0)                     # first wait; doubles each retry
+INAT_BACKOFF_MAX_S = env_float("BIO_INAT_BACKOFF_MAX_S", 120.0)           # no single wait is longer than this
 
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space

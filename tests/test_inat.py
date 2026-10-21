@@ -9,6 +9,7 @@ import pytest
 from bio_automation.inat import (
     InatApiError,
     InatNotFoundError,
+    InatTransientError,
     RateLimiter,
     fetch_inat_observation,
     fetch_taxon_lineage,
@@ -171,9 +172,96 @@ class TestDefaultGetTransport:
             raise urllib.error.HTTPError(request.full_url, 500, "Server Error", {}, None)
 
         monkeypatch.setattr(inat_module.urllib.request, "urlopen", fake_urlopen)
+        sleeps = []
 
         with pytest.raises(InatApiError, match="500"):
-            inat_module._default_get("https://api.inaturalist.org/v1/observations/1", "ua/1.0")
+            inat_module._default_get("https://api.inaturalist.org/v1/observations/1", "ua/1.0", sleep=sleeps.append, retries=1)
+        assert sleeps == [2.0]
+
+
+class ScriptedUrlopen:
+    """urllib.request.urlopen (the network dependency) replaying a script: an exception instance is raised, a dict is the JSON body."""
+
+    def __init__(self, *script):
+        self.script, self.urls = list(script), []
+
+    def __call__(self, request, timeout=30):
+        self.urls.append(request.full_url)
+        step = self.script.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        import io
+        import json
+
+        return io.BytesIO(json.dumps(step).encode("utf-8"))
+
+
+def http_error(code, retry_after=None):
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return urllib.error.HTTPError("https://api.inaturalist.org/v1/observations/7", code, "x", headers, None)
+
+
+URL = "https://api.inaturalist.org/v1/observations/7"
+
+
+class TestDefaultGetRetries:
+    """A 429 / 5xx / network error is transient: retried with backoff, and only when it outlasts every retry is it InatTransientError."""
+
+    @pytest.fixture(autouse=True)
+    def retry_settings(self, monkeypatch):
+        from bio_automation import settings
+
+        monkeypatch.setattr(settings, "INAT_RETRIES", 3)
+        monkeypatch.setattr(settings, "INAT_BACKOFF_S", 2.0)
+        monkeypatch.setattr(settings, "INAT_BACKOFF_MAX_S", 60.0)
+
+    def test_a_429_is_retried_with_doubling_backoff_until_it_succeeds(self):
+        import bio_automation.inat as inat_module
+
+        opener, sleeps = ScriptedUrlopen(http_error(429), http_error(429), {"results": [{"id": 7}]}), []
+        assert inat_module._default_get(URL, "ua", urlopen=opener, sleep=sleeps.append) == {"results": [{"id": 7}]}
+        assert sleeps == [2.0, 4.0]
+        assert opener.urls == [URL, URL, URL]
+
+    def test_retry_after_is_honoured_when_longer_and_capped(self):
+        import bio_automation.inat as inat_module
+
+        opener, sleeps = ScriptedUrlopen(http_error(429, "7"), http_error(503, "1"), http_error(429, "900"), {"results": []}), []
+        assert inat_module._default_get(URL, "ua", urlopen=opener, sleep=sleeps.append) == {"results": []}
+        assert sleeps == [7.0, 4.0, 60.0]                       # 7 > 2; backoff 4 > hint 1; hint 900 capped at 60
+
+    def test_a_persistent_429_is_a_transient_error_after_every_retry(self):
+        import bio_automation.inat as inat_module
+
+        opener, sleeps = ScriptedUrlopen(*[http_error(429)] * 4), []
+        with pytest.raises(InatTransientError, match=r"iNaturalist API error 429 for https://api\.inaturalist\.org/v1/observations/7, "
+                                                      r"still failing after 4 attempts"):
+            inat_module._default_get(URL, "ua", urlopen=opener, sleep=sleeps.append)
+        assert sleeps == [2.0, 4.0, 8.0]
+        assert len(opener.urls) == 4
+
+    def test_a_network_error_is_retried_too(self):
+        import bio_automation.inat as inat_module
+
+        opener, sleeps = ScriptedUrlopen(urllib.error.URLError("getaddrinfo failed"), TimeoutError("timed out"), {"results": [{"id": 7}]}), []
+        assert inat_module._default_get(URL, "ua", urlopen=opener, sleep=sleeps.append) == {"results": [{"id": 7}]}
+        assert sleeps == [2.0, 4.0]
+
+    def test_a_client_error_other_than_429_is_not_retried(self):
+        import bio_automation.inat as inat_module
+
+        opener, sleeps = ScriptedUrlopen(http_error(403), {"results": []}), []
+        with pytest.raises(InatApiError, match=r"iNaturalist API error 403 for "):
+            inat_module._default_get(URL, "ua", urlopen=opener, sleep=sleeps.append)
+        assert sleeps == [] and len(opener.urls) == 1
+
+    def test_a_403_is_not_reported_as_transient(self):
+        import bio_automation.inat as inat_module
+
+        with pytest.raises(InatApiError) as info:
+            inat_module._default_get(URL, "ua", urlopen=ScriptedUrlopen(http_error(403)), sleep=lambda s: None)
+        assert type(info.value) is InatApiError
+        assert str(info.value) == f"iNaturalist API error 403 for {URL}"
 
 
 class TestFetchTaxonLineage:

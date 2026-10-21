@@ -512,14 +512,29 @@ class TestTagQueue:
         assert by[4]["reasons"] == "group excluded: label: 13 keywords (need at least 15)"
         assert (by[4]["stock_candidate"], by[4]["title"]) == (False, "Amanita muscaria - Pennsylvania")      # the label stays visible so the owner sees why
 
-    def test_a_failed_fetch_excludes_the_observation(self, tmp_path, monkeypatch):
+    def test_a_deleted_observation_excludes_its_frames_with_the_reason(self, tmp_path, monkeypatch):
+        from bio_automation.inat import InatNotFoundError
+
         def fetch(i):
             if i == 22:
-                raise ConnectionError("offline")
+                raise InatNotFoundError("observation 22: no results in API response")
             return fake_fetch([])(i)
 
         by, _ = self.run(tmp_path, monkeypatch, fetch=fetch)
-        assert by[4]["reasons"] == "group excluded: observation 22: fetch failed: ConnectionError: offline"
+        assert by[4]["reasons"] == "group excluded: observation 22: fetch failed: InatNotFoundError: observation 22: no results in API response"
+        assert by[2]["stock_candidate"] is True
+
+    def test_a_rate_limited_fetch_fails_the_whole_tag_and_writes_no_csv(self, tmp_path, monkeypatch):
+        from bio_automation.inat import InatTransientError
+
+        def fetch(i):
+            if i == 22:
+                raise InatTransientError("iNaturalist API error 429 for https://api.inaturalist.org/v1/observations/22, still failing after 6 attempts")
+            return fake_fetch([])(i)
+
+        with pytest.raises(InatTransientError, match=r"iNaturalist API error 429 .*observations/22, still failing after 6 attempts"):
+            self.run(tmp_path, monkeypatch, fetch=fetch)
+        assert not (tmp_path / "out.csv").exists()               # no candidates csv with a throttle recorded as an exclusion
 
     def test_hand_flagged_observation_is_excluded(self, tmp_path, monkeypatch):
         by, _ = self.run(tmp_path, monkeypatch, excluded_groups={11: "flagged people_visible"})
@@ -595,9 +610,62 @@ class TestTagQueue:
         with pytest.raises(TypeError, match="observations"):
             stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", floor_path=tmp_path / "floor.json", workers=1)
 
+    # ---- the Stock size bar is judged on what ships (finding: sensor MP of an uncropped raw passed a 0.7 MP crop)
+    def test_an_existing_render_decides_the_size_not_the_sensor(self, tmp_path, monkeypatch):
+        from PIL import Image
+
+        render = tmp_path / "renders" / "2026" / "2026-07-31" / "2026-07-31_DSC_2.jpg"
+        render.parent.mkdir(parents=True)
+        Image.new("RGB", (840, 877)).save(render, "JPEG")                         # the crop the owner made: 0.74 MP
+        by, _ = self.run(tmp_path, monkeypatch, render_dir=tmp_path / "renders")
+        assert (by[2]["stock_candidate"], by[2]["reasons"], by[2]["mp"], by[2]["mp_source"]) == (False, "0.7 MP outside 4-100", 0.7, "render")
+        assert (by[1]["stock_candidate"], by[1]["mp"], by[1]["mp_source"]) == (True, 45.4, "sensor")      # positive twin: no render yet
+
+    def test_the_export_size_after_the_crop_is_used_when_the_producer_knows_it(self, tmp_path, monkeypatch):
+        self.seed(tmp_path)
+        items = read_json(tmp_path / "q.json")
+        items[0].update(out_w=1000, out_h=1000)                                  # 1.0 MP after the crop
+        items[1].update(out_w=4000, out_h=3000)                                  # 12.0 MP after the crop
+        write_json(tmp_path / "q.json", items)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(100.0, 0.0))
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1)
+        by = {r["id"]: r for r in rows}
+        assert (by[1]["stock_candidate"], by[1]["reasons"], by[1]["mp_source"]) == (False, "1.0 MP outside 4-100", "export")
+        assert (by[2]["stock_candidate"], by[2]["mp"], by[2]["mp_source"]) == (True, 12.0, "export")
+
+    # ---- a NEF and its Enhanced-NR DNG are one frame
+    def tag_with_raws(self, tmp_path, monkeypatch, raws):
+        self.seed(tmp_path)
+        items = read_json(tmp_path / "q.json")
+        for it in items:
+            it["raw"] = raws.get(it["lc_id"], it["raw"])
+        write_json(tmp_path / "q.json", items)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(100.0, 0.0))
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1)
+        return {r["id"]: r for r in rows}
+
+    def test_a_nef_and_its_enhanced_nr_dng_of_one_observation_are_one_candidate(self, tmp_path, monkeypatch):
+        by = self.tag_with_raws(tmp_path, monkeypatch, {1: "2026/d/DSC_1 (2026_07_31 13_00_00 UTC).nef",
+                                                        2: "2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng"})
+        assert (by[2]["stock_candidate"], by[2]["reasons"]) == (True, "")                     # the Enhanced-NR variant is kept
+        assert (by[1]["stock_candidate"], by[1]["reasons"]) == (
+            False, "same frame as 2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng (id 2), which is the candidate")
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [2, 4]
+
+    def test_the_same_stem_matched_to_another_observation_is_not_collapsed(self, tmp_path, monkeypatch):
+        by = self.tag_with_raws(tmp_path, monkeypatch, {4: "2026/d/DSC_1-Enhanced-NR.dng"})       # frame 4 is observation 22's photo
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 2, 4]
+
+    def test_different_frames_of_one_observation_both_stay(self, tmp_path, monkeypatch):
+        by = self.tag_with_raws(tmp_path, monkeypatch, {1: "2026/d/DSC_1.NEF", 2: "2026/d/DSC_10-Enhanced-NR.dng"})
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 2, 4]
+
 
 LABEL_COLS = {"title": "Warty Harvestman Leiobunum verrucosum - Pennsylvania", "caption": "Warty Harvestman photographed at Pennsylvania, US.",
               "keywords": "|".join(f"kw{i}" for i in range(16)), "category": "Animals", "category_id": "1"}
+
 
 
 class TestPublish:
@@ -607,8 +675,12 @@ class TestPublish:
 
     @pytest.fixture(autouse=True)
     def floor_file(self, tmp_path, monkeypatch):
+        from bio_automation import settings
+
         write_json(tmp_path / "pubfloor.json", FLOOR)
         monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "pubfloor.json")
+        monkeypatch.setattr(settings, "GALLERY_DIR", tmp_path / "settings-main")              # the default other galleries: never the live ones
+        monkeypatch.setattr(settings, "RESULTS_GALLERY_DIR", tmp_path / "settings-results")
 
     def csv_file(self, tmp_path, rows=None):
         p = tmp_path / "c.csv"
@@ -652,7 +724,8 @@ class TestPublish:
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_2.jpg")                       # a render exists for the non-candidate: still not shipped
         self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
         out = self.publish(tmp_path)
-        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": [], "adobe_csv_rows": 2, "queued_reindex": False}
+        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": [], "refused": [], "skipped": [], "adobe_csv_rows": 2,
+                       "queued_reindex": False, "not_published_csv": str(tmp_path / "render" / "not_published" / "adobe_stock_metadata.csv")}
         link = tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg"
         assert os.path.samefile(src1, link)
         assert inat_stock.read_label(link) == {"title": LABEL_COLS["title"], "caption": LABEL_COLS["caption"], "keywords": LABEL_COLS["keywords"].split("|")}
@@ -777,6 +850,147 @@ class TestPublish:
         out = self.publish(tmp_path, [self.ROWS[0]])
         assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "JPEG quality below 95 (quantisation table coarser than q95)"}]
 
+    # ---- a gallery file from another source is never replaced or duplicated
+    def foreign(self, tmp_path, rel, data=b"another pipeline's render"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return p
+
+    def not_published(self, tmp_path):
+        with open(tmp_path / "render" / "not_published" / "adobe_stock_metadata.csv", newline="", encoding="utf-8") as f:
+            return [(r["raw"], r["name"], r["status"], r["reason"]) for r in csv.DictReader(f)]
+
+    def test_a_different_file_under_the_same_gallery_name_is_refused_and_left_alone(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        theirs = self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert theirs.read_bytes() == b"another pipeline's render"              # not unlinked, not replaced
+        assert (out["linked"], out["adobe_csv_rows"], out["failed"]) == (0, 0, [])
+        [refusal] = out["refused"]
+        assert refusal["raw"] == "2026/d/DSC_1.NEF"
+        assert refusal["error"].startswith(f"the gallery already holds a different file under this name: {theirs} (25 B, modified ")
+        assert refusal["error"].endswith(", 1 link); not replaced (delete it first if this render should replace it)")
+        assert self.not_published(tmp_path) == [("2026/d/DSC_1.NEF", "2026-07-31_DSC_1.jpg", "refused", refusal["error"])]
+        theirs.unlink()                                                          # positive twin: once it is gone, the render is linked
+        again = self.publish(tmp_path, [self.ROWS[0]])
+        assert (again["linked"], again["refused"]) == (1, [])
+        assert os.path.samefile(tmp_path / "render/2026/2026-07-31/2026-07-31_DSC_1.jpg", theirs)
+        assert self.not_published(tmp_path) == []
+
+    def test_the_frame_already_in_this_gallery_under_another_name_is_refused(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        other = self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1_555.jpg")      # its Enhanced-NR render, published earlier
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert out["linked"] == 0
+        assert [e["error"].split(" (")[0] for e in out["refused"]] == [f"this frame is already published as {other}"]
+        assert not (tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg").exists()
+
+    def test_a_different_frame_with_a_longer_counter_is_not_the_same_frame(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_10.jpg")
+        self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1_x.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert (out["linked"], out["refused"]) == (1, [])
+
+    def test_the_frame_already_in_another_gallery_is_refused(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
+        main = self.foreign(tmp_path, "main/2026/2026-07/2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, other_galleries=[tmp_path / "main"])
+        assert [(e["raw"], e["error"].split(" (")[0]) for e in out["refused"]] == [("2026/d/DSC_1.NEF", f"this frame is already published as {main}")]
+        assert out["linked"] == 1 and (tmp_path / "gallery/2026/2026-08/2026-08-01_DSC_3.jpg").is_file()      # the other frame is linked
+        assert not (tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg").exists()
+
+    def test_the_other_galleries_default_to_the_main_and_results_galleries_from_settings(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        main = self.foreign(tmp_path, "settings-main/2026/2026-07/2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert [e["error"].split(" (")[0] for e in out["refused"]] == [f"this frame is already published as {main}"]
+
+    def test_publishing_into_the_main_gallery_itself_does_not_count_it_as_another(self, tmp_path):
+        from bio_automation import settings
+
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render",
+                                              settings.GALLERY_DIR)
+        assert (out["linked"], out["refused"]) == (1, [])
+        out2 = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render",
+                                               settings.GALLERY_DIR)
+        assert (out2["linked"], out2["refused"], out2["adobe_csv_rows"]) == (1, [], 1)        # its own link, refreshed (re-embedding)
+        assert os.path.samefile(tmp_path / "render/2026/2026-07-31/2026-07-31_DSC_1.jpg",
+                                settings.GALLERY_DIR / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg")
+
+    # ---- a NEF and its Enhanced-NR DNG in one csv are published once
+    def test_a_nef_and_enhanced_nr_pair_is_published_once_as_the_enhanced_nr(self, tmp_path):
+        nef = {"id": "630", "obs_id": "289244981", "sharp": "62.92", "raw": "2025/2025-06-08/DSC_4296 (2025_06_08 22_03_07 UTC).nef",
+               "day": "2025-06-08", "stock_candidate": "True", **LABEL_COLS}
+        dng = {**nef, "id": "629", "sharp": "62.85", "raw": "2025/2025-06-08/DSC_4296-Enhanced-NR (2025_06_12 13_01_33 UTC).dng"}
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4296_630.jpg")
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4296_629.jpg")
+        out = self.publish(tmp_path, [nef, dng])
+        assert (out["linked"], out["refused"]) == (1, [])
+        assert out["skipped"] == [{"raw": nef["raw"], "error": f"same frame as {dng['raw']} (id 629), which is published instead"}]
+        assert sorted(p.name for p in (tmp_path / "gallery/2025/2025-06").iterdir()) == ["2025-06-08_DSC_4296_629.jpg"]
+        assert self.not_published(tmp_path) == [(nef["raw"], "2025-06-08_DSC_4296_630.jpg", "skipped", out["skipped"][0]["error"])]
+
+    def test_two_different_frames_of_one_observation_are_both_published(self, tmp_path):
+        a = {"id": "630", "obs_id": "9", "sharp": "1", "raw": "2025/2025-06-08/DSC_4296.nef", "day": "2025-06-08", "stock_candidate": "True",
+             **LABEL_COLS}
+        b = {**a, "id": "631", "raw": "2025/2025-06-08/DSC_4297.nef"}
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4296.jpg")
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4297.jpg")
+        out = self.publish(tmp_path, [a, b])
+        assert (out["linked"], out["skipped"], out["refused"]) == (2, [], [])
+
+    # ---- every candidate that is not published is a record, not only a log line
+    def test_failed_and_missing_candidates_are_written_with_their_reason(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", size=(840, 877))           # a 0.74 MP crop
+        out = self.publish(tmp_path, adobe_csv=tmp_path / "adobe" / "2026-07-31.csv")
+        assert out["not_published_csv"] == str(tmp_path / "adobe" / "not_published" / "2026-07-31.csv")
+        with open(out["not_published_csv"], newline="", encoding="utf-8") as f:
+            rows = [(r["raw"], r["name"], r["status"], r["reason"]) for r in csv.DictReader(f)]
+        assert rows == [("2026/d/DSC_1.NEF", "2026-07-31_DSC_1.jpg", "failed", "840x877 = 0.74 MP is below the 4 MP minimum"),
+                        ("2026/d/DSC_3.NEF", "2026-08-01_DSC_3.jpg", "missing",
+                         f"no retouched render at {tmp_path / 'render' / '2026' / '2026-08-01' / '2026-08-01_DSC_3.jpg'}")]
+
+    # ---- the live layout: publishing into the results gallery through the real junction from gallery_mount
+    def test_publish_through_the_results_junction_lands_on_the_results_gallery(self, tmp_path):
+        from bio_automation.gallery_mount import ensure_results_mount
+
+        class FakeQueue:
+            def __init__(self):
+                self.calls = []
+
+            def publish(self, topic, payload):
+                self.calls.append((topic, payload))
+
+        (tmp_path / "gallery").mkdir()                                            # the PiGallery2 media folder exists on the live layout
+        mount = ensure_results_mount(gallery_dir=tmp_path / "gallery", target=tmp_path / "results-gallery", name="results")
+        assert os.path.isjunction(mount)
+        src = self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        q = FakeQueue()
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", mount,
+                                              queue=q, other_galleries=[tmp_path / "gallery"])
+        assert (out["linked"], out["refused"], out["failed"]) == (1, [], [])
+        assert os.path.samefile(src, mount / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg")
+        assert os.path.samefile(src, tmp_path / "results-gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg")   # the file is on the target side
+        assert os.stat(src).st_nlink == 2
+        assert q.calls == [("gallery.reindex", {"gallery_dir": str(mount), "folders": ["2026/2026-07"]})]
+        assert str(q.calls[0][1]["gallery_dir"]).endswith("\\results")
+
+    def test_through_the_junction_a_frame_already_in_the_main_gallery_is_refused(self, tmp_path):
+        from bio_automation.gallery_mount import ensure_results_mount
+
+        (tmp_path / "gallery").mkdir()                                            # the PiGallery2 media folder exists on the live layout
+        mount = ensure_results_mount(gallery_dir=tmp_path / "gallery", target=tmp_path / "results-gallery", name="results")
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        main = self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1.jpg")       # already published from the F: renders
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", mount,
+                                              other_galleries=[tmp_path / "gallery"])
+        assert [e["error"].split(" (")[0] for e in out["refused"]] == [f"this frame is already published as {main}"]
+        assert not (tmp_path / "results-gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg").exists()
+
 
 class TestCli:
     def args(self, *extra):
@@ -877,9 +1091,11 @@ class TestCli:
         assert cli.cmd_stock_publish(args) == 1
         result = {**result, "failed": [], "missing": ["m"]}
         assert cli.cmd_stock_publish(args) == 1                                           # a missing render is also not a clean run
-        result = {**result, "missing": []}
-        assert cli.cmd_stock_publish(args) == 0
-        assert len(seen) == 3
+        result = {**result, "missing": [], "refused": [{"raw": "y", "error": "the gallery already holds a different file under this name"}]}
+        assert cli.cmd_stock_publish(args) == 1                                           # a refused gallery collision is not a clean run
+        result = {**result, "refused": [], "skipped": [{"raw": "z", "error": "same frame as w"}]}
+        assert cli.cmd_stock_publish(args) == 0                                           # a skipped NEF/Enhanced-NR twin is
+        assert len(seen) == 4
         for k in seen:
             assert isinstance(k.pop("queue"), Queue)                                      # a real queue is built by default, on every call
             assert k == {"plain_decode": False, "floor_path": None, "adobe_csv": None}

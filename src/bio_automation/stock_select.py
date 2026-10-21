@@ -290,7 +290,7 @@ KEYWORD_SEP = "|"
 def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: list[dict], fetch=None, floor_path: Path | None = None,
               workers: int = 3, max_iso: int = DEFAULT_MAX_ISO, top_per_group: int | None = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
               excluded_groups: dict | None = None, embedder=None, photo_cache: Path | None = None, get_bytes=None,
-              min_similarity: float | None = None, window: float | None = None) -> list[dict]:
+              min_similarity: float | None = None, window: float | None = None, render_dir: Path | None = None) -> list[dict]:
     """Score every frame of a LightCraft queue (items with lc_id, raw, day, t = capture epoch, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
 
     `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED, and the iNat photos decide which frames count: each photo of
@@ -300,6 +300,14 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     uploaded photo, or whose observation cannot be labelled (no taxon, casual), is excluded with the reason. top_per_group (default: none) can still cap
     how many frames of one observation are kept.
     excluded_groups (keyed by observation id here): see decide().
+
+    The Stock size bar (4-100 MP) is judged on what will ship, not on the uncropped sensor: the frame's retouched render when one exists at
+    render_dir/<year>/<day>/<render_name> (its pixel size), else the item's out_w/out_h (the export size after the crop, when the producer
+    knows it), else the sensor w/h. Each row says which in `mp_source` ('render' | 'export' | 'sensor').
+
+    A NEF and its Lightroom '-Enhanced-NR' DNG are the same frame: when both are candidates for one observation, only one stays a candidate
+    (collapse_raw_variants: the Enhanced-NR one) and the other gets the reason. Transient iNat errors (inat.InatTransientError, or any error
+    other than a deleted observation) propagate: no csv is written and the caller's message fails, so it can be retried.
     """
     from PIL import Image
 
@@ -365,18 +373,20 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
             w.writerow(r)
             f.flush()
             cached[int(r["lc_id"])] = {k: str(v) for k, v in r.items()}
-    frames, scores = [], {}
+    frames, scores, mp_source = [], {}, {}
     for x in queue:
         c = cached.get(x["lc_id"])
         scored = c is not None and not c["error"] and c["sharp"] != ""
         scores[x["lc_id"]] = FrameScore(float(c["sharp"]), float(c["clip"])) if scored else None
         iso = c["iso"] if c else ""
-        frames.append({"id": x["lc_id"], "group": matches.get(x["lc_id"], -x["lc_id"]), "mp": x["w"] * x["h"] / 1e6,
+        mp, mp_source[x["lc_id"]] = shipped_megapixels(x, render_dir)
+        frames.append({"id": x["lc_id"], "group": matches.get(x["lc_id"], -x["lc_id"]), "mp": mp,
                        "iso": int(float(iso)) if iso not in ("", "None", None) else None, "located": False})          # the retouched export removes location (and publish checks the file), so a queue location is irrelevant
     rows = decide(frames, scores, floor, max_iso=max_iso, top_per_group=top_per_group, excluded_groups=exclusions)
     by_id = {x["lc_id"]: x for x in queue}
     for r in rows:
         r["day"], r["raw"] = by_id[r["id"]]["day"], by_id[r["id"]]["raw"]
+        r["mp_source"] = mp_source[r["id"]]
         r["reasons"] = " | ".join(r["reasons"])
         obs_id = matches.get(r["id"])
         lab = labels.get(obs_id) if obs_id else None
@@ -389,6 +399,10 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
             r.update({"taxon": lab["taxon"], "grade": lab["grade"], "rank": lab["rank"], "title": lab["title"],
                       "keywords": KEYWORD_SEP.join(lab["keywords"]), "caption": lab["caption"], "category": lab["category"],
                       "category_id": lab["category_id"]})
+    for dropped_id, kept in collapse_raw_variants([r for r in rows if r["stock_candidate"]]).items():
+        r = next(r for r in rows if r["id"] == dropped_id)
+        r["stock_candidate"] = False
+        r["reasons"] = f"same frame as {kept['raw']} (id {kept['id']}), which is the candidate"
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, list(rows[0].keys()))
         w.writeheader()
@@ -397,6 +411,52 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
 
 
 # ---- publish: retouched full-size renders, validated against the Stock standard, hardlinked into the review gallery ----
+
+def shipped_megapixels(item: dict, render_dir: Path | None = None) -> tuple[float, str]:
+    """(MP, source) of what a queue item will ship as: its render under render_dir if present ('render'), else out_w x out_h ('export'),
+    else the sensor w x h ('sensor')."""
+    if render_dir is not None:
+        render = Path(render_dir) / item["day"][:4] / item["day"] / render_name({"raw": item["raw"], "day": item["day"], "id": item["lc_id"]})
+        if render.is_file():
+            from PIL import Image
+
+            with Image.open(render) as im:
+                return im.width * im.height / 1e6, "render"
+    if item.get("out_w") and item.get("out_h"):
+        return item["out_w"] * item["out_h"] / 1e6, "export"
+    return item["w"] * item["h"] / 1e6, "sensor"
+
+
+ENHANCED_SUFFIX = "-Enhanced-NR"
+
+
+def frame_stem(raw: str) -> str:
+    """The camera frame a raw belongs to: its stem without a Lightroom export stamp '(...)' or the '-Enhanced-NR' suffix, so a NEF and the
+    Enhanced-NR DNG made from it share one stem ('DSC_4296 (2025_06_08 22_03_07 UTC).nef' and 'DSC_4296-Enhanced-NR (...).dng': DSC_4296)."""
+    return re.sub(r"\s*\(.*?\)", "", Path(raw).stem).replace(ENHANCED_SUFFIX, "").strip()
+
+
+def collapse_raw_variants(candidates: list[dict]) -> dict:
+    """{dropped row id: kept row} for candidates that are one frame twice: same day, same frame_stem, same obs_id. The kept one is the
+    Enhanced-NR variant (the owner's own denoised version), then the sharper, then the lower id; every other is dropped."""
+    def sharp(r):
+        try:
+            return float(r.get("sharp") or 0.0)
+        except ValueError:
+            return 0.0
+
+    groups: dict = {}
+    for r in candidates:
+        groups.setdefault((r["day"], frame_stem(r["raw"]), str(r.get("obs_id", ""))), []).append(r)
+    dropped = {}
+    for rows in groups.values():
+        if len(rows) < 2:
+            continue
+        rows = sorted(rows, key=lambda r: (ENHANCED_SUFFIX not in Path(r["raw"]).stem, -sharp(r), int(r["id"])))
+        for r in rows[1:]:
+            dropped[r["id"]] = rows[0]
+    return dropped
+
 
 def render_name(row: dict) -> str:
     """<day>_<raw stem>.jpg -- camera counters wrap, so the day keeps names unique (same convention as the existing gallery files).
@@ -417,8 +477,35 @@ def row_label(row: dict) -> dict:
             "category": row.get("category", ""), "category_id": int(row["category_id"]) if row.get("category_id") else None}
 
 
+NOT_PUBLISHED_FIELDS = ("raw", "name", "status", "reason")
+
+
+def _describe(path: Path) -> str:
+    st = path.stat()
+    import datetime as dt
+
+    when = dt.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")
+    return f"{path} ({st.st_size} B, modified {when}, {st.st_nlink} link{'s' if st.st_nlink != 1 else ''})"
+
+
+def _same_frame_files(folder: Path, day: str, stem: str) -> list[Path]:
+    """Gallery files in `folder` that are this frame under any of the names render_name gives it: <day>_<stem>.jpg, <day>_<stem>_<id>.jpg."""
+    if not folder.is_dir():
+        return []
+    pattern = re.compile(rf"{re.escape(day)}_{re.escape(stem)}(_\d+)?\.jpg", re.IGNORECASE)
+    return sorted(p for p in folder.iterdir() if pattern.fullmatch(p.name))
+
+
+def _default_other_galleries(gallery_dir: Path) -> list[Path]:
+    """The galleries other than `gallery_dir` that a frame may already be published in: the main gallery and the results gallery
+    (settings, read at call time), minus whichever of them gallery_dir is (the results mount resolves to the results gallery)."""
+    mine = os.path.normcase(os.path.realpath(gallery_dir))
+    return [Path(g) for g in (settings.GALLERY_DIR, settings.RESULTS_GALLERY_DIR) if os.path.normcase(os.path.realpath(g)) != mine]
+
+
 def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery_dir: Path, *, plain_decode: bool = False,
-                       floor_path: Path | None = None, adobe_csv: Path | None = None, queue: object | None = None) -> dict:
+                       floor_path: Path | None = None, adobe_csv: Path | None = None, queue: object | None = None,
+                       other_galleries: list[Path] | None = None, not_published_csv: Path | None = None) -> dict:
     """Link every stock_candidate row's RETOUCHED render into gallery_dir/<year>/<year-month>/ (the layout of the existing Stock gallery).
 
     The retouched render (LightCraft develop + export, full size, q95, sRGB, no location) is produced outside this package and expected at
@@ -427,8 +514,17 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
 
     Nothing is linked without its Stock label: each render must pass bundle.validate_jpeg('stock'), the exposure floor (median luma >= luma_p10 of
     the approved exports) and inat_stock.label_problems; its title/caption/keywords are then written INTO the file (XMP + IPTC), read back and
-    compared, and only then is it hardlinked (a re-run replaces a stale link). violations go to 'failed'. The Adobe Stock CSV of every passing
-    file is written to adobe_csv (default render_dir/adobe_stock_metadata.csv).
+    compared, and only then is it hardlinked. violations go to 'failed'. The Adobe Stock CSV of every passing file is written to adobe_csv
+    (default render_dir/adobe_stock_metadata.csv).
+
+    A gallery file is never replaced or duplicated from another source: 'refused' lists every candidate whose gallery name already holds a
+    file that is not this render's own earlier link (another pipeline's file, or an older render of it), and every candidate whose frame is
+    already in this gallery or in one of other_galleries (default: the main and the results gallery, see _default_other_galleries) under
+    another of its names. Only this render's own link is refreshed (re-embedding replaces the render's inode). A NEF and its Enhanced-NR DNG
+    of one frame in the same csv are published once ('skipped' names the other: collapse_raw_variants).
+
+    Every candidate that is not linked (missing, failed, refused, skipped) is written with its reason to not_published_csv (default
+    <adobe_csv folder>/not_published/<adobe_csv name>), rewritten on every run, so the record exists outside the log.
 
     `queue` (anything with a `.publish(topic, payload)`, e.g. bio_automation.queue.Queue) turns "someone has to remember to tell the gallery"
     into a real handoff: when this call links at least one new file, it publishes ONE 'gallery.reindex' message naming every <year>/<year-month>
@@ -442,21 +538,47 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
     from .render import ExportBoundsError, export_stock_jpeg
 
     floor = require_complete_floor(load_floor(floor_path))
+    gallery_dir = Path(gallery_dir)
+    others = _default_other_galleries(gallery_dir) if other_galleries is None else [Path(g) for g in other_galleries]
+    adobe_csv = Path(adobe_csv or Path(render_dir) / "adobe_stock_metadata.csv")
+    not_published_csv = Path(not_published_csv or adobe_csv.parent / "not_published" / adobe_csv.name)
 
     with open(rows_csv, newline="", encoding="utf-8") as f:
         picks = [r for r in csv.DictReader(f) if r["stock_candidate"] == "True"]
     decoded = linked = 0
-    missing, failed, shipped = [], [], []
+    missing, failed, refused, skipped, shipped = [], [], [], [], []
+    record: list[dict] = []
     touched_folders: set[str] = set()
+    twins = collapse_raw_variants([r for r in picks if "id" in r])
     for r in picks:
         name = render_name(r)
+        if r.get("id") in twins:
+            kept = twins[r["id"]]
+            skipped.append({"raw": r["raw"], "error": f"same frame as {kept['raw']} (id {kept['id']}), which is published instead"})
+            record.append({"raw": r["raw"], "name": name, "status": "skipped", "reason": skipped[-1]["error"]})
+            continue
         dest = Path(render_dir) / r["day"][:4] / r["day"] / name
-        link = Path(gallery_dir) / r["day"][:4] / r["day"][:7] / name
+        sub = Path(r["day"][:4]) / r["day"][:7]
+        link = gallery_dir / sub / name
         label = row_label(r)
         try:
+            own = link.exists() and dest.is_file() and os.path.samefile(dest, link)
+            if link.exists() and not own:
+                refused.append({"raw": r["raw"], "error": f"the gallery already holds a different file under this name: {_describe(link)}; "
+                                                          "not replaced (delete it first if this render should replace it)"})
+                record.append({"raw": r["raw"], "name": name, "status": "refused", "reason": refused[-1]["error"]})
+                continue
+            stem = frame_stem(r["raw"])
+            elsewhere = [p for p in _same_frame_files(gallery_dir / sub, r["day"], stem) if p != link]
+            elsewhere += [p for g in others for p in _same_frame_files(g / sub, r["day"], stem)]
+            if elsewhere:
+                refused.append({"raw": r["raw"], "error": "this frame is already published as " + ", ".join(_describe(p) for p in elsewhere)})
+                record.append({"raw": r["raw"], "name": name, "status": "refused", "reason": refused[-1]["error"]})
+                continue
             if not (dest.is_file() and dest.stat().st_size):
                 if not plain_decode:
                     missing.append(r["raw"])
+                    record.append({"raw": r["raw"], "name": name, "status": "missing", "reason": f"no retouched render at {dest}"})
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 export_stock_jpeg(Path(raw_root) / r["raw"], dest)
@@ -469,14 +591,16 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
                 problems.append(f"under-exposed: median luma {luma:.1f} < floor {floor['luma_p10']:.1f}")
             if problems:
                 failed.append({"raw": r["raw"], "error": "; ".join(problems)})
+                record.append({"raw": r["raw"], "name": name, "status": "failed", "reason": failed[-1]["error"]})
                 continue
             embed_label(dest, label)
             back = read_label(dest)
             if (back["title"], back["caption"], back["keywords"]) != (label["title"], label["caption"], label["keywords"]):
                 failed.append({"raw": r["raw"], "error": "embedded metadata does not read back as written"})
+                record.append({"raw": r["raw"], "name": name, "status": "failed", "reason": failed[-1]["error"]})
                 continue
             link.parent.mkdir(parents=True, exist_ok=True)
-            if link.exists() and not os.path.samefile(dest, link):
+            if own and not os.path.samefile(dest, link):         # this render's own earlier link: re-embedding gave the render a new inode
                 link.unlink()
             if not link.exists():
                 os.link(dest, link)
@@ -485,11 +609,18 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
             shipped.append((name, label))
         except (ExportBoundsError, LabelError, OSError, ValueError) as e:
             failed.append({"raw": r["raw"], "error": f"{type(e).__name__}: {e}"})
+            record.append({"raw": r["raw"], "name": name, "status": "failed", "reason": failed[-1]["error"]})
     if shipped:
-        write_adobe_csv(shipped, Path(adobe_csv or Path(render_dir) / "adobe_stock_metadata.csv"))
+        write_adobe_csv(shipped, adobe_csv)
+    not_published_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(not_published_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, NOT_PUBLISHED_FIELDS)
+        w.writeheader()
+        w.writerows(record)
     queued = False
     if queue is not None and touched_folders:
         queue.publish(topics.GALLERY_REINDEX, {"gallery_dir": str(gallery_dir), "folders": sorted(touched_folders)})
         queued = True
     return {"candidates": len(picks), "plain_decoded": decoded, "linked": linked, "missing": missing, "failed": failed,
-            "adobe_csv_rows": len(shipped), "queued_reindex": queued}
+            "refused": refused, "skipped": skipped, "adobe_csv_rows": len(shipped), "queued_reindex": queued,
+            "not_published_csv": str(not_published_csv)}

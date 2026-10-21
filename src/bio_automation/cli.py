@@ -565,7 +565,7 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
         if queue is not None:
             queue.close()
     print(json.dumps(result, indent=2))
-    return 1 if result["failed"] or result["missing"] else 0
+    return 1 if result["failed"] or result["missing"] or result.get("refused") else 0      # skipped NEF/Enhanced-NR twins are not a failure
 
 
 def cmd_process(args: argparse.Namespace) -> int:

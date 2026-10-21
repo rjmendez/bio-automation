@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
 from typing import Callable
+
+from . import settings
 
 INAT_API_BASE = "https://api.inaturalist.org/v1"
 
@@ -16,6 +19,11 @@ USER_AGENT_DEFAULT = "bio-automation/0.1 (+https://github.com/; read-only iNatur
 
 class InatApiError(Exception):
     """A non-2xx response from the iNaturalist API that isn't a 404."""
+
+
+class InatTransientError(InatApiError):
+    """A rate limit (429), a server error (5xx) or a network failure that was still there after every retry. It says nothing about the
+    observation itself: a caller must fail or retry its work, never record it as a refusal of that observation."""
 
 
 class InatNotFoundError(InatApiError):
@@ -67,18 +75,52 @@ class RateLimiter:
 _default_rate_limiter = RateLimiter(min_interval=1.1)
 
 
-def _default_get(url: str, user_agent: str) -> dict:
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _retry_after(exc: urllib.error.HTTPError) -> float | None:
+    """The Retry-After header in seconds (the API sends a number), or None when it is absent or not a number."""
+    value = (exc.headers or {}).get("Retry-After")
+    try:
+        return max(0.0, float(value)) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _default_get(url: str, user_agent: str, *, urlopen: Callable | None = None, sleep: Callable[[float], None] | None = None,
+                 retries: int | None = None, backoff_s: float | None = None, backoff_max_s: float | None = None) -> dict:
     """Real transport: one unauthenticated GET. This is the network boundary
     -- tests pass their own get_fn instead of exercising this against the
-    live API."""
+    live API.
+
+    404 raises InatNotFoundError at once. 429, 5xx and network errors (URLError, timeouts) are retried up to settings.INAT_RETRIES times,
+    waiting settings.INAT_BACKOFF_S doubling each time (or the response's Retry-After, if longer), never more than settings.INAT_BACKOFF_MAX_S
+    per wait; when they persist, InatTransientError. Any other HTTP status raises InatApiError at once."""
+    urlopen = urlopen or urllib.request.urlopen
+    sleep = sleep or time.sleep
+    retries = settings.INAT_RETRIES if retries is None else retries
+    wait = settings.INAT_BACKOFF_S if backoff_s is None else backoff_s
+    cap = settings.INAT_BACKOFF_MAX_S if backoff_max_s is None else backoff_max_s
     request = urllib.request.Request(url, headers={"User-Agent": user_agent})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise InatNotFoundError(f"observation not found (404): {url}") from exc
-        raise InatApiError(f"iNaturalist API error {exc.code} for {url}") from exc
+    for attempt in range(retries + 1):
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise InatNotFoundError(f"observation not found (404): {url}") from exc
+            if exc.code not in RETRYABLE_STATUS:
+                raise InatApiError(f"iNaturalist API error {exc.code} for {url}") from exc
+            last, hinted = exc, _retry_after(exc)
+            what = f"iNaturalist API error {exc.code}"
+        except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
+            last, hinted = exc, None
+            what = f"network error {type(exc).__name__}: {exc}"
+        if attempt == retries:
+            raise InatTransientError(f"{what} for {url}, still failing after {retries + 1} attempts") from last
+        sleep(min(cap, max(wait, hinted or 0.0)))
+        wait *= 2
+    raise AssertionError("unreachable")
 
 
 def _reshape(observation: dict, requested_id: int) -> dict:
@@ -144,7 +186,8 @@ def fetch_inat_observation(observation_id: int, *, get_fn: Callable[[str, str], 
     (family/order/class names and their common names). *lineage_cache* ({taxon id: lineage}) shares those lookups across calls.
 
     Raises InatNotFoundError if the id doesn't exist (404, or a 200 with an
-    empty results list) and InatApiError for any other non-2xx response.
+    empty results list), InatTransientError when a rate limit / server / network error outlasts the transport's retries, and InatApiError
+    for any other non-2xx response.
     """
     get_fn = get_fn or _default_get
     limiter = rate_limiter if rate_limiter is not None else _default_rate_limiter
