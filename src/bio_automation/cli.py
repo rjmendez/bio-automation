@@ -216,6 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_stock_pub.add_argument("--adobe-csv", default=None, help="where to write the Adobe Stock csv (default: <render-dir>/adobe_stock_metadata.csv)")
     p_stock_pub.add_argument("--plain-decode", action="store_true",
                              help="Also produce a PLAIN raw decode (flat, no retouching) for candidates with no render. Off by default: not Stock-grade.")
+    p_stock_pub.add_argument("--no-queue", action="store_true",
+                             help="Don't enqueue a gallery.reindex message after linking (default: on, so the gallery worker picks up the new "
+                                  "files on its own -- no manual folder-browse or scheduled rescan needed).")
+    p_stock_pub.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
 
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
@@ -547,9 +551,18 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
 
     from .stock_select import publish_candidates
 
-    result = publish_candidates(Path(args.csv), Path(args.raw_root), Path(args.render_dir), Path(args.gallery_dir),
-                                plain_decode=args.plain_decode, floor_path=Path(args.floor) if args.floor else None,
-                                adobe_csv=Path(args.adobe_csv) if args.adobe_csv else None)
+    queue = None
+    if not args.no_queue:
+        from .queue import Queue
+
+        queue = Queue(Path(args.queue_db)) if args.queue_db else Queue()
+    try:
+        result = publish_candidates(Path(args.csv), Path(args.raw_root), Path(args.render_dir), Path(args.gallery_dir),
+                                    plain_decode=args.plain_decode, floor_path=Path(args.floor) if args.floor else None,
+                                    adobe_csv=Path(args.adobe_csv) if args.adobe_csv else None, queue=queue)
+    finally:
+        if queue is not None:
+            queue.close()
     print(json.dumps(result, indent=2))
     return 1 if result["failed"] or result["missing"] else 0
 

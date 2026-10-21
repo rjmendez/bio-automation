@@ -393,7 +393,7 @@ def row_label(row: dict) -> dict:
 
 
 def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery_dir: Path, *, plain_decode: bool = False,
-                       floor_path: Path | None = None, adobe_csv: Path | None = None) -> dict:
+                       floor_path: Path | None = None, adobe_csv: Path | None = None, queue: object | None = None) -> dict:
     """Link every stock_candidate row's RETOUCHED render into gallery_dir/<year>/<year-month>/ (the layout of the existing Stock gallery).
 
     The retouched render (LightCraft develop + export, full size, q95, sRGB, no location) is produced outside this package and expected at
@@ -404,6 +404,11 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
     the approved exports) and inat_stock.label_problems; its title/caption/keywords are then written INTO the file (XMP + IPTC), read back and
     compared, and only then is it hardlinked (a re-run replaces a stale link). violations go to 'failed'. The Adobe Stock CSV of every passing
     file is written to adobe_csv (default render_dir/adobe_stock_metadata.csv).
+
+    `queue` (anything with a `.publish(topic, payload)`, e.g. bio_automation.queue.Queue) turns "someone has to remember to tell the gallery"
+    into a real handoff: when this call links at least one new file, it publishes ONE 'gallery.reindex' message naming every <year>/<year-month>
+    folder it touched, in this same call, before returning -- not a separate manual or scheduled step. queue=None (the default) is the exact
+    old behavior: nothing is published, nothing else changes.
     """
     from PIL import Image
 
@@ -417,6 +422,7 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
         picks = [r for r in csv.DictReader(f) if r["stock_candidate"] == "True"]
     decoded = linked = 0
     missing, failed, shipped = [], [], []
+    touched_folders: set[str] = set()
     for r in picks:
         name = render_name(r)
         dest = Path(render_dir) / r["day"][:4] / r["day"] / name
@@ -450,9 +456,15 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
             if not link.exists():
                 os.link(dest, link)
                 linked += 1
+                touched_folders.add(f"{r['day'][:4]}/{r['day'][:7]}")
             shipped.append((name, label))
         except (ExportBoundsError, LabelError, OSError, ValueError) as e:
             failed.append({"raw": r["raw"], "error": f"{type(e).__name__}: {e}"})
     if shipped:
         write_adobe_csv(shipped, Path(adobe_csv or Path(render_dir) / "adobe_stock_metadata.csv"))
-    return {"candidates": len(picks), "plain_decoded": decoded, "linked": linked, "missing": missing, "failed": failed, "adobe_csv_rows": len(shipped)}
+    queued = False
+    if queue is not None and touched_folders:
+        queue.publish("gallery.reindex", {"gallery_dir": str(gallery_dir), "folders": sorted(touched_folders)})
+        queued = True
+    return {"candidates": len(picks), "plain_decoded": decoded, "linked": linked, "missing": missing, "failed": failed,
+            "adobe_csv_rows": len(shipped), "queued_reindex": queued}

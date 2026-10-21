@@ -650,7 +650,7 @@ class TestPublish:
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_2.jpg")                       # a render exists for the non-candidate: still not shipped
         self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
         out = self.publish(tmp_path)
-        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": [], "adobe_csv_rows": 2}
+        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": [], "adobe_csv_rows": 2, "queued_reindex": False}
         link = tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg"
         assert os.path.samefile(src1, link)
         assert inat_stock.read_label(link) == {"title": LABEL_COLS["title"], "caption": LABEL_COLS["caption"], "keywords": LABEL_COLS["keywords"].split("|")}
@@ -670,6 +670,39 @@ class TestPublish:
         assert embedded == ["2026-07-31_DSC_1.jpg"]
         assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "embedded metadata does not read back as written"}]
         assert out["linked"] == 0 and out["adobe_csv_rows"] == 0 and not (tmp_path / "gallery").exists()
+
+    def test_a_successful_publish_enqueues_one_reindex_message_naming_every_touched_folder(self, tmp_path):
+        class FakeQueue:
+            def __init__(self):
+                self.calls = []
+
+            def publish(self, topic, payload):
+                self.calls.append((topic, payload))
+
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
+        q = FakeQueue()
+        out = self.publish(tmp_path, queue=q)
+        assert out["queued_reindex"] is True
+        assert q.calls == [("gallery.reindex", {"gallery_dir": str(tmp_path / "gallery"), "folders": ["2026/2026-07", "2026/2026-08"]})]
+
+    def test_no_queue_given_is_the_old_behavior_exactly(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert out["queued_reindex"] is False
+
+    def test_nothing_newly_linked_never_enqueues_even_with_a_queue(self, tmp_path):
+        class FakeQueue:
+            def __init__(self):
+                self.calls = []
+
+            def publish(self, topic, payload):
+                self.calls.append((topic, payload))
+
+        q = FakeQueue()
+        out = self.publish(tmp_path, [self.ROWS[1]], queue=q)                 # ROWS[1] is not a candidate: nothing is linked
+        assert out["linked"] == 0 and out["queued_reindex"] is False
+        assert q.calls == []
 
     def test_rerun_keeps_one_link_per_file_and_refreshes_a_stale_one(self, tmp_path):
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
@@ -830,21 +863,48 @@ class TestCli:
         assert asked == [(408509974, {"with_lineage": True})]
         assert load_observation(tmp_path).taxon["lineage"] == [{"rank": "family", "name": "Gomphaceae", "common_name": None}]
 
-    def test_publish_exit_code_reflects_failures_and_missing_renders(self, monkeypatch):
+    def test_publish_exit_code_reflects_failures_and_missing_renders(self, tmp_path, monkeypatch):
+        from bio_automation.queue import Queue
+
         seen = []
         result = {"candidates": 1, "plain_decoded": 0, "linked": 0, "missing": [], "failed": [{"raw": "x", "error": "e"}]}
         monkeypatch.setattr(stock_select, "publish_candidates", lambda *a, **k: seen.append(k) or result)
-        argv = ["stock-publish", "c.csv", "--raw-root", "r", "--render-dir", "d", "--gallery-dir", "g"]
+        qdb = str(tmp_path / "q.sqlite3")
+        argv = ["stock-publish", "c.csv", "--raw-root", "r", "--render-dir", "d", "--gallery-dir", "g", "--queue-db", qdb]
         args = cli.build_parser().parse_args(argv)
         assert cli.cmd_stock_publish(args) == 1
         result = {**result, "failed": [], "missing": ["m"]}
         assert cli.cmd_stock_publish(args) == 1                                           # a missing render is also not a clean run
         result = {**result, "missing": []}
         assert cli.cmd_stock_publish(args) == 0
-        assert seen == [{"plain_decode": False, "floor_path": None, "adobe_csv": None}] * 3
+        assert len(seen) == 3
+        for k in seen:
+            assert isinstance(k.pop("queue"), Queue)                                      # a real queue is built by default, on every call
+            assert k == {"plain_decode": False, "floor_path": None, "adobe_csv": None}
         cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--plain-decode"]))
+        assert isinstance(seen[-1].pop("queue"), Queue)
         assert seen[-1] == {"plain_decode": True, "floor_path": None, "adobe_csv": None}
         cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--floor", "f.json"]))
+        assert isinstance(seen[-1].pop("queue"), Queue)
         assert seen[-1] == {"plain_decode": False, "floor_path": Path("f.json"), "adobe_csv": None}
         cli.cmd_stock_publish(cli.build_parser().parse_args(argv + ["--adobe-csv", "out.csv"]))
         assert seen[-1]["adobe_csv"] == Path("out.csv")
+
+    def test_no_queue_flag_passes_queue_none_and_builds_nothing(self, tmp_path, monkeypatch):
+        seen = []
+        monkeypatch.setattr(stock_select, "publish_candidates", lambda *a, **k: seen.append(k) or
+                            {"candidates": 0, "plain_decoded": 0, "linked": 0, "missing": [], "failed": []})
+        argv = ["stock-publish", "c.csv", "--raw-root", "r", "--render-dir", "d", "--gallery-dir", "g", "--no-queue"]
+        cli.cmd_stock_publish(cli.build_parser().parse_args(argv))
+        assert seen[-1]["queue"] is None
+        assert not (tmp_path / "q.sqlite3").exists()                                      # nothing was created anywhere under this test's own dir
+
+    def test_queue_db_flag_points_at_the_given_file(self, tmp_path, monkeypatch):
+        seen = []
+        monkeypatch.setattr(stock_select, "publish_candidates", lambda *a, **k: seen.append(k) or
+                            {"candidates": 0, "plain_decoded": 0, "linked": 0, "missing": [], "failed": []})
+        qdb = tmp_path / "custom.sqlite3"
+        argv = ["stock-publish", "c.csv", "--raw-root", "r", "--render-dir", "d", "--gallery-dir", "g", "--queue-db", str(qdb)]
+        cli.cmd_stock_publish(cli.build_parser().parse_args(argv))
+        assert seen[-1]["queue"].path == qdb
+        assert qdb.is_file()
