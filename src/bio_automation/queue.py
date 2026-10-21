@@ -170,6 +170,14 @@ class Queue:
             rows = self._db.execute(sql + " GROUP BY status", args).fetchall()
         return {r["status"]: r["n"] for r in rows}
 
+    def open_payloads(self, topic: str) -> list[dict]:
+        """Payloads of every `topic` message still waiting or in progress (pending or claimed), oldest first -- what a backfill must not
+        publish a second time."""
+        with self._lock:
+            rows = self._db.execute("SELECT payload FROM messages WHERE topic=? AND status IN ('pending', 'claimed') ORDER BY id",
+                                    (topic,)).fetchall()
+        return [json.loads(r["payload"]) for r in rows]
+
     def peek_failed(self, topic: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         sql, args = "SELECT * FROM messages WHERE status='failed'", []
         if topic is not None:

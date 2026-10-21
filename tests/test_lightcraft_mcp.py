@@ -58,3 +58,58 @@ class TestImportFiles:
     def test_a_failed_file_is_refused(self):
         with pytest.raises(lm.LightCraftLibraryError, match=r"1 files failed to import"):
             lm.import_files(FakeLib({"imported": [7], "duplicates": [], "failed": [{"path": "b.nef", "reason": "unreadable"}]}), ["a.nef", "b.nef"])
+
+
+class RenderLib:
+    """Records every call; 'export' writes the file the way LightCraft does (after the call returns: on the first poll)."""
+
+    def __init__(self, history, out_bytes=b"jpegdata"):
+        self.history, self.out_bytes, self.calls, self.pending = history, out_bytes, [], None
+
+    def call(self, tool, args):
+        self.calls.append((tool, args))
+        if tool == "cmd_photo_inspect":
+            return {"history": self.history, "meta": {"iso": 400}}
+        if tool == "export":
+            self.pending = lm.Path(args["path"])
+        return {}
+
+    def sleep(self, _):
+        if self.pending is not None and self.out_bytes:
+            self.pending.write_bytes(self.out_bytes)
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        self.t += 1.0
+        return self.t
+
+
+class TestRenderRetouched:
+    def test_an_unedited_photo_gets_auto_then_its_own_edit_is_reset(self, tmp_path):
+        lib = RenderLib(history=[])
+        out = tmp_path / "2025" / "2025-04-23" / "x.jpg"
+        assert lm.render_retouched(lib, 7, out, sleep=lib.sleep, clock=Clock()) == {"owner_edited": False, "iso": 400}
+        assert [c[0] for c in lib.calls] == ["cmd_photo_inspect", "select_photos", "command_run", "export", "command_run"]
+        assert lib.calls[2][1] == {"id": "develop.auto", "params": {}}
+        assert lib.calls[3][1] == {"id": 7, "path": str(out), **lm.EXPORT_SETTINGS}
+        assert lib.calls[4][1] == {"id": "develop.reset", "params": {"ids": [7]}}
+        assert out.read_bytes() == b"jpegdata"
+
+    def test_owner_edits_are_exported_as_they_are_and_never_reset(self, tmp_path):
+        lib = RenderLib(history=["Exposure", "Crop"])
+        assert lm.render_retouched(lib, 7, tmp_path / "x.jpg", sleep=lib.sleep, clock=Clock())["owner_edited"] is True
+        assert [c[0] for c in lib.calls] == ["cmd_photo_inspect", "export"]
+
+    def test_a_history_ending_in_reset_counts_as_unedited(self, tmp_path):
+        lib = RenderLib(history=["Exposure", "Reset"])
+        assert lm.render_retouched(lib, 7, tmp_path / "x.jpg", sleep=lib.sleep, clock=Clock())["owner_edited"] is False
+
+    def test_no_file_raises_and_still_resets_its_own_edit(self, tmp_path):
+        lib = RenderLib(history=[], out_bytes=b"")
+        with pytest.raises(lm.LightCraftLibraryError, match=r"photo 7: no export at .*x\.jpg after 5 s"):
+            lm.render_retouched(lib, 7, tmp_path / "x.jpg", wait_s=5, sleep=lib.sleep, clock=Clock())
+        assert lib.calls[-1] == ("command_run", {"id": "develop.reset", "params": {"ids": [7]}})
