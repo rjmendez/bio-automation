@@ -56,12 +56,13 @@ def _text(result: dict):
 class LightCraftLibrary:
     """One headless engine process. call(tool, args) returns the tool's decoded text result; close() ends the process."""
 
-    def __init__(self, library: Path = settings.LIGHTCRAFT_LIBRARY, cli: Path = settings.LIGHTCRAFT_CLI, *, allow_gui: bool = False):
+    def __init__(self, library: Path = settings.LIGHTCRAFT_LIBRARY, cli: Path = settings.LIGHTCRAFT_CLI, *, allow_gui: bool = False,
+                 gpu: bool = settings.LIGHTCRAFT_GPU):
         if not allow_gui and gui_listening():
             raise LightCraftLibraryError(f"the LightCraft app is listening on {settings.LIGHTCRAFT_GUI}; a headless engine on the same library "
                                          "would be a second writer (close the app, or pass allow_gui=True if it has another library open)")
         self.library = Path(library)
-        self._p = subprocess.Popen([str(cli), "mcp", "--library", str(self.library)], env=dict(os.environ, LIGHTCRAFT_GPU="0"),
+        self._p = subprocess.Popen([str(cli), "mcp", "--library", str(self.library)], env=dict(os.environ, LIGHTCRAFT_GPU="1" if gpu else "0"),
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
         self._n = 1
         self._send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -121,7 +122,7 @@ EXPORT_SETTINGS = {"format": "jpeg", "quality": 95, "longEdge": 0, "colorSpace":
 def render_retouched(lib, photo_id: int, out: Path, *, wait_s: float = 420, poll_s: float = 3, sleep=None, clock=None) -> dict:
     """Export `photo_id` retouched to `out`: the owner's own edits as they are, else develop.auto (reset afterwards, so the library keeps
     no edit this made). Returns {'owner_edited', 'iso'}; raises LightCraftLibraryError if no non-empty file appears within wait_s
-    (the export may finish after the call returns, so the file is polled until its size is stable)."""
+    (a headless export blocks until the file is written; the poll is only a fallback)."""
     import time
     sleep, clock = sleep or time.sleep, clock or time.monotonic
     ins = lib.call("cmd_photo_inspect", {"id": photo_id}) or {}
@@ -135,13 +136,8 @@ def render_retouched(lib, photo_id: int, out: Path, *, wait_s: float = 420, poll
             lib.call("command_run", {"id": "develop.auto", "params": {}})
             touched = True
         res = lib.call("export", {"id": photo_id, "path": str(out), **EXPORT_SETTINGS})
-        t0, last = clock(), -1
-        while clock() - t0 < wait_s:
-            if out.exists():
-                size = out.stat().st_size
-                if size > 0 and size == last:
-                    break
-                last = size
+        t0 = clock()
+        while not (out.is_file() and out.stat().st_size > 0) and clock() - t0 < wait_s:   # headless exports block: normally already written
             sleep(poll_s)
         if not (out.is_file() and out.stat().st_size > 0):
             raise LightCraftLibraryError(f"photo {photo_id}: no export at {out} after {wait_s:.0f} s ({str(res)[:160]})")

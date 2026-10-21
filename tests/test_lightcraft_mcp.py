@@ -115,3 +115,20 @@ class TestRenderRetouched:
         with pytest.raises(lm.LightCraftLibraryError, match=r"photo 7: no export at .*x\.jpg after 5 s"):
             lm.render_retouched(lib, 7, tmp_path / "x.jpg", wait_s=5, sleep=lib.sleep, clock=Clock())
         assert lib.calls[-1] == ("command_run", {"id": "develop.reset", "params": {"ids": [7]}})
+
+
+class ImmediateLib(RenderLib):
+    """A headless export: the file is written before the call returns."""
+
+    def call(self, tool, args):
+        r = super().call(tool, args)
+        if tool == "export":
+            lm.Path(args["path"]).write_bytes(b"jpegdata")
+        return r
+
+
+def test_a_file_already_written_by_the_call_needs_no_waiting(tmp_path):
+    lib = ImmediateLib(history=[])
+    sleeps = []
+    assert lm.render_retouched(lib, 7, tmp_path / "x.jpg", sleep=sleeps.append, clock=Clock())["owner_edited"] is False
+    assert sleeps == []
