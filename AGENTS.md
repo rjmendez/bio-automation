@@ -9,7 +9,8 @@ starting work, then verify against live code and data.
 
 **Before processing photos, check what is already on iNat.** Pull the owner's
 live observations (public API, read-only, 1 req/s, identifying User-Agent) and
-match by capture time. Local snapshots go stale (`inat_observations.json` lacked
+match photos to frames by analyzed similarity (DA-CLIP), using capture time only to
+bracket which frames to compare (see "Stock labelling comes from iNat" below). Local snapshots go stale (`inat_observations.json` lacked
 113 observations created after it was built). Never re-upload a frame that is on iNat.
 
 **Export standards** (`render.py`): real raw decode to sRGB, never the embedded
@@ -45,6 +46,40 @@ process on the library). Do not drive the live GUI session.
 
 **iNat posting is human-approved per observation**; locations and taxa are chosen
 by the owner in iNat. Build upload sets (files + CSV), never auto-post.
+
+**Stock labelling comes from iNat, enforced in code (2026-10-20).** A frame is a Stock
+candidate ONLY if it IS one of the photos the owner uploaded to a live iNat observation.
+**Match photos by analyzed similarity; timestamps only bracket (owner rule, 2026-10-20).**
+Each iNat photo takes the frame that looks most like it (DA-CLIP content vectors on the GPU,
+argmax, >= 0.97), searching only frames captured within +-15 min of the observation
+(`inat_stock.match_photos_to_frames`). Never match by timestamp alone: a 90 s time match used
+two frames that were never uploaded and missed three that were (observation 409468156) and put
+a species on frames shot near an unrelated observation. Every uploaded photo that passes the
+gates is used; unuploaded sibling shots are not. Each matched observation is labelled from its
+live-fetched iNat data (`fetch_inat_observation` -> `stock.build_metadata` -> title, 15-50 keywords,
+caption, Adobe category number). Keywords include the family/order/class names and common names from iNat's taxonomy
+(`fetch_taxon_lineage`, also stored by `bio fetch-inat`). Frames that are not an uploaded photo
+are never candidates; the code says why (`not one of the photos uploaded to an iNat observation`). `bio stock-tag-queue` REQUIRES
+`--observations <live snapshot, at most 3 days old>`; `bio process` ends with
+`tag_observation`, which needs the folder to be fetch-inat'd. `stock-publish` writes the
+label INTO each render (XMP + IPTC), reads it back, and links nothing that fails
+validate_jpeg('stock'), the exposure floor or the label limits; it also writes the Adobe CSV
+(`adobe_stock_metadata.csv`, Filename/Title/Keywords/Category/Releases). Only casual
+observations are refused; genus/family IDs are labelled at that rank and `grade`/`rank` stay
+in the csv. Order of work: `bio stock-calibrate <approved exports>` once, `bio stock-tag-queue
+<frames.json> --raw-root F:/Bio --out <csv> --observations <snapshot>`, retouched renders
+(`render_stock_candidates.py` in the ops repo, LightCraft develop.auto, no CPU denoise),
+`bio stock-publish <csv> ... --gallery-dir <gallery>`. The sharpness/exposure floors are
+heuristics, releases (people/property) are NEVER checked here: every row is `release:
+unscreened` and the owner's look in the gallery is the gate. A plain raw decode is flat and
+un-retouched: `--plain-decode` exists but is off, and the 2048 px iNat renders can never be
+Stock files.
+
+**Upload-set flags (2026-10-20).** `bio flag-upload-set <set folder> [--notes json]` appends
+`flags`/`flag_notes` columns to the set's `observations.csv` (CRLF kept, re-run replaces them):
+`black_frame` is measured (median luma < 2); anything else (not_wildlife, people_visible,
+pet, sign_or_text, label_visible, ...) comes from the manual notes file because only a look
+at the picture tells. Nothing is removed or reordered -- the owner never culls.
 
 **Remote download (owner works over the LAN, 2026-10-20).** `bio export-zip --kind
 inat|stock SRC...` validates every JPEG against the standard first and writes ONE flat

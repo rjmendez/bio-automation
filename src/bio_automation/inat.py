@@ -107,9 +107,26 @@ def _reshape(observation: dict, requested_id: int) -> dict:
     }
 
 
+def fetch_taxon_lineage(taxon_id: int, *, get_fn: Callable[[str, str], dict] | None = None, user_agent: str | None = None,
+                        rate_limiter: RateLimiter | None = None) -> list[dict]:
+    """The taxonomic ancestors of a taxon, root first, from the public iNaturalist v1 API (``{INAT_API_BASE}/taxa/{id}``, read-only):
+    [{"rank": "family", "name": "Gomphaceae", "common_name": None | "..."}, ...]. The taxon itself is not included.
+    Raises InatNotFoundError when the taxon does not exist and InatApiError for any other non-2xx response."""
+    get_fn = get_fn or _default_get
+    limiter = rate_limiter if rate_limiter is not None else _default_rate_limiter
+    limiter.wait()
+    payload = get_fn(f"{INAT_API_BASE}/taxa/{taxon_id}", user_agent or USER_AGENT_DEFAULT)
+    results = payload.get("results") or []
+    if not results:
+        raise InatNotFoundError(f"taxon {taxon_id}: no results in API response")
+    return [{"rank": a.get("rank"), "name": a.get("name"), "common_name": a.get("preferred_common_name")}
+            for a in (results[0].get("ancestors") or []) if a.get("name")]
+
+
 def fetch_inat_observation(observation_id: int, *, get_fn: Callable[[str, str], dict] | None = None,
                             user_agent: str | None = None,
-                            rate_limiter: RateLimiter | None = None) -> dict:
+                            rate_limiter: RateLimiter | None = None,
+                            with_lineage: bool = False, lineage_cache: dict | None = None) -> dict:
     """Fetch one observation from the public iNaturalist v1 API (read-only,
     unauthenticated GET to ``{INAT_API_BASE}/observations/{id}``) and
     reshape it into the iNat-owned subset of observation.json fields:
@@ -122,6 +139,9 @@ def fetch_inat_observation(observation_id: int, *, get_fn: Callable[[str, str], 
     defaults to a real urllib GET. *rate_limiter* defaults to a shared,
     module-level RateLimiter paced at <=1 req/s, matching the legacy
     scripts' own pacing convention for this API.
+
+    *with_lineage* adds one more request (fetch_taxon_lineage) and stores the ancestors under taxon["lineage"], which stock keywords use
+    (family/order/class names and their common names). *lineage_cache* ({taxon id: lineage}) shares those lookups across calls.
 
     Raises InatNotFoundError if the id doesn't exist (404, or a 200 with an
     empty results list) and InatApiError for any other non-2xx response.
@@ -136,4 +156,11 @@ def fetch_inat_observation(observation_id: int, *, get_fn: Callable[[str, str], 
     results = payload.get("results") or []
     if not results:
         raise InatNotFoundError(f"observation {observation_id}: no results in API response")
-    return _reshape(results[0], observation_id)
+    fetched = _reshape(results[0], observation_id)
+    taxon_id = fetched["taxon"].get("id")
+    if with_lineage and taxon_id is not None:
+        cache = lineage_cache if lineage_cache is not None else {}
+        if taxon_id not in cache:
+            cache[taxon_id] = fetch_taxon_lineage(taxon_id, get_fn=get_fn, user_agent=user_agent, rate_limiter=limiter)
+        fetched["taxon"]["lineage"] = cache[taxon_id]
+    return fetched

@@ -908,6 +908,7 @@ class TestProcessObservation:
                                              [tmp_path / "export" / "stock" / "DSC_0001.jpg"]),
             "build_and_save_keywords": _RecordingStage("build_and_save_keywords", call_order,
                                                          {"keywords": ["spider"]}),
+            "_tag_stock": _RecordingStage("_tag_stock", call_order, {"frames": []}),
         }
         for name, stub in stages.items():
             monkeypatch.setattr(f"bio_automation.pipeline.{name}", stub)
@@ -924,7 +925,7 @@ class TestProcessObservation:
 
         assert call_order == [
             "stack_focus", "write_sidecars", "render_review", "export_stock",
-            "build_and_save_keywords",
+            "build_and_save_keywords", "_tag_stock",
         ]
         assert stages["export_inat"].calls == []
         assert stages["clean_and_stack"].calls == []
@@ -933,7 +934,7 @@ class TestProcessObservation:
             "min_free_gb": 5.0, "check_subjects": True,
         }]
         for name in ("write_sidecars", "render_review", "export_stock",
-                     "build_and_save_keywords"):
+                     "build_and_save_keywords", "_tag_stock"):
             assert stages[name].calls == [{"folder": tmp_path}]
 
         assert result == {
@@ -944,6 +945,7 @@ class TestProcessObservation:
             "inat": None,
             "stock": [str(tmp_path / "export" / "stock" / "DSC_0001.jpg")],
             "keywords": {"keywords": ["spider"]},
+            "stock_tags": {"frames": []},
         }
 
     def test_runs_export_inat_when_observation_is_inat_linked(self, tmp_path, monkeypatch):
@@ -957,7 +959,7 @@ class TestProcessObservation:
 
         assert call_order == [
             "stack_focus", "write_sidecars", "render_review", "export_inat",
-            "export_stock", "build_and_save_keywords",
+            "export_stock", "build_and_save_keywords", "_tag_stock",
         ]
         assert stages["export_inat"].calls == [{"folder": tmp_path}]
         assert result["inat"] == [str(tmp_path / "export" / "inat" / "DSC_0001.jpg")]
@@ -1018,6 +1020,7 @@ class TestProcessObservationFailures:
             "export_inat": [tmp_path / "export" / "inat" / "DSC_0001.jpg"],
             "export_stock": [tmp_path / "export" / "stock" / "DSC_0001.jpg"],
             "build_and_save_keywords": {"keywords": ["spider"]},
+            "_tag_stock": {"frames": []},
         }
         stages: dict[str, _RecordingStage] = {}
         for name, value in return_values.items():

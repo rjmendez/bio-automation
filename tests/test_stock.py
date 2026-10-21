@@ -385,3 +385,64 @@ def test_unknown_iconic_taxon_gets_no_invented_category():
 def test_posix_path_place_guess_is_also_treated_as_absent():
     record = build_keywords(Observation(obsdate="2026-07-04", place_guess="/mnt/f/Bio/2026"))
     assert record["caption"] == "Unknown photographed on 2026-07-04."
+
+
+# ---------------------------------------------------------------------------
+# iNat lineage keywords
+# ---------------------------------------------------------------------------
+
+LINEAGE = [
+    {"rank": "kingdom", "name": "Fungi", "common_name": "Fungi Including Lichens"},
+    {"rank": "phylum", "name": "Basidiomycota", "common_name": "Basidiomycete Fungi"},
+    {"rank": "class", "name": "Agaricomycetes", "common_name": "Mushrooms, Bracket Fungi, Puffballs, and Allies"},
+    {"rank": "subclass", "name": "Phallomycetidae", "common_name": None},
+    {"rank": "order", "name": "Gomphales", "common_name": None},
+    {"rank": "family", "name": "Gomphaceae", "common_name": None},
+]
+
+
+def _ramaria(lineage=None):
+    taxon = {"name": "Ramaria", "common_name": "Coral Fungi", "iconic_taxon_name": "Fungi", "rank": "genus"}
+    if lineage is not None:
+        taxon["lineage"] = lineage
+    return Observation(observation_id=1, obsdate="2026-07-30", place_guess="Pennsylvania, US", taxon=taxon)
+
+
+def test_lineage_adds_family_order_and_class_terms_nearest_rank_first():
+    assert build_metadata(_ramaria(LINEAGE)).keywords == [
+        "coral", "fungi", "ramaria", "summer", "pennsylvania", "gomphaceae", "gomphales", "phallomycetidae", "agaricomycetes", "mushrooms",
+        "bracket", "puffballs", "nature", "outdoor", "photography", "macro", "close-up", "wild", "habitat", "natural", "species"]
+
+
+def test_without_lineage_the_keywords_are_unchanged():
+    assert build_metadata(_ramaria()).keywords == [
+        "coral", "fungi", "ramaria", "summer", "pennsylvania", "nature", "outdoor", "photography", "macro", "close-up", "wild", "habitat",
+        "natural", "species"]
+
+
+def test_kingdom_and_phylum_are_too_broad_to_be_keywords():
+    kws = build_metadata(_ramaria([{"rank": "phylum", "name": "Basidiomycota", "common_name": "Basidiomycete Fungi"}])).keywords
+    assert "basidiomycota" not in kws and "basidiomycete" not in kws
+
+
+def test_filler_words_of_a_phrase_common_name_are_dropped():
+    kws = build_metadata(_ramaria([{"rank": "class", "name": "Agaricomycetes", "common_name": "Mushrooms, Bracket Fungi, Puffballs, and Allies"}])).keywords
+    assert "and" not in kws and "allies" not in kws and "puffballs" in kws
+
+
+def test_lineage_lifts_a_family_level_observation_over_the_keyword_minimum():
+    obs = Observation(observation_id=2, obsdate="2026-07-30", place_guess="Pennsylvania, US",
+                      taxon={"name": "Russulaceae", "common_name": None, "iconic_taxon_name": "Fungi", "rank": "family", "lineage": LINEAGE[:5]})
+    assert len(build_metadata(obs).keywords) == 19
+    bare = Observation(observation_id=2, obsdate="2026-07-30", place_guess="Pennsylvania, US",
+                       taxon={"name": "Russulaceae", "common_name": None, "iconic_taxon_name": "Fungi", "rank": "family"})
+    assert len(build_metadata(bare).keywords) == 12
+
+
+def test_filler_words_true_typical_and_common_never_become_keywords():
+    obs = _ramaria([{"rank": "suborder", "name": "Heteroptera", "common_name": "True Bugs"},
+                    {"rank": "family", "name": "Strigidae", "common_name": "Typical Owls"},
+                    {"rank": "order", "name": "Odonata", "common_name": "Common Dragonflies"}])
+    kws = build_metadata(obs).keywords
+    assert {"true", "typical", "common"} & set(kws) == set()
+    assert {"bugs", "owls", "dragonflies", "heteroptera", "strigidae", "odonata"} <= set(kws)
