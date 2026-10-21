@@ -497,10 +497,24 @@ def _same_frame_files(folder: Path, day: str, stem: str) -> list[Path]:
 
 
 def _default_other_galleries(gallery_dir: Path) -> list[Path]:
-    """The galleries other than `gallery_dir` that a frame may already be published in: the main gallery and the results gallery
-    (settings, read at call time), minus whichever of them gallery_dir is (the results mount resolves to the results gallery)."""
+    """The gallery (settings.GALLERY_DIR, read at call time) when gallery_dir is somewhere else, so a frame is never published twice."""
     mine = os.path.normcase(os.path.realpath(gallery_dir))
-    return [Path(g) for g in (settings.GALLERY_DIR, settings.RESULTS_GALLERY_DIR) if os.path.normcase(os.path.realpath(g)) != mine]
+    return [Path(g) for g in (settings.GALLERY_DIR,) if os.path.normcase(os.path.realpath(g)) != mine]
+
+
+def _same_drive(a: Path, b: Path) -> bool:
+    return os.path.splitdrive(os.path.abspath(a))[0].lower() == os.path.splitdrive(os.path.abspath(b))[0].lower()
+
+
+def link_into_gallery(render: Path, link: Path, same_drive=_same_drive) -> str:
+    """Put `render` into the gallery at `link` without a second copy: a hardlink when both are on one drive, else a file symlink (the gallery
+    keeps ONE <year>/<year-month> tree whichever drive a render lives on). Returns 'hardlink' or 'symlink'. A symlink needs the
+    SeCreateSymbolicLinkPrivilege (admin, or Windows Developer Mode); without it the OSError says so and the candidate fails visibly."""
+    if same_drive(render, link):
+        os.link(render, link)
+        return "hardlink"
+    os.symlink(os.path.abspath(render), link)
+    return "symlink"
 
 
 def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery_dir: Path, *, plain_decode: bool = False,
@@ -514,12 +528,12 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
 
     Nothing is linked without its Stock label: each render must pass bundle.validate_jpeg('stock'), the exposure floor (median luma >= luma_p10 of
     the approved exports) and inat_stock.label_problems; its title/caption/keywords are then written INTO the file (XMP + IPTC), read back and
-    compared, and only then is it hardlinked. violations go to 'failed'. The Adobe Stock CSV of every passing file is written to adobe_csv
+    compared, and only then is it linked (link_into_gallery). violations go to 'failed'. The Adobe Stock CSV of every passing file is written to adobe_csv
     (default render_dir/adobe_stock_metadata.csv).
 
     A gallery file is never replaced or duplicated from another source: 'refused' lists every candidate whose gallery name already holds a
     file that is not this render's own earlier link (another pipeline's file, or an older render of it), and every candidate whose frame is
-    already in this gallery or in one of other_galleries (default: the main and the results gallery, see _default_other_galleries) under
+    already in this gallery or in one of other_galleries (default: settings.GALLERY_DIR when gallery_dir is another folder) under
     another of its names. Only this render's own link is refreshed (re-embedding replaces the render's inode). A NEF and its Enhanced-NR DNG
     of one frame in the same csv are published once ('skipped' names the other: collapse_raw_variants).
 
@@ -603,7 +617,7 @@ def publish_candidates(rows_csv: Path, raw_root: Path, render_dir: Path, gallery
             if own and not os.path.samefile(dest, link):         # this render's own earlier link: re-embedding gave the render a new inode
                 link.unlink()
             if not link.exists():
-                os.link(dest, link)
+                link_into_gallery(dest, link)
                 linked += 1
                 touched_folders.add(f"{r['day'][:4]}/{r['day'][:7]}")
             shipped.append((name, label))

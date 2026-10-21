@@ -680,7 +680,6 @@ class TestPublish:
         write_json(tmp_path / "pubfloor.json", FLOOR)
         monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "pubfloor.json")
         monkeypatch.setattr(settings, "GALLERY_DIR", tmp_path / "settings-main")              # the default other galleries: never the live ones
-        monkeypatch.setattr(settings, "RESULTS_GALLERY_DIR", tmp_path / "settings-results")
 
     def csv_file(self, tmp_path, rows=None):
         p = tmp_path / "c.csv"
@@ -954,42 +953,32 @@ class TestPublish:
                         ("2026/d/DSC_3.NEF", "2026-08-01_DSC_3.jpg", "missing",
                          f"no retouched render at {tmp_path / 'render' / '2026' / '2026-08-01' / '2026-08-01_DSC_3.jpg'}")]
 
-    # ---- the live layout: publishing into the results gallery through the real junction from gallery_mount
-    def test_publish_through_the_results_junction_lands_on_the_results_gallery(self, tmp_path):
-        from bio_automation.gallery_mount import ensure_results_mount
-
-        class FakeQueue:
-            def __init__(self):
-                self.calls = []
-
-            def publish(self, topic, payload):
-                self.calls.append((topic, payload))
-
-        (tmp_path / "gallery").mkdir()                                            # the PiGallery2 media folder exists on the live layout
-        mount = ensure_results_mount(gallery_dir=tmp_path / "gallery", target=tmp_path / "results-gallery", name="results")
-        assert os.path.isjunction(mount)
+    # ---- one gallery tree whatever drive the render is on
+    def test_a_render_on_the_gallery_drive_is_hardlinked(self, tmp_path):
         src = self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
-        q = FakeQueue()
-        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", mount,
-                                              queue=q, other_galleries=[tmp_path / "gallery"])
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        link = tmp_path / "gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg"
         assert (out["linked"], out["refused"], out["failed"]) == (1, [], [])
-        assert os.path.samefile(src, mount / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg")
-        assert os.path.samefile(src, tmp_path / "results-gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg")   # the file is on the target side
-        assert os.stat(src).st_nlink == 2
-        assert q.calls == [("gallery.reindex", {"gallery_dir": str(mount), "folders": ["2026/2026-07"]})]
-        assert str(q.calls[0][1]["gallery_dir"]).endswith("\\results")
+        assert not link.is_symlink() and os.stat(src).st_nlink == 2
 
-    def test_through_the_junction_a_frame_already_in_the_main_gallery_is_refused(self, tmp_path):
-        from bio_automation.gallery_mount import ensure_results_mount
+    def test_link_into_gallery_hardlinks_on_one_drive_and_symlinks_across_drives(self, tmp_path):
+        src = tmp_path / "render.jpg"
+        src.write_bytes(b"jpeg")
+        assert stock_select.link_into_gallery(src, tmp_path / "same.jpg", same_drive=lambda a, b: True) == "hardlink"
+        assert not (tmp_path / "same.jpg").is_symlink() and os.stat(src).st_nlink == 2
+        assert stock_select.link_into_gallery(src, tmp_path / "other.jpg", same_drive=lambda a, b: False) == "symlink"
+        assert (tmp_path / "other.jpg").is_symlink() and os.path.realpath(tmp_path / "other.jpg") == os.path.realpath(src)
+        assert (tmp_path / "other.jpg").read_bytes() == b"jpeg"
 
-        (tmp_path / "gallery").mkdir()                                            # the PiGallery2 media folder exists on the live layout
-        mount = ensure_results_mount(gallery_dir=tmp_path / "gallery", target=tmp_path / "results-gallery", name="results")
+    def test_a_symlinked_render_counts_as_its_own_link_on_republish(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(stock_select, "_same_drive", lambda a, b: False)
+        monkeypatch.setattr(stock_select.link_into_gallery, "__defaults__", (stock_select._same_drive,))
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
-        main = self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1.jpg")       # already published from the F: renders
-        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", mount,
-                                              other_galleries=[tmp_path / "gallery"])
-        assert [e["error"].split(" (")[0] for e in out["refused"]] == [f"this frame is already published as {main}"]
-        assert not (tmp_path / "results-gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg").exists()
+        args = (self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        assert stock_select.publish_candidates(*args)["linked"] == 1
+        again = stock_select.publish_candidates(*args)
+        assert (again["linked"], again["refused"]) == (0, [])
+        assert (tmp_path / "gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg").is_symlink()
 
 
 class TestCli:
