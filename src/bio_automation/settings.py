@@ -48,6 +48,7 @@ LIGHTCRAFT_CLI_DEFAULT = PROGRAM_FILES / "LightCraft" / "lightcraft-cli.exe"
 LIGHTCRAFT_CLI = env_path(LIGHTCRAFT_CLI_ENV, LIGHTCRAFT_CLI_DEFAULT)
 LIGHTCRAFT_LIBRARY = env_path("BIO_LC_LIBRARY", HOME / "Pictures" / "LightCraft Library")   # the persistent catalog every render uses
 LIGHTCRAFT_GUI = env("BIO_LC_GUI", "127.0.0.1:7980")                    # the desktop app's control channel
+LIGHTCRAFT_GPU = env("BIO_LC_GPU", "1") not in ("0", "false", "no")     # headless develop/export on the GPU (LightCraft falls back to CPU per render)
 EXIFTOOL_ENV = "BIO_EXIFTOOL"
 EXIFTOOL_DEFAULT = PROGRAM_FILES / "ZereneStacker" / "exiftool" / "exiftool.exe"
 FOCUS_STACK_ENV = "BIO_FOCUS_STACK"
