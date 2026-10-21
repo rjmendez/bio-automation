@@ -44,7 +44,9 @@ class FakeLib:
 class TestImportFiles:
     def test_new_and_duplicate_files_all_get_their_ids(self):
         fake = FakeLib({"imported": [101, 103], "duplicates": [{"path": "b.nef", "existing": 55}], "failed": []})
-        assert lm.import_files(fake, ["a.nef", "b.nef", "c.nef"]) == {"a.nef": 101, "b.nef": 55, "c.nef": 103}
+        res = lm.import_files(fake, ["a.nef", "b.nef", "c.nef"])
+        assert res.ids == {"a.nef": 101, "b.nef": 55, "c.nef": 103}
+        assert set(res.duplicates) == {"b.nef"}
         assert fake.calls == [("import", {"paths": ["a.nef", "b.nef", "c.nef"], "mode": "add"})]
 
     def test_a_count_mismatch_refuses_to_guess(self):
