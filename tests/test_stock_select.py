@@ -578,9 +578,24 @@ class TestTagQueue:
     def test_timings_report_each_phase_and_its_work(self, tmp_path, monkeypatch):
         timings = {}
         self.run(tmp_path, monkeypatch, timings=timings)
-        assert sorted(timings) == ["decide_s", "frames_scored", "iso_s", "label_s", "match_s", "observations", "score_s"]
+        assert sorted(timings) == ["decide_s", "frames_scored", "iso_s", "label_s", "match_s", "observations", "score_bytes", "score_frame_max_s",
+                                   "score_s"]
         assert timings["observations"] == 2 and timings["frames_scored"] == 4                # frames 1-4: the uploaded photos of 11 and 22
         assert all(isinstance(timings[k], float) and timings[k] >= 0 for k in timings if k.endswith("_s"))
+
+    def test_timings_sum_the_bytes_scored_and_keep_the_slowest_frame(self, tmp_path, monkeypatch):
+        sizes = iter([(100, 1.5), (200, 4.0), (300, 2.0), (400, 0.5)])
+
+        def fake(item):
+            b, t = next(sizes)
+            return {"lc_id": item["lc_id"], "sharp": 90.0, "clip": 0.0, "iso": "", "error": "", "bytes": b, "score_s": t}
+
+        monkeypatch.setattr(stock_select, "_score_item", fake)
+        timings = {}
+        self.run(tmp_path, monkeypatch, timings=timings)
+        assert (timings["frames_scored"], timings["score_bytes"], timings["score_frame_max_s"]) == (4, 1000, 4.0)
+        with open(str(tmp_path / "out.csv") + ".raw", newline="") as f:
+            assert next(csv.reader(f)) == stock_select.RAW_CACHE_FIELDS             # the cache keeps its own columns only
 
     def test_a_rerun_scores_no_frame_and_says_so(self, tmp_path, monkeypatch):
         self.run(tmp_path, monkeypatch)
@@ -1253,3 +1268,18 @@ class TestImageSources:
         with pytest.raises(RuntimeError, match="no raw here"):
             stock_select.score_raw(tmp_path / "DSC_1.NEF")
         assert calls == [str(tmp_path / "DSC_1.NEF")]
+
+
+class TestScoreItemTimings:
+    def test_a_frame_reports_its_file_size_and_scoring_time(self, tmp_path, monkeypatch):
+        raw = tmp_path / "DSC_1.NEF"
+        raw.write_bytes(b"x" * 1234)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(12.345, 0.5))
+        r = stock_select._score_item({"lc_id": 7, "raw_abs": str(raw), "iso": 200})
+        assert {k: r[k] for k in ("lc_id", "sharp", "clip", "iso", "error", "bytes")} == {
+            "lc_id": 7, "sharp": 12.35, "clip": 0.5, "iso": 200, "error": "", "bytes": 1234}
+        assert isinstance(r["score_s"], float) and r["score_s"] >= 0
+
+    def test_a_missing_raw_is_an_error_row_of_zero_bytes(self, tmp_path):
+        r = stock_select._score_item({"lc_id": 7, "raw_abs": str(tmp_path / "gone.NEF")})
+        assert (r["bytes"], r["sharp"], r["clip"]) == (0, "", "") and r["error"].split(":")[0] in ("LibRawIOError", "FileNotFoundError")
