@@ -8,6 +8,9 @@ the entry is evicted and filled again.
 The cache never makes a caller fail: if the copy cannot be made (NAS unreachable, disk low, an I/O error) `local` returns the source path, which
 is exactly what the caller would have read without a cache, and reports why through `on_read`.
 
+When given a `gate` (nas_io.NasIoGate), the copy of a fill (the only read of the NAS) runs inside `gate.acquire(stage)`: a fill waits for a
+slot, its turn ordered by the stage's priority. A hit, a fallback and the stat of the source take no slot.
+
 Entries: `<key>` (the raw), `<key>.src.json` (the source's size and mtime_ns when it was copied: a changed source is copied again),
 `<key>.lock` (held while one process fills the entry), `<key>.part.<pid>` (the copy in progress). Least recently touched entries are evicted
 when the total passes `max_bytes`; an entry another process has open (PermissionError on Windows) is skipped and kept.
@@ -44,7 +47,7 @@ class RawCache:
     def __init__(self, root: Path | str, max_bytes: int, nas_root: Path | str, *, min_free_gb: float, lock_stale_s: float = 600,
                  on_read: Callable[[dict], None] | None = None, copy_fn: Callable[[Path, Path], int] | None = None,
                  stat_fn: Callable = os.stat, time_fn: Callable[[], float] = time.time,
-                 disk_usage_fn: Callable = shutil.disk_usage, sleep_fn: Callable[[float], None] = time.sleep):
+                 disk_usage_fn: Callable = shutil.disk_usage, sleep_fn: Callable[[float], None] = time.sleep, gate=None):
         self.root = Path(root)
         self.max_bytes = max_bytes
         self.nas_root = Path(nas_root)
@@ -56,6 +59,7 @@ class RawCache:
         self._time = time_fn
         self._disk_usage = disk_usage_fn
         self._sleep = sleep_fn
+        self.gate = gate
 
     # --- keys
 
@@ -106,7 +110,7 @@ class RawCache:
             self._report(stage, rel, size, t0, "hit")
             return key
         try:
-            outcome = self._fill(src, key, size, mtime_ns)
+            outcome = self._fill(src, key, size, mtime_ns, stage)
         except OSError as e:
             self._report(stage, rel, size, t0, f"fallback:{type(e).__name__}")
             return src
@@ -126,7 +130,7 @@ class RawCache:
             now = self._time()
             os.utime(key, (now, now))
 
-    def _fill(self, src: Path, key: Path, size: int, mtime_ns: int) -> str:
+    def _fill(self, src: Path, key: Path, size: int, mtime_ns: int, stage: str) -> str:
         """'fill' (copied now), 'hit' (another process copied it while this one waited) or 'fallback:disk'. OSError: nothing usable was made."""
         self.root.mkdir(parents=True, exist_ok=True)
         if self._disk_usage(self.root).free - size < self.min_free_gb * 1e9:
@@ -140,7 +144,8 @@ class RawCache:
             return "hit"
         part = key.with_name(f"{key.name}.part.{os.getpid()}")
         try:
-            written = self._copy(src, part)
+            with self._gated(stage):
+                written = self._copy(src, part)
             on_disk = part.stat().st_size
             if written != size or on_disk != size:
                 raise OSError(f"copied {written} bytes ({on_disk} on disk) of {size}: {src}")
@@ -155,6 +160,10 @@ class RawCache:
         with contextlib.suppress(OSError):                       # a failed sweep must not discard the copy just made
             self._enforce(keep=key)
         return "fill"
+
+    def _gated(self, stage: str):
+        """The NAS read slot of this stage (nothing to wait for when the cache has no gate)."""
+        return self.gate.acquire(stage) if self.gate is not None else contextlib.nullcontext()
 
     def _acquire(self, lock: Path) -> None:
         """Create the lock exclusively. While another process holds it, poll until it goes; a lock older than lock_stale_s is a dead
