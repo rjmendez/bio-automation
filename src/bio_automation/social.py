@@ -25,6 +25,7 @@ import io
 import json
 import os
 import random
+import shutil
 import re
 import subprocess
 import tempfile
@@ -41,7 +42,11 @@ from . import settings
 MAX_IMAGES = 4                     # app.bsky.embed.images: images maxLength 4
 TEXT_MAX_GRAPHEMES = 300           # app.bsky.feed.post text: maxGraphemes 300, maxLength 3000 (UTF-8 bytes)
 TEXT_MAX_BYTES = 3000
-ALT_MAX_CHARS = 2000               # the Bluesky app's alt-text limit (the lexicon sets none)
+MIN_ALT_CHARS = 15                 # shorter than the owner's shortest real alt texts (p10 49): not a description
+_TRAILING_LINK = re.compile(r"[\s,;:-]*(?:\b(?:photographed|taken|captured|shot|seen|observed|found)\b)?[\s,]*(?:\b(?:on|in|at)\b)?[\s,;:-]*$",
+                            re.IGNORECASE)
+EMBED_BATCH = 64                  # texts per Ollama /api/embed request
+ALT_MAX_CHARS = 2000              # the Bluesky app's alt-text limit (the lexicon sets none)
 INAT_OBS_URL = "https://www.inaturalist.org/observations/{}"
 
 COMMON_TAGS = ("macrophotography", "nature", "inaturalist")
@@ -75,6 +80,10 @@ class VisionError(SocialError):
 
 class SkipObservation(SocialError):
     """This observation cannot be posted (casual, deleted, no taxon); the next candidate is tried."""
+
+
+class UnusableAnswer(SkipObservation):
+    """The vision model's answer is not alt text (too short, or JSON it could not be read from): the observation is skipped this run."""
 
 
 # --------------------------------------------------------------------------------------------------- gallery file -> observation index
@@ -300,21 +309,48 @@ def _ollama(path: str, body: dict | None = None, *, timeout: float = 600) -> dic
         raise VisionError(f"Ollama at {settings.OLLAMA_URL} unreachable: {e}") from e
 
 
-def vision_model(*, api: Callable = _ollama, pool_file: Path | None = None) -> str:
-    """The vision model to use: env BIO_VISION_MODEL, else the best-ranked (lowest rank) model of the pool file whose roles include
-    "vision" and that Ollama has installed. Never a literal tag; nothing found raises."""
-    named = os.environ.get(settings.VISION_MODEL_ENV)
+def pool_model(role: str, env_name: str, *, api: Callable = _ollama, pool_file: Path | None = None) -> str:
+    """The model for a role: env `env_name`, else the best-ranked (lowest rank) model of the pool file whose roles include `role` and
+    that Ollama has installed. Never a literal tag; nothing found raises."""
+    named = os.environ.get(env_name)
     if named:
         return named
     pool_file = Path(pool_file or settings.MODEL_POOL_FILE)
     if not pool_file.is_file():
-        raise VisionError(f"no vision model: set {settings.VISION_MODEL_ENV} or give the pool file ({pool_file}) a 'vision' role")
+        raise VisionError(f"no {role} model: set {env_name} or give the pool file ({pool_file}) a '{role}' role")
     pool = tomllib.loads(pool_file.read_text(encoding="utf-8")).get("models", {}).get("pool", [])
     installed = {m["name"] for m in api("/api/tags").get("models", [])}
-    ranked = sorted((e.get("rank", 99), e["name"]) for e in pool if "vision" in e.get("roles", []) and e.get("name") in installed)
+    ranked = sorted((e.get("rank", 99), e["name"]) for e in pool if role in e.get("roles", []) and e.get("name") in installed)
     if not ranked:
-        raise VisionError(f"no installed model has the 'vision' role in {pool_file}; set {settings.VISION_MODEL_ENV}")
+        raise VisionError(f"no installed model has the '{role}' role in {pool_file}; set {env_name}")
     return ranked[0][1]
+
+
+def vision_model(*, api: Callable = _ollama, pool_file: Path | None = None) -> str:
+    return pool_model("vision", settings.VISION_MODEL_ENV, api=api, pool_file=pool_file)
+
+
+def _require_gpu(model: str, api: Callable) -> None:
+    loaded = {m["name"]: m for m in api("/api/ps").get("models", [])}
+    m = loaded.get(model)
+    if m is None or m.get("size_vram", 0) < m.get("size", 0):
+        raise VisionError(f"{model} is not fully on the GPU (loaded: {m and (m.get('size_vram'), m.get('size'))}); refusing CPU inference")
+
+
+def embedder(*, api: Callable = _ollama, pool_file: Path | None = None) -> tuple[str, Callable[[list[str]], list[list[float]]]]:
+    """(model, embed(texts) -> vectors) with the pool's "embed" model on Ollama; GPU only, like the vision model."""
+    model = pool_model("embed", settings.EMBED_MODEL_ENV, api=api, pool_file=pool_file)
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        out = []
+        for i in range(0, len(texts), EMBED_BATCH):   # one request with all 275 alt texts failed every time (2026-10-22); <= 128 worked
+            out += api("/api/embed", {"model": model, "input": list(texts[i:i + EMBED_BATCH]), "keep_alive": "10m"}).get("embeddings") or []
+        _require_gpu(model, api)
+        if len(out) != len(texts):
+            raise VisionError(f"{model} returned {len(out)} embeddings for {len(texts)} texts")
+        return out
+
+    return model, embed
 
 
 def alt_text_prompt(context: dict) -> str:
@@ -332,7 +368,18 @@ def alt_text_prompt(context: dict) -> str:
               "- Describe only what is visible: the organism or part shown, pose, colours, what it is on, background, light.",
               "- Use the facts above to name things, but add no other facts (no habitat, behaviour or species traits that are not visible).",
               "- Do not repeat the date or the place: the post already shows them.",
-              "- One to three sentences, under 350 characters."]
+              "- Answer with the alt text only, as plain text: no JSON, no quotes, no labels."]
+    name = context.get("common_name") or context.get("scientific_name")
+    if name:
+        lines.append(f"- Call the organism '{name}' (the photographer's identification), not a vaguer word like 'growth' or 'plant'.")
+    style = context.get("style")
+    if style:
+        lines += ["", "Write it the way the photographer writes alt text (learned from their own posts):"]
+        lines += [f"- {r}" for r in style["rules"]]
+        lines += ["", "The photographer's own alt texts for similar subjects (match this voice and length, not their content):"]
+        lines += [f"- {e}" for e in style["examples"]]
+    else:
+        lines.append("- One to three sentences, under 350 characters.")
     return "\n".join(lines)
 
 
@@ -343,12 +390,30 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 def clean_alt(text: str, context: dict) -> str:
     """The model's answer, tidied the same way every time: whitespace collapsed, a leading "The image shows" removed, and sentences that
     restate the date or the place (the post text carries both) dropped. Nothing else is rewritten; an answer that would end up empty is
-    kept whole."""
+    kept whole. The vision model sometimes answers with a JSON object ({"scene": "...", "confidence": 0.99}); then its longest string
+    value is the answer."""
+    text = text.strip()
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            obj = None
+        strings = [v for v in obj.values() if isinstance(v, str) and v.strip()] if isinstance(obj, dict) else []
+        if strings:
+            text = max(strings, key=len)
     text = " ".join(text.split())
     sentences = [_OPENER.sub("", x) for x in _SENTENCE.split(text)] if text else []
     sentences = [x[:1].upper() + x[1:] for x in sentences if x]
     facts = [f for f in (context.get("observed_on"), context.get("place")) if f]
-    kept = [x for x in sentences if not any(f in x for f in facts)]
+    kept = []
+    for x in sentences:
+        hits = [x.find(f) for f in facts if f in x]
+        if not hits:
+            kept.append(x)
+            continue
+        head = _TRAILING_LINK.sub("", x[:min(hits)])       # "..., photographed on October 9, 2025, in ..." -> "..."
+        if len(head) >= MIN_ALT_CHARS:
+            kept.append(head + ".")
     return " ".join(kept or sentences)
 
 
@@ -363,13 +428,12 @@ def describe(image: Path, context: dict, *, model: str, api: Callable = _ollama)
     r = api("/api/chat", {"model": model, "stream": False, "think": False, "keep_alive": "10m", "options": {"temperature": 0},
                           "messages": [{"role": "user", "content": alt_text_prompt(context),
                                         "images": [base64.b64encode(buf.getvalue()).decode()]}]})
-    loaded = {m["name"]: m for m in api("/api/ps").get("models", [])}
-    m = loaded.get(model)
-    if m is None or m.get("size_vram", 0) < m.get("size", 0):
-        raise VisionError(f"{model} is not fully on the GPU (loaded: {m and (m.get('size_vram'), m.get('size'))}); refusing CPU inference")
+    _require_gpu(model, api)
     text = clean_alt(r.get("message", {}).get("content") or "", context)
     if not text:
         raise VisionError(f"{model} returned no alt text for {image}")
+    if len(text) < MIN_ALT_CHARS or text.lstrip().startswith(("{", "[")):
+        raise UnusableAnswer(f"{model} gave no usable alt text for {image.name}: {text[:60]!r}")
     return text[:ALT_MAX_CHARS]
 
 
@@ -442,9 +506,11 @@ def _read_label(path: Path) -> dict:
 
 def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, drafts_dir: Path, model: str,
                fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
-               describe_fn: Callable[..., str] = describe, now: dt.datetime | None = None) -> dict:
+               describe_fn: Callable[..., str] = describe, style: Callable[[str], dict] | None = None,
+               now: dt.datetime | None = None) -> dict:
     """Write drafts_dir/<month>-obs<obs_id>/ (draft.json + 1.jpg..4.jpg) and return the draft. The observation is fetched live: casual,
-    deleted and taxon-less observations raise SkipObservation."""
+    deleted and taxon-less observations raise SkipObservation. style(subject) -> {"rules", "examples", ...}: the owner's alt-text style
+    for this photo (social_style.style_for), given to the vision model and recorded per image."""
     from .inat import InatNotFoundError
 
     try:
@@ -468,8 +534,17 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
         context = {"common_name": taxon.get("preferred_common_name") or taxon.get("common_name"), "scientific_name": taxon.get("name"),
                    "rank": taxon.get("rank"), "grade": GRADE_TEXT.get(grade or "", grade), "observed_on": format_date(obs.get("observed_on")),
                    "place": public_place(obs), "title": label.get("title"), "caption": label.get("caption"), "keywords": label.get("keywords")}
-        alt = describe_fn(out / name, context, model=model)
-        images.append({"file": name, "source": rel, "alt": alt, **info})
+        if style is not None:
+            subject = " ".join(x for x in (context["common_name"], context["scientific_name"], label.get("title"),
+                                           ", ".join((label.get("keywords") or [])[:10])) if x)
+            context["style"] = style(subject)
+        try:
+            alt = describe_fn(out / name, context, model=model)
+        except SkipObservation:
+            shutil.rmtree(out)           # no half-written draft folder is left behind
+            raise
+        images.append({"file": name, "source": rel, "alt": alt, **info,
+                       **({"style_examples": context["style"]["examples"]} if style is not None else {})})
     draft = {"draft_id": draft_id, "month": month, "obs_id": obs_id, "url": INAT_OBS_URL.format(obs_id), "text": text_segments(obs),
              "images": images, "vision_model": model, "observation": obs,
              "created_at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds")}
@@ -477,13 +552,24 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
     return draft
 
 
+def default_style() -> Callable[[str], dict]:
+    """style(subject) from the saved profile (settings.SOCIAL_STYLE_PROFILE) and the pool's embed model."""
+    from .social_style import load_profile, style_for
+
+    profile = load_profile()
+    _, embed = embedder()
+    return lambda subject: {**style_for(profile, subject, embed=embed), "profile_built_at": profile["built_at"]}
+
+
 def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Path, drafts_dir: Path, keep_pending: int | None = None,
                 model: str | None = None, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
-                describe_fn: Callable[..., str] = describe, pick_model: Callable[[], str] = vision_model) -> dict:
+                describe_fn: Callable[..., str] = describe, pick_model: Callable[[], str] = vision_model,
+                style_source: Callable[[], Callable[[str], dict]] | None = None) -> dict:
     """Top up `today`'s month's unposted drafts (drafted or approved) to keep_pending, from the observations with gallery files in that
     month of any year that are not taken: posted, rejected or awaiting an outcome (posting) ever, or drafted in this month already. A draft
     of an earlier month that was never posted has expired (only the current month posts), so its observation comes back next year.
-    Returns {"month", "pending", "drafted", "skipped"}."""
+    The owner's alt-text style is required: style_source() (default: the saved profile + the pool's embed model) is loaded once, before
+    any drafting; a missing profile raises and drafts nothing. Returns {"month", "pending", "drafted", "skipped"}."""
     keep_pending = settings.SOCIAL_KEEP_PENDING if keep_pending is None else keep_pending
     month = f"{today.year}-{today.month:02d}"
     known = ledger.drafts()
@@ -496,12 +582,13 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
             if v.get("obs_id") is not None and (v["state"] in ("posted", "rejected", "posting") or v["month"] == month)}
     cands = month_observations(index, today.month)
     model = model or pick_model()
+    style = (style_source or default_style)()
     for obs_id in order_candidates(cands, seen, seed=today.isoformat()):
         if len(report["drafted"]) >= need:
             break
         try:
             draft = make_draft(obs_id, cands[obs_id], month=month, gallery_dir=gallery_dir, drafts_dir=drafts_dir, model=model,
-                               fetch=fetch, read_label=read_label, describe_fn=describe_fn)
+                               fetch=fetch, read_label=read_label, describe_fn=describe_fn, style=style)
         except SkipObservation as e:
             report["skipped"][obs_id] = str(e)
             continue

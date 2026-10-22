@@ -399,7 +399,7 @@ class TestDraft:
 
         report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
                                     keep_pending=3, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(),
-                                    pick_model=no_model)
+                                    pick_model=no_model, style_source=lambda: None)
 
         assert report == {"month": "2026-10", "pending": 1, "drafted": ["2026-10-obs3", "2026-10-obs1"],
                           "skipped": {2: "observation 2 is casual"}}
@@ -423,7 +423,7 @@ class TestDraft:
 
         report = social.draft_month(index, ledger, today=dt.date(2026, 10, 1), gallery_dir=g, drafts_dir=tmp_path / "drafts",
                                     keep_pending=10, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(),
-                                    pick_model=no_model)
+                                    pick_model=no_model, style_source=lambda: None)
 
         assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2"]
         assert sorted(fetch.calls) == [1, 2]
@@ -668,3 +668,141 @@ class TestCli:
         monkeypatch.setattr("sys.argv", ["bio", "social-approve", "nope"])
         assert cli.main() == 1
         assert capsys.readouterr().err == f"bio social-approve: no draft 'nope' in {tmp_path / 'l.jsonl'}\n"
+
+
+# ----------------------------------------------------------------------------------------------------------- owner's style in alt text
+
+class RecordingEmbedApi:
+    """Stands in for Ollama: /api/tags lists the embed model, /api/embed answers one vector per input, /api/ps reports residency."""
+
+    def __init__(self, vram=100):
+        self.calls, self.vram = [], vram
+
+    def __call__(self, path, body=None, **kw):
+        self.calls.append((path, body))
+        if path == "/api/tags":
+            return {"models": [{"name": "emb:1"}]}
+        if path == "/api/embed":
+            return {"embeddings": [[float(len(t))] for t in body["input"]]}
+        if path == "/api/ps":
+            return {"models": [{"name": "emb:1", "size": 100, "size_vram": self.vram}]}
+        raise AssertionError(path)
+
+
+EMBED_POOL = '[[models.pool]]\nname = "emb:1"\nroles = ["embed"]\nrank = 1\n'
+
+
+class TestStyleWiring:
+    def test_embedder_batches_requests_and_keeps_the_order(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BIO_EMBED_MODEL", raising=False)
+        (tmp_path / "p.toml").write_text(EMBED_POOL, encoding="utf-8")
+        api = RecordingEmbedApi()
+        model, embed = social.embedder(api=api, pool_file=tmp_path / "p.toml")
+        texts = ["x" * n for n in range(1, 131)]
+        assert model == "emb:1"
+        assert embed(texts) == [[float(n)] for n in range(1, 131)]
+        assert [len(b["input"]) for p, b in api.calls if p == "/api/embed"] == [64, 64, 2]
+
+    def test_embedder_refuses_cpu_inference(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BIO_EMBED_MODEL", "emb:1")
+        _, embed = social.embedder(api=RecordingEmbedApi(vram=40))
+        with pytest.raises(VisionError, match=r"emb:1 is not fully on the GPU"):
+            embed(["a"])
+        _, embed = social.embedder(api=RecordingEmbedApi(vram=100))
+        assert embed(["abc"]) == [[3.0]]
+
+    def test_prompt_carries_the_rules_examples_and_name_and_drops_the_generic_length(self):
+        styled = social.alt_text_prompt({**CONTEXT, "style": {"rules": ["Length: about 118 characters.", "No emoji."],
+                                                              "examples": ["A red and black spotted beetle hunting.", "A spider on a web."]}})
+        lines = styled.splitlines()
+        assert "- Call the organism 'Lattice Orbweaver' (the photographer's identification), not a vaguer word like 'growth' or 'plant'." in lines
+        assert lines[-7:] == ["Write it the way the photographer writes alt text (learned from their own posts):",
+                              "- Length: about 118 characters.", "- No emoji.", "",
+                              "The photographer's own alt texts for similar subjects (match this voice and length, not their content):",
+                              "- A red and black spotted beetle hunting.", "- A spider on a web."]
+        assert "- One to three sentences, under 350 characters." not in lines
+        plain = social.alt_text_prompt(CONTEXT).splitlines()
+        assert plain[-1] == "- One to three sentences, under 350 characters."
+
+    def test_make_draft_asks_the_style_for_each_photo_subject_and_records_the_examples(self, tmp_path):
+        g = tmp_path / "gallery"
+        rels = ["2024/2024-10/2024-10-01_DSC_1.jpg"]
+        jpeg(g / rels[0], size=(300, 200))
+        asked, seen = [], []
+
+        def style(subject):
+            asked.append(subject)
+            return {"rules": ["No emoji."], "examples": ["A spider on a web."]}
+
+        def desc(image, context, *, model):
+            seen.append(context["style"])
+            return "alt"
+
+        draft = social.make_draft(42, rels, month="2026-10", gallery_dir=g, drafts_dir=tmp_path / "d", model="vis:1",
+                                  fetch=RecordingFetch({42: observation()}), read_label=labels, describe_fn=desc, style=style)
+        assert asked == ["Lattice Orbweaver Araneus thaddeus title 2024-10-01_DSC_1 k1, k2"]
+        assert seen == [{"rules": ["No emoji."], "examples": ["A spider on a web."]}]
+        assert draft["images"][0]["style_examples"] == ["A spider on a web."]
+
+    def test_drafting_without_a_style_profile_drafts_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(social.settings, "SOCIAL_STYLE_PROFILE", tmp_path / "missing.json")
+        g = tmp_path / "gallery"
+        jpeg(g / "2024/2024-10/a.jpg")
+        fetch, ledger = RecordingFetch({1: observation(1)}), Ledger(tmp_path / "l.jsonl")
+        from bio_automation.social_style import StyleError
+
+        with pytest.raises(StyleError, match=r"no style profile at .*missing\.json: run `bio social-style` first"):
+            social.draft_month({"files": {"2024/2024-10/a.jpg": 1}}, ledger, today=dt.date(2026, 10, 21), gallery_dir=g,
+                               drafts_dir=tmp_path / "d", keep_pending=1, model="vis:1", fetch=fetch, read_label=labels,
+                               describe_fn=RecordingDescribe())
+        assert fetch.calls == [] and ledger.records() == []
+        report = social.draft_month({"files": {"2024/2024-10/a.jpg": 1}}, ledger, today=dt.date(2026, 10, 21), gallery_dir=g,
+                                    drafts_dir=tmp_path / "d", keep_pending=1, model="vis:1", fetch=fetch, read_label=labels,
+                                    describe_fn=RecordingDescribe(), style_source=lambda: (lambda s: {"rules": [], "examples": []}))
+        assert report["drafted"] == ["2026-10-obs1"]
+
+    def test_a_json_wrapped_answer_is_unwrapped_and_other_braces_are_left_alone(self):
+        assert social.clean_alt('{ "scene": "A spotted lanternfly on wood.", "confidence": 0.99 }', {}) == "A spotted lanternfly on wood."
+        assert social.clean_alt('{"a": "short", "b": "the longer one wins."}', {}) == "The longer one wins."
+        assert social.clean_alt("{not json} a moth.", {}) == "{not json} a moth."
+        assert social.clean_alt('{"confidence": 0.9}', {}) == '{"confidence": 0.9}'
+
+
+class TestAnswerChecks:
+    DATED = {"observed_on": "October 9, 2025", "place": "SGL220, PA, USA"}
+
+    def test_a_trailing_date_place_clause_is_cut_and_the_description_kept(self):
+        assert social.clean_alt("A close-up of a cocklebur with spiky, reddish-brown burs and green leaves, photographed on October 9, 2025, "
+                                "in SGL220, PA, USA.", self.DATED) == "A close-up of a cocklebur with spiky, reddish-brown burs and green leaves."
+        assert social.clean_alt("A spider on a web. Taken in SGL220, PA, USA.", self.DATED) == "A spider on a web."
+        assert social.clean_alt("A spider on a web.", self.DATED) == "A spider on a web."
+
+    def test_unusable_answers_skip_the_observation_and_usable_ones_pass(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        with pytest.raises(social.UnusableAnswer, match=r"gave no usable alt text for 1\.jpg: '\{'"):
+            social.describe(img, CONTEXT, model="vis:1", api=FakeOllama(content="{"))
+        with pytest.raises(social.UnusableAnswer, match=r"gave no usable alt text for 1\.jpg: 'A moth.'"):
+            social.describe(img, CONTEXT, model="vis:1", api=FakeOllama(content="A moth."))
+        assert social.describe(img, CONTEXT, model="vis:1", api=FakeOllama(content="A moth on a wall.")) == "A moth on a wall."
+        assert issubclass(social.UnusableAnswer, SkipObservation)
+
+    def test_a_skipped_draft_leaves_no_folder_and_the_next_observation_is_drafted(self, tmp_path):
+        g = tmp_path / "gallery"
+        index = {"files": {}}
+        for obs in (1, 2):
+            rel = f"2024/2024-10/2024-10-0{obs}_DSC_{obs}.jpg"
+            jpeg(g / rel, size=(300, 200))
+            index["files"][rel] = obs
+
+        def desc(image, context, *, model):
+            if "obs1" in str(image):
+                raise social.UnusableAnswer("vis:1 gave no usable alt text for 1.jpg: '{'")
+            return "A spider on a web."
+
+        ledger = Ledger(tmp_path / "l.jsonl")
+        report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
+                                    keep_pending=2, model="vis:1", fetch=RecordingFetch({1: observation(1), 2: observation(2)}),
+                                    read_label=labels, describe_fn=desc, pick_model=no_model, style_source=lambda: None)
+        assert report["drafted"] == ["2026-10-obs2"]
+        assert report["skipped"] == {1: "vis:1 gave no usable alt text for 1.jpg: '{'"}
+        assert sorted(p.name for p in (tmp_path / "drafts").iterdir()) == ["2026-10-obs2"]

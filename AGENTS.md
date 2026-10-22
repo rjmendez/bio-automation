@@ -130,7 +130,10 @@ the pool's `vision` role; never a literal model name), given the embedded Stock 
 **Every post is approved by the owner** (`bio social-approve`); nothing auto-approves, and a draft edited after approval needs a
 new approval. `bio social-post` is dry-run unless `--live`, posts at most `BIO_SOCIAL_POSTS_PER_DAY` a day, and a send that
 raised leaves the draft `posting`, which blocks all posting until the owner checks the profile and runs `bio social-resolve`
-(never resend on a guess). Never print a private-geoprivacy place. Daily task `Bio-Social-Daily` runs
+(never resend on a guess). Never print a private-geoprivacy place. Alt text follows the owner's own style
+(`bio social-style` -> `settings.SOCIAL_STYLE_PROFILE`, learned from alt texts they wrote on Bluesky, inat_skeet bot posts
+excluded; deterministic statistics + rules + nearest examples, nothing model-written; drafting refuses to run without it;
+mirrored in Loci investigation `bsky-alt-text-style`). Daily task `Bio-Social-Daily` runs
 `F:/services/bio-social/run-social.ps1` (index -> draft -> post).
 
 **Sign-in is atproto OAuth through Bluesky's own client library (owner, 2026-10-22): use a mature, maintained
