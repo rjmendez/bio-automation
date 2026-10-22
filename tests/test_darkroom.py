@@ -208,6 +208,16 @@ class TestSync:
         assert (w.dl.calls, w.embed.calls, summary["downloaded"], summary["gallery_embedded"]) == ([], [], 0, 0)
         assert w.prints() == first
 
+    def test_the_same_picture_on_another_image_shard_is_not_fetched_again(self, tmp_path):
+        w = World(tmp_path, {1: (None, b"p1")})
+        w.sync()
+        for url, html in list(w.site.pages.items()):
+            w.site.pages[url] = html.replace("https://s1.darkroom.com/", "https://s2.darkroom.com/")      # the shard host varies per request
+        w.dl.calls.clear()
+        summary = w.sync()
+        assert (w.dl.calls, w.embed.calls, summary["downloaded"]) == ([], [], 0)
+        assert w.prints() == f"obs_id,url\r\n101,{BASE}/products/1\r\n"
+
     def test_a_new_product_is_the_only_one_fetched_and_embedded(self, tmp_path):
         w = World(tmp_path, {1: (None, b"p1")})
         w.sync()

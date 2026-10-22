@@ -303,8 +303,9 @@ class TestText:
     def test_full_post(self):
         segs = social.text_segments(observation())
         assert social.segments_text(segs) == ("Lattice Orbweaver (Araneus thaddeus)\nResearch Grade\nOctober 1, 2024 · Bucks County, PA, USA\n"
-                                              "https://www.inaturalist.org/observations/42\nAlt text: local AI model, reviewed.\n"
+                                              "https://www.inaturalist.org/observations/42\n"
                                               "#macrophotography #nature #inaturalist #Arachnida #arachnids")
+        assert "reviewed" not in social.segments_text(segs)                      # nobody reviews a scheduled post: it must not claim it
         assert [s for s in segs if s[0] == "link"] == [["link", "https://www.inaturalist.org/observations/42", "https://www.inaturalist.org/observations/42"]]
 
     def test_lowercase_common_name_is_capitalised_for_display(self):
@@ -322,11 +323,11 @@ class TestText:
         assert social.segments_text(social.text_segments(observation(iconic=None))).endswith("\n#macrophotography #nature #inaturalist")
 
     def test_tags_are_dropped_from_the_end_to_fit_300(self):
-        # with a 69-character place the post is exactly 300 characters with every Fungi tag ("fungi" is #Fungi already); one more drops the last
-        exact = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 69)))
+        # with a 105-character place the post is exactly 300 characters with every Fungi tag ("fungi" is #Fungi already); one more drops the last
+        exact = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 105)))
         assert len(exact) == 300
         assert exact.endswith("\n#macrophotography #nature #inaturalist #Fungi #mycology #mushrooms #fungifriends")
-        over = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 70)))
+        over = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 106)))
         assert len(over) == 287
         assert over.endswith("\n#macrophotography #nature #inaturalist #Fungi #mycology #mushrooms")
 
@@ -334,17 +335,17 @@ class TestText:
         segs = social.text_segments(observation(), PRINT)
         assert social.segments_text(segs) == ("Lattice Orbweaver (Araneus thaddeus)\nResearch Grade\nOctober 1, 2024 · Bucks County, PA, USA\n"
                                               "https://www.inaturalist.org/observations/42\nPrints: " + PRINT + "\n"
-                                              "Alt text: local AI model, reviewed.\n#macrophotography #nature #inaturalist #Arachnida #arachnids")
+                                              "#macrophotography #nature #inaturalist #Arachnida #arachnids")
         assert [s[2] for s in segs if s[0] == "link"] == ["https://www.inaturalist.org/observations/42", PRINT]
         assert social.text_segments(observation(), None) == social.text_segments(observation())
 
     def test_tags_go_before_the_print_link_and_come_back_when_it_has_to_go(self):
-        # a 94-character place fits with the print link and no tags (300); at 95 the link goes and the tags that fit return (291)
-        kept = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 94), PRINT))
-        assert len(kept) == 300 and kept.endswith("Prints: " + PRINT + "\nAlt text: local AI model, reviewed.\n")
-        dropped = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 95), PRINT))
+        # a 130-character place fits with the print link and no tags (300); at 131 the link goes and the tags that fit return (291)
+        kept = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 130), PRINT))
+        assert len(kept) == 300 and kept.endswith("Prints: " + PRINT + "\n")
+        dropped = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 131), PRINT))
         assert len(dropped) == 291 and "Prints:" not in dropped
-        assert dropped.endswith("\nAlt text: local AI model, reviewed.\n#macrophotography #nature #inaturalist #Fungi")
+        assert dropped.endswith("\n#macrophotography #nature #inaturalist #Fungi")
 
     def test_too_long_without_tags_raises(self):
         with pytest.raises(SocialError, match=r"observation 42: post text is \d+ characters even without hashtags"):
@@ -631,12 +632,12 @@ class TestPosting:
         social.approve(ledger, drafts, "2026-10-obs1")
         social.approve(ledger, drafts, "2026-10-obs2")
         send = RecordingSend()
-        social.post_next(ledger, drafts, now=NOW, live=True, send=send)
+        social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1)
 
-        again = social.post_next(ledger, drafts, now=NOW + dt.timedelta(hours=3), live=True, send=send)
+        again = social.post_next(ledger, drafts, now=NOW + dt.timedelta(hours=3), live=True, send=send, posts_per_day=1)
         assert again == {"status": "done for today", "posted_today": ["2026-10-obs1"]}
         assert len(send.calls) == 1
-        tomorrow = social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send)
+        tomorrow = social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send, posts_per_day=1)
         assert tomorrow["status"] == "posted" and tomorrow["draft_id"] == "2026-10-obs2"
 
     def test_only_this_months_approved_drafts_are_posted(self, tmp_path):
@@ -649,7 +650,7 @@ class TestPosting:
         ledger, drafts = self.ready(tmp_path)
         social.approve(ledger, drafts, "2026-10-obs1")
         social.reject(ledger, "2026-10-obs1", "blurry")
-        assert social.post_next(ledger, drafts, now=NOW) == {"status": "nothing approved", "month": "2026-10"}
+        assert social.post_next(ledger, drafts, now=NOW, auto_approve=False) == {"status": "nothing approved", "month": "2026-10"}
 
     def test_a_draft_edited_after_approval_is_refused_until_approved_again(self, tmp_path):
         ledger, drafts = self.ready(tmp_path, 1)
@@ -714,6 +715,164 @@ class TestPosting:
             social.approve(ledger, drafts, "2026-10-obs1")
         with pytest.raises(SocialError, match=r"unknown ledger event 'bogus'"):
             ledger.append("bogus", "x")
+
+
+def drafted(tmp_path, n=4, *, month="2026-10", legacy=False):
+    """n drafted (unapproved) drafts 2026-10-obs1.. in `month`, drafted in that order; `legacy` puts the old review-claim line in each."""
+    ledger, drafts = Ledger(tmp_path / "l.jsonl"), tmp_path / "drafts"
+    for i in range(1, n + 1):
+        d = write_draft(drafts, f"{month}-obs{i}", i, month)
+        if legacy:
+            p = d / "draft.json"
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            idx = next(k for k, s in enumerate(doc["text"]) if s == ["text", "\n"])
+            doc["text"][idx] = ["text", "\nAlt text: local AI model, reviewed.\n"]
+            p.write_text(json.dumps(doc), encoding="utf-8")
+        ledger.append("drafted", f"{month}-obs{i}", obs_id=i, month=month, now=NOW - dt.timedelta(days=2, minutes=-i))
+    return ledger, drafts
+
+
+def events(ledger, draft_id):
+    return [r["event"] for r in ledger.records() if r["draft_id"] == draft_id]
+
+
+class TestScheduledPosts:
+    """Three scheduled posts a day with no per-draft review: the run approves the oldest drafted draft itself (owner, 2026-10-22)."""
+
+    def test_three_scheduled_posts_a_day_then_done_for_today_and_the_next_day_goes_on(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 5)
+        send = RecordingSend()
+        slots = [NOW + dt.timedelta(hours=h) for h in (-1, 3, 11)]                      # 08:00, 12:00, 20:00
+        got = [social.post_next(ledger, drafts, now=t, live=True, send=send)["draft_id"] for t in slots]
+        assert got == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]
+        fourth = social.post_next(ledger, drafts, now=NOW + dt.timedelta(hours=12), live=True, send=send)
+        assert fourth == {"status": "done for today", "posted_today": ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]}
+        assert len(send.calls) == 3
+        assert social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send)["draft_id"] == "2026-10-obs4"
+
+    def test_a_run_approves_the_oldest_drafted_draft_first_and_says_so(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 2)
+        r = social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend())
+        assert (r["status"], r["draft_id"], r["approved_by_this_run"], r["manual"]) == ("posted", "2026-10-obs1", True, False)
+        assert events(ledger, "2026-10-obs1") == ["drafted", "approved", "posting", "posted"]
+        assert events(ledger, "2026-10-obs2") == ["drafted"]
+
+    def test_an_already_approved_draft_goes_before_any_auto_approval(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 2)
+        social.approve(ledger, drafts, "2026-10-obs2")
+        r = social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend())
+        assert (r["draft_id"], r["approved_by_this_run"]) == ("2026-10-obs2", False)
+        assert events(ledger, "2026-10-obs1") == ["drafted"]
+
+    def test_with_auto_approval_off_nothing_is_posted_until_the_owner_approves(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 2)
+        send = RecordingSend()
+        before = ledger.records()
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=send, auto_approve=False) == {"status": "nothing approved", "month": "2026-10"}
+        assert (send.calls, ledger.records()) == ([], before)
+
+    def test_the_setting_is_the_default_for_auto_approval(self, tmp_path, monkeypatch):
+        ledger, drafts = drafted(tmp_path, 1)
+        monkeypatch.setattr(social.settings, "SOCIAL_AUTO_APPROVE", False)
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend())["status"] == "nothing approved"
+        monkeypatch.setattr(social.settings, "SOCIAL_AUTO_APPROVE", True)
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend())["status"] == "posted"
+
+    def test_a_draft_of_an_earlier_month_is_not_auto_approved_and_a_rejected_one_is_never_posted(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 1, month="2026-09")
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend()) == {"status": "nothing approved", "month": "2026-10"}
+        ledger2, drafts2 = drafted(tmp_path / "b", 2)
+        social.reject(ledger2, "2026-10-obs1", "blurry")
+        assert social.post_next(ledger2, drafts2, now=NOW, live=True, send=RecordingSend())["draft_id"] == "2026-10-obs2"
+
+    def test_a_dry_run_records_nothing_even_when_it_would_auto_approve(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 2)
+        before = ledger.records()
+        r = social.post_next(ledger, drafts, now=NOW, send=RecordingSend())
+        assert (r["status"], r["draft_id"], r["approved_by_this_run"]) == ("dry-run", "2026-10-obs1", True)
+        assert ledger.records() == before
+
+    def test_the_legacy_review_claim_is_dropped_from_what_is_shown_and_what_is_sent(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 1, legacy=True)
+        assert "reviewed" in (drafts / "2026-10-obs1" / "draft.json").read_text(encoding="utf-8")
+        dry = social.post_next(ledger, drafts, now=NOW)
+        assert "reviewed" not in dry["text"]
+        assert "reviewed" in (drafts / "2026-10-obs1" / "draft.json").read_text(encoding="utf-8")     # a dry-run changes no file
+        send = RecordingSend()
+        social.post_next(ledger, drafts, now=NOW, live=True, send=send)
+        assert send.calls[0]["text"] == dry["text"]
+        assert "reviewed" not in (drafts / "2026-10-obs1" / "draft.json").read_text(encoding="utf-8")
+
+
+class TestManualPosts:
+    def test_a_manual_post_is_neither_counted_in_nor_stopped_by_the_daily_cap(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 4)
+        send = RecordingSend()
+        social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1)               # the one scheduled post
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1)["status"] == "done for today"
+        r = social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1, manual=True)   # the cap does not stop it
+        assert (r["status"], r["draft_id"], r["manual"]) == ("posted", "2026-10-obs2", True)
+        assert [x.get("manual") for x in ledger.records() if x["event"] == "posted"] == [None, True]
+
+    def test_manual_posts_do_not_use_up_the_scheduled_ones(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 4)
+        send = RecordingSend()
+        social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1, manual=True)
+        social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1, manual=True)
+        scheduled = social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1)
+        assert (scheduled["status"], scheduled["manual"]) == ("posted", False)
+        again = social.post_next(ledger, drafts, now=NOW, live=True, send=send, posts_per_day=1)
+        assert again == {"status": "done for today", "posted_today": [scheduled["draft_id"]]}
+
+    def test_a_named_draft_is_posted_whatever_its_month_and_is_approved_by_that_act(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 3, month="2026-09")
+        send = RecordingSend()
+        r = social.post_next(ledger, drafts, now=NOW, live=True, send=send, draft_id="2026-09-obs2")
+        assert (r["status"], r["draft_id"], r["manual"], r["approved_by_this_run"]) == ("posted", "2026-09-obs2", True, True)
+        assert events(ledger, "2026-09-obs2") == ["drafted", "approved", "posting", "posted"]
+        assert [rec["month"] for rec in ledger.records() if rec["draft_id"] == "2026-09-obs2"] == ["2026-09"] * 4
+        assert events(ledger, "2026-09-obs1") == ["drafted"] and len(send.calls) == 1
+
+    def test_a_named_draft_must_exist_and_not_be_posted_or_rejected(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 2)
+        with pytest.raises(SocialError, match=r"^no draft 'nope' in "):
+            social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(), draft_id="nope")
+        social.reject(ledger, "2026-10-obs1", "blurry")
+        with pytest.raises(SocialError, match=r"^draft 2026-10-obs1 is rejected; only a drafted, failed or approved draft can be posted$"):
+            social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(), draft_id="2026-10-obs1")
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(), draft_id="2026-10-obs2")["status"] == "posted"
+
+    def test_social_post_manual_and_draft_through_the_cli(self, tmp_path, monkeypatch, capsys):
+        from bio_automation import cli, settings
+
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "l.jsonl")
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "social")
+        write_draft(tmp_path / "social" / "drafts", "2026-09-obs7", 7, "2026-09")
+        Ledger().append("drafted", "2026-09-obs7", obs_id=7, month="2026-09")
+        monkeypatch.setattr("sys.argv", ["bio", "social-post", "--draft", "2026-09-obs7"])
+        assert cli.main() == 0
+        out = json.loads(capsys.readouterr().out)
+        assert (out["status"], out["draft_id"], out["manual"]) == ("dry-run", "2026-09-obs7", True)
+        assert [r["event"] for r in Ledger().records()] == ["drafted"]
+
+
+class TestApprovalDropsTheReviewClaim:
+    def test_approving_a_legacy_draft_removes_the_line_and_the_hash_covers_the_result(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 1, legacy=True)
+        social.approve(ledger, drafts, "2026-10-obs1")
+        text = social.segments_text(social.load_draft(drafts / "2026-10-obs1")["text"])
+        assert "reviewed" not in text and "inaturalist.org/observations/1\n#macrophotography" in text
+        assert social.draft_hash(drafts / "2026-10-obs1") == ledger.drafts()["2026-10-obs1"]["approved_hash"]
+
+    def test_a_draft_without_the_line_is_left_byte_for_byte_alone(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 1)
+        before = (drafts / "2026-10-obs1" / "draft.json").read_bytes()
+        social.approve(ledger, drafts, "2026-10-obs1")
+        assert (drafts / "2026-10-obs1" / "draft.json").read_bytes() == before
+
+    def test_strip_review_claim_changes_only_the_claim(self):
+        segs = [["text", "head\n"], ["link", "u", "u"], ["text", "\nAlt text: local AI model, reviewed.\n"], ["tag", "#a", "a"]]
+        assert social.strip_review_claim(segs) == [["text", "head\n"], ["link", "u", "u"], ["text", "\n"], ["tag", "#a", "a"]]
 
 
 class TestOnePosterAtATime:
