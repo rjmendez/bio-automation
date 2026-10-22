@@ -176,6 +176,14 @@ class Queue:
         raise QueueLeaseLost(f"message {message_id} is not claimed (status {row['status']!r}, last claimed by {row['claimed_by']!r}): "
                              f"{worker_id!r} no longer holds it")
 
+    def extend_lease(self, message_id: int, *, worker_id: str, lease_s: float = DEFAULT_LEASE_S) -> float:
+        """Renew the claim of a message still being worked on: its lease now ends lease_s from now (returned). Only the claim holder may
+        renew (QueueLeaseLost otherwise, e.g. its lease already ran out and another worker reclaimed the message), so a worker that keeps
+        renewing never has its message handed to a second worker, and one that dies stops renewing and its message comes back."""
+        until = self._clock() + lease_s
+        self._finish(message_id, worker_id, "UPDATE messages SET lease_until=?", (until,))
+        return until
+
     def ack(self, message_id: int, *, worker_id: str) -> None:
         """Done -- only by the worker that holds the claim (claim()'s worker_id). A worker whose lease expired and whose message was
         reclaimed gets QueueLeaseLost and changes nothing: the new claimant's result is the one that counts."""
