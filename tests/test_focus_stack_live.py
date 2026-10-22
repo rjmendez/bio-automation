@@ -61,7 +61,7 @@ import pytest
 import tifffile
 from PIL import Image
 
-from bio_automation.focus_stack import DEFAULT_BINARY, OUTPUT_NAME, run_focus_stack
+from bio_automation.focus_stack import DEFAULT_BINARY, FOCUS_STACK_BINARY_ENV, OUTPUT_NAME, run_focus_stack
 from bio_automation.preclean import denoise_stack_frames
 from bio_automation.topaz import ModelCache
 
@@ -98,7 +98,7 @@ class TestRunFocusStackLive:
         assert DEFAULT_BINARY.exists(), (
             f"real focus-stack binary not found at {DEFAULT_BINARY} -- install it "
             "(see src/bio_automation/focus_stack.py's module docstring) or set "
-            "FOCUS_STACK_BINARY"
+            + FOCUS_STACK_BINARY_ENV
         )
         frames_dir, frame_a, frame_b = two_real_denoised_frames
 

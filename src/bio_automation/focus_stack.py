@@ -64,7 +64,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-FOCUS_STACK_BINARY_ENV = "FOCUS_STACK_BINARY"
+from . import settings
+
+FOCUS_STACK_BINARY_ENV = settings.FOCUS_STACK_ENV
 
 # Sensible default for this machine, overridable via the FOCUS_STACK_BINARY
 # env var (checked at import time, same pattern as zerene.DEFAULT_LAUNCHCMD
@@ -72,7 +74,7 @@ FOCUS_STACK_BINARY_ENV = "FOCUS_STACK_BINARY"
 DEFAULT_BINARY = Path(
     os.environ.get(
         FOCUS_STACK_BINARY_ENV,
-        r"C:\Users\rjmendez-admin\AppData\Local\Programs\focus-stack\focus-stack\focus-stack.exe",
+        str(settings.FOCUS_STACK_DEFAULT),
     )
 )
 

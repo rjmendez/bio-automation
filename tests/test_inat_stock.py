@@ -74,11 +74,29 @@ class TestLabel:
         with pytest.raises(LabelError, match="observation 5: no taxon on iNat"):
             inat_stock.label_observation(5, None, fetch=lambda i: {**fetched(), "taxon": {}})
 
-    def test_fetch_failure_is_reported_not_swallowed(self):
+    def test_a_missing_observation_is_a_refusal_with_its_id(self):
+        from bio_automation.inat import InatNotFoundError
+
+        def gone(i):
+            raise InatNotFoundError("observation not found (404): https://api.inaturalist.org/v1/observations/8")
+
+        with pytest.raises(LabelError, match=r"observation 8: fetch failed: InatNotFoundError: observation not found \(404\)"):
+            inat_stock.label_observation(8, None, fetch=gone)
+
+    def test_a_rate_limit_is_not_a_refusal_it_propagates(self):
+        from bio_automation.inat import InatTransientError
+
+        def throttled(i):
+            raise InatTransientError("iNaturalist API error 429 for x, still failing after 6 attempts")
+
+        with pytest.raises(InatTransientError, match=r"iNaturalist API error 429 for x, still failing after 6 attempts"):
+            inat_stock.label_observation(8, None, fetch=throttled)
+
+    def test_a_network_error_propagates_unchanged(self):
         def boom(i):
             raise ConnectionError("no route")
 
-        with pytest.raises(LabelError, match="observation 8: fetch failed: ConnectionError: no route"):
+        with pytest.raises(ConnectionError, match=r"^no route$"):
             inat_stock.label_observation(8, None, fetch=boom)
 
     def test_label_from_an_already_merged_observation(self):
