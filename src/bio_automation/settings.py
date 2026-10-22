@@ -49,6 +49,13 @@ RAW_CACHE_DIR = env_path("BIO_RAW_CACHE_DIR", CACHE_DIR / "raw-work")
 RAW_CACHE_GB = env_float("BIO_RAW_CACHE_GB", 40)                          # least recently used entries are evicted past this
 RAW_CACHE_LOCK_STALE_S = env_float("BIO_RAW_CACHE_LOCK_STALE_S", 600)     # a fill lock older than this belongs to a dead process
 
+# --- NAS read gate (nas_io.py): at most NAS_IO_SLOTS NAS reads at once across all pipeline processes, tag before lightcraft before render before match
+NAS_IO_GATE = env("BIO_NAS_IO_GATE", "1")                                  # "0" = no gate: every read goes straight to the NAS
+NAS_IO_DB = env_path("BIO_NAS_IO_DB", CACHE_DIR / "state" / "nas_io.sqlite3")
+NAS_IO_SLOTS = int(env("BIO_NAS_IO_SLOTS", 2))
+NAS_IO_HOLD_TTL_S = env_float("BIO_NAS_IO_HOLD_TTL_S", 120)               # a slot whose holder stops renewing (it died) is free after this
+NAS_IMPORT_CHUNK = int(env("BIO_NAS_IMPORT_CHUNK", 8))                     # raws per LightCraft import call, each call inside one slot (~14 s at 1.7 s a new raw)
+
 # --- external tools: <NAME>_ENV is read at call time by the module that runs the tool (then PATH, then <NAME>_DEFAULT)
 PROGRAM_FILES = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
 LIGHTCRAFT_CLI_ENV = "BIO_LIGHTCRAFT_CLI"
