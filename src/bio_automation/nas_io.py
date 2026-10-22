@@ -142,15 +142,35 @@ class NasIoGate:
         started = self._time_fn()
 
         def step(db, now):
-            db.execute("UPDATE holders SET expires = ? WHERE token = ?", (now + self.hold_ttl_s, token))
+            """'renewed', 'retaken' (the row had expired and its slot was still free: the holder took it back) or 'lost' (another reader
+            took the slot meanwhile; this read now runs beyond the gate)."""
+            if db.execute("UPDATE holders SET expires = ? WHERE token = ?", (now + self.hold_ttl_s, token)).rowcount:
+                return "renewed"
+            if db.execute("SELECT COUNT(*) FROM holders").fetchone()[0] < self.slots:
+                db.execute("INSERT INTO holders (token, pid, stage, prio, expires) VALUES (?, ?, ?, ?, ?)",
+                           (token, self._pid_fn(), stage, _prio(stage), now + self.hold_ttl_s))
+                return "retaken"
+            return "lost"
+        lost = False
         while not self._renew_wait_fn(stop, self.hold_ttl_s / 3):
             held = self._time_fn() - started
             if held >= self.hold_max_s:
                 log.warning("NAS I/O gate: a %s read has held its slot for %.0f s (hold_max_s %.0f): no longer renewed, the slot is free "
                             "again within %.0f s", stage, held, self.hold_max_s, self.hold_ttl_s)
                 return
-            with contextlib.suppress(sqlite3.Error):
-                self._write(step)
+            try:
+                outcome = self._write(step)
+            except sqlite3.Error:
+                continue
+            if outcome == "renewed":
+                lost = False
+            elif outcome == "retaken":
+                log.warning("NAS I/O gate: a %s read's row expired before its renewal at %.0f s: the slot was free and is held again",
+                            stage, self._time_fn())
+            elif not lost:
+                lost = True
+                log.warning("NAS I/O gate: a %s read lost its slot (its row expired before the renewal at %.0f s) and another reader took it: "
+                            "this read now runs beyond the gate", stage, self._time_fn())
 
     # --- the API
 
