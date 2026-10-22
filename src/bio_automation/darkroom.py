@@ -103,6 +103,11 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
+def _image_id(url: str) -> str:
+    """The picture's own id: the last path segment of its url, without the shard host (s0, s1, s2 ...) that varies between requests."""
+    return url.rstrip("/").rsplit("/", 1)[-1]
+
+
 def gallery_vectors(files: dict[str, int], gallery_dir: Path, cache_file: Path, embed_file: Callable[[Path], np.ndarray],
                     ) -> tuple[list[str], np.ndarray, list[str], int]:
     """(relpaths, unit vectors, unreadable relpaths, newly embedded) for the indexed gallery files. A file is embedded again only when its
@@ -208,8 +213,8 @@ def sync(*, index: dict, gallery_dir: Path, work_dir: Path, out_file: Path, manu
     (work_dir / "img").mkdir(parents=True, exist_ok=True)
     for p in products:
         key = str(p.product_id)
-        if key in pvecs and state.get(key, {}).get("image_url") == p.image_url:
-            continue
+        if key in pvecs and _image_id(state.get(key, {}).get("image_url", "")) == _image_id(p.image_url):
+            continue                                                    # the same picture (the s0/s1/s2 host varies between requests)
         img = work_dir / "img" / f"{p.product_id}.jpg"
         img.write_bytes(download(p.image_url))
         downloaded += 1
