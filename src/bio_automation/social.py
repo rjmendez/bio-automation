@@ -732,15 +732,15 @@ def reject(ledger: Ledger, draft_id: str, reason: str = "") -> dict:
     return ledger.append("rejected", draft_id, obs_id=d["obs_id"], month=d["month"], reason=reason)
 
 
-def resolve(ledger: Ledger, draft_id: str, *, posted_uri: str | None) -> dict:
+def resolve(ledger: Ledger, draft_id: str, *, posted_uri: str | None, now: dt.datetime | None = None) -> dict:
     """Settle a post whose outcome was never recorded: the owner checked the profile. posted_uri = the post's at:// URI if it went out,
     None if it did not (the draft becomes failed and can be approved again)."""
     d = ledger.drafts().get(draft_id)
     if d is None or d["state"] != "posting":
         raise SocialError(f"draft {draft_id} is not awaiting an outcome (state {d and d['state']})")
     if posted_uri:
-        return ledger.append("posted", draft_id, obs_id=d["obs_id"], month=d["month"], uri=posted_uri, resolved=True)
-    return ledger.append("failed", draft_id, obs_id=d["obs_id"], month=d["month"], error="not posted (resolved by the owner)")
+        return ledger.append("posted", draft_id, obs_id=d["obs_id"], month=d["month"], uri=posted_uri, resolved=True, now=now)
+    return ledger.append("failed", draft_id, obs_id=d["obs_id"], month=d["month"], error="not posted (resolved by the owner)", now=now)
 
 
 # --------------------------------------------------------------------------------------------------- posting
@@ -811,15 +811,15 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
                "image_bytes": [(ddir / i["file"]).stat().st_size for i in draft["images"]]}
     if not live:
         return {"status": "dry-run", **payload}
-    ledger.append("posting", draft_id, obs_id=draft["obs_id"], month=month)
+    ledger.append("posting", draft_id, obs_id=draft["obs_id"], month=month, now=now)
     try:
         uri, cid = send(request)
     except NothingSent as e:
-        ledger.append("approved", draft_id, obs_id=draft["obs_id"], month=month, hash=drafts[draft_id]["approved_hash"], restored=True)
-        ledger.append("error", draft_id, obs_id=draft["obs_id"], month=month, error=str(e)[:500])
+        ledger.append("approved", draft_id, obs_id=draft["obs_id"], month=month, hash=drafts[draft_id]["approved_hash"], restored=True, now=now)
+        ledger.append("error", draft_id, obs_id=draft["obs_id"], month=month, error=str(e)[:500], now=now)
         raise SocialError(f"nothing was posted ({e}); {draft_id} stays approved for the next run") from e
     except Exception as e:  # noqa: BLE001 -- the post may or may not exist now: the draft stays "posting" and blocks until resolved
         raise SocialError(f"posting {draft_id} failed with an unknown outcome ({type(e).__name__}: {e}); check the profile, then "
                           f"`bio social-resolve {draft_id} --posted-uri <at:// uri>` or `--not-posted`") from e
-    ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=month, uri=uri, cid=cid)
+    ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=month, uri=uri, cid=cid, now=now)
     return {"status": "posted", "uri": uri, **payload}

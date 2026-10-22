@@ -639,7 +639,7 @@ class TestPosting:
             social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send)
         assert send.calls == []
 
-        social.resolve(ledger, "2026-10-obs1", posted_uri="at://did:plc:me/app.bsky.feed.post/3zzz")
+        social.resolve(ledger, "2026-10-obs1", posted_uri="at://did:plc:me/app.bsky.feed.post/3zzz", now=NOW)
         assert ledger.drafts()["2026-10-obs1"]["state"] == "posted"
         assert social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send)["draft_id"] == "2026-10-obs2"
 
