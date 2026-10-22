@@ -490,7 +490,9 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
                 model: str | None = None, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                 describe_fn: Callable[..., str] = describe, pick_model: Callable[[], str] = vision_model) -> dict:
     """Top up `today`'s month's unposted drafts (drafted or approved) to keep_pending, from the observations with gallery files in that
-    month of any year that the ledger has never seen (posted, rejected or pending alike). Returns {"month", "pending", "drafted", "skipped"}."""
+    month of any year that are not taken: posted, rejected or awaiting an outcome (posting) ever, or drafted in this month already. A draft
+    of an earlier month that was never posted has expired (only the current month posts), so its observation comes back next year.
+    Returns {"month", "pending", "drafted", "skipped"}."""
     keep_pending = settings.SOCIAL_KEEP_PENDING if keep_pending is None else keep_pending
     month = f"{today.year}-{today.month:02d}"
     known = ledger.drafts()
@@ -499,7 +501,8 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
     need = keep_pending - len(pending)
     if need <= 0:
         return report
-    seen = {int(v["obs_id"]) for v in known.values() if v.get("obs_id") is not None}
+    seen = {int(v["obs_id"]) for v in known.values()
+            if v.get("obs_id") is not None and (v["state"] in ("posted", "rejected", "posting") or v["month"] == month)}
     cands = month_observations(index, today.month)
     model = model or pick_model()
     for obs_id in order_candidates(cands, seen, seed=today.isoformat()):

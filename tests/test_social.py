@@ -400,7 +400,8 @@ class TestDraft:
         index["files"]["2025/2025-11/2025-11-01_DSC_9.jpg"] = 9
         ledger = Ledger(tmp_path / "ledger.jsonl")
         ledger.append("drafted", "2026-10-obs4", obs_id=4, month="2026-10")      # pending already
-        ledger.append("drafted", "2025-10-obs5", obs_id=5, month="2025-10")      # seen last year: never again
+        ledger.append("drafted", "2025-10-obs5", obs_id=5, month="2025-10")
+        ledger.append("posted", "2025-10-obs5", obs_id=5, month="2025-10")       # posted last year: never again
         fetch = RecordingFetch({1: observation(1), 2: observation(2, grade="casual"), 3: observation(3)})
 
         report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
@@ -410,8 +411,29 @@ class TestDraft:
         assert report == {"month": "2026-10", "pending": 1, "drafted": ["2026-10-obs3", "2026-10-obs1"],
                           "skipped": {2: "observation 2 is casual"}}
         assert fetch.calls == [3, 2, 1]
-        assert {k: v["state"] for k, v in ledger.drafts().items()} == {"2026-10-obs4": "drafted", "2025-10-obs5": "drafted",
+        assert {k: v["state"] for k, v in ledger.drafts().items()} == {"2026-10-obs4": "drafted", "2025-10-obs5": "posted",
                                                                       "2026-10-obs3": "drafted", "2026-10-obs1": "drafted"}
+
+    def test_an_expired_draft_of_an_earlier_month_comes_back_but_rejected_posted_and_posting_never_do(self, tmp_path):
+        g = tmp_path / "gallery"
+        index = {"files": {}}
+        for obs in (1, 2, 3, 4, 5):
+            rel = f"2024/2024-10/2024-10-0{obs}_DSC_{obs}.jpg"
+            jpeg(g / rel, size=(300, 200))
+            index["files"][rel] = obs
+        ledger = Ledger(tmp_path / "ledger.jsonl")
+        for obs, events in ((1, ["drafted"]), (2, ["drafted", "approved"]), (3, ["drafted", "rejected"]),
+                            (4, ["drafted", "approved", "posted"]), (5, ["drafted", "approved", "posting"])):
+            for e in events:
+                ledger.append(e, f"2025-10-obs{obs}", obs_id=obs, month="2025-10")
+        fetch = RecordingFetch({o: observation(o) for o in (1, 2, 3, 4, 5)})
+
+        report = social.draft_month(index, ledger, today=dt.date(2026, 10, 1), gallery_dir=g, drafts_dir=tmp_path / "drafts",
+                                    keep_pending=10, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(),
+                                    pick_model=no_model)
+
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2"]
+        assert sorted(fetch.calls) == [1, 2]
 
     def test_draft_month_does_nothing_when_enough_are_pending(self, tmp_path):
         ledger = Ledger(tmp_path / "ledger.jsonl")
@@ -587,3 +609,23 @@ class TestPosting:
         monkeypatch.setenv("BSKY_APP_PASSWORD", "x")
         with pytest.raises(SocialError, match=r"set BSKY_HANDLE and BSKY_APP_PASSWORD"):
             social.bluesky_client()
+
+
+# ----------------------------------------------------------------------------------------------------------- CLI
+
+class TestCli:
+    def test_approve_through_the_cli_and_a_bad_id_is_a_one_line_error(self, tmp_path, monkeypatch, capsys):
+        from bio_automation import cli, settings
+
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "l.jsonl")
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "social")
+        write_draft(tmp_path / "social" / "drafts", "2026-10-obs1", 1, "2026-10")
+        Ledger().append("drafted", "2026-10-obs1", obs_id=1, month="2026-10")
+
+        monkeypatch.setattr("sys.argv", ["bio", "social-approve", "2026-10-obs1"])
+        assert cli.main() == 0
+        assert Ledger().drafts()["2026-10-obs1"]["state"] == "approved"
+
+        monkeypatch.setattr("sys.argv", ["bio", "social-approve", "nope"])
+        assert cli.main() == 1
+        assert capsys.readouterr().err == f"bio social-approve: no draft 'nope' in {tmp_path / 'l.jsonl'}\n"
