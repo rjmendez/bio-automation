@@ -131,7 +131,18 @@ def calibrate_from_folder(folder: Path, out: Path | None = None, sample: int = 3
     return floor
 
 
+IMAGE_SOURCE_EXTENSIONS = (".jpg", ".jpeg", ".tif", ".tiff")      # exported sources (a day with no raw): LightCraft develops them too
+
+
 def score_raw(raw_path: Path) -> FrameScore:
+    """Sharpness of a source at half size: a raw's half-size demosaic, or an exported JPEG/TIFF reduced by 2 (same scale as the floor)."""
+    if Path(raw_path).suffix.lower() in IMAGE_SOURCE_EXTENSIONS:
+        from PIL import Image
+
+        with Image.open(raw_path) as im:
+            im = im.convert("RGB")
+            rgb = np.asarray(im.reduce(2))
+        return tile_sharpness(rgb)
     import rawpy
 
     with rawpy.imread(str(raw_path)) as r:
@@ -140,6 +151,11 @@ def score_raw(raw_path: Path) -> FrameScore:
 
 
 def raw_megapixels(raw_path: Path) -> float:
+    if Path(raw_path).suffix.lower() in IMAGE_SOURCE_EXTENSIONS:
+        from PIL import Image
+
+        with Image.open(raw_path) as im:
+            return im.width * im.height / 1e6
     import rawpy
 
     with rawpy.imread(str(raw_path)) as r:
