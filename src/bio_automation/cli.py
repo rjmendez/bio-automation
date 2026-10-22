@@ -271,6 +271,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("social-whoami", help="Refresh the stored Bluesky session and show its account, scope and expiry.")
 
+    p_cl_plan = sub.add_parser(
+        "social-cleanup-plan",
+        help="Plan the removal of the old inat_skeet bot posts from live public data (those with replies from people are kept); "
+             "writes the plan and prints its id. Deletes nothing.")
+    p_cl_plan.add_argument("--handle", default=settings.BSKY_HANDLE)
+
+    p_cl_login = sub.add_parser("social-cleanup-login", help="One-time sign-in for the delete-only cleanup client.")
+    p_cl_login.add_argument("--handle", default=settings.BSKY_HANDLE)
+
+    p_cl_run = sub.add_parser(
+        "social-cleanup-run",
+        help="Delete exactly the posts in a cleanup plan. Requires --confirm <plan id>; resumable (ledger next to the plan).")
+    p_cl_run.add_argument("plan")
+    p_cl_run.add_argument("--confirm", required=True, help="the plan id printed by social-cleanup-plan: your approval of that list")
+
     p_social_style = sub.add_parser(
         "social-style",
         help="Learn the owner's alt-text style from their own public Bluesky posts (inat_skeet bot posts left out) and save the profile "
@@ -753,6 +768,33 @@ def cmd_social_whoami(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_social_cleanup_plan(args: argparse.Namespace) -> int:
+    import json
+
+    from .social_cleanup import build_plan, save_plan, summary
+
+    plan = build_plan(args.handle)
+    path = save_plan(plan)
+    print(json.dumps({"plan": str(path), **summary(plan)}, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_social_cleanup_login(args: argparse.Namespace) -> int:
+    from .social_cleanup import cleanup_account
+
+    return _bsky(lambda: cleanup_account().login(args.handle))
+
+
+def cmd_social_cleanup_run(args: argparse.Namespace) -> int:
+    import json
+
+    from .social_cleanup import run_plan
+
+    report = _bsky(lambda: run_plan(Path(args.plan), args.confirm))
+    print(json.dumps(report, indent=2))
+    return 0 if not report["stopped"] and report["remaining"] == 0 else 1
+
+
 def cmd_social_style(args: argparse.Namespace) -> int:
     import json
 
@@ -781,7 +823,9 @@ def cmd_social_metadata(args: argparse.Namespace) -> int:
 SOCIAL_COMMANDS = {"social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
-                   "social-metadata": cmd_social_metadata, "social-style": cmd_social_style}
+                   "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,
+                   "social-cleanup-plan": cmd_social_cleanup_plan, "social-cleanup-login": cmd_social_cleanup_login,
+                   "social-cleanup-run": cmd_social_cleanup_run}
 
 
 def cmd_process(args: argparse.Namespace) -> int:
