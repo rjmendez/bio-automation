@@ -45,14 +45,15 @@ ALTS = ["A small white beetle.", "An orange mushroom on a log. It is wet.", "Two
 class TestMeasureAndRules:
     def test_statistics_are_exact(self):
         assert social_style.measure(ALTS) == {
-            "alt_texts": 5, "chars_median": 28, "chars_p10": 18, "chars_p90": 39, "words_median": 6, "sentences_median": 1,
+            "alt_texts": 5, "chars_median": 28, "chars_p10": 18, "chars_p25": 21, "chars_p75": 33, "chars_p90": 39, "words_median": 6, "sentences_median": 1,
             "sentences_p90": 2, "one_sentence_share": 0.8, "opens_with_article_share": 0.8, "opens_with_count_share": 0.2,
             "ends_with_period_share": 0.8, "first_person_share": 0.2, "photo_word_share": 0.2, "mood_word_share": 0.2, "emoji_count": 0}
 
     def test_rules_follow_the_thresholds(self):
         loose = social_style.rules_from(social_style.measure(ALTS))
         assert loose == [
-            "Length: about 28 characters (6 words); rarely over 39 (median and 90th percentile of 5 of the photographer's own alt texts).",
+            "Length: 21-33 characters, typically about 28 (6 words); never under 18 or over 39 (middle half, median, 10th and 90th "
+            "percentile of 5 of the photographer's own alt texts).",
             "Usually one sentence (80% are), at most 2.",
             "Start with the subject itself: 'A ...' or 'An ...' (80% do), or with a count ('Two ...') when there are several.",
             "End with a period.", "No emoji."]
@@ -115,9 +116,9 @@ class TestBuild:
             social_style.resolve_account("x.example", get_json=get)
 
 
-PROFILE = {"version": 1, "handle": "me.example", "did": "did:plc:me", "built_at": "2026-10-22T00:00:00+00:00",
+PROFILE = {"version": 2, "handle": "me.example", "did": "did:plc:me", "built_at": "2026-10-22T00:00:00+00:00",
            "source": {"posts": 9, "bot_posts_excluded": 4}, "embed_model": "emb:1", "rules": ["Rule one.", "Rule two."],
-           "stats": {"alt_texts": 3, "chars_p90": 120},
+           "stats": {"alt_texts": 3, "chars_p25": 40, "chars_p75": 90, "chars_p90": 120},
            "examples": [{"alt": "far away", "vector": [0.0, 1.0]}, {"alt": "closest", "vector": [1.0, 0.1]},
                         {"alt": "second", "vector": [1.0, 0.5]}]}
 
@@ -135,7 +136,7 @@ class TestUse:
             return [[1.0, 0.0]]
 
         assert social_style.style_for(PROFILE, "spider web", embed=embed, k=2) == {"rules": ["Rule one.", "Rule two."],
-                                                                                    "examples": ["closest", "second"], "max_chars": 120}
+                                                                                    "examples": ["closest", "second"], "band": [40, 90]}
         assert calls == [["spider web"]]
 
     def test_profile_round_trip_and_refusals(self, tmp_path):
@@ -144,7 +145,7 @@ class TestUse:
         with pytest.raises(StyleError, match=r"no style profile at .*nope\.json: run `bio social-style` first"):
             social_style.load_profile(tmp_path / "nope.json")
         (tmp_path / "old.json").write_text(json.dumps({**PROFILE, "version": 0}))
-        with pytest.raises(StyleError, match=r"is version 0, expected 1: run `bio social-style` again"):
+        with pytest.raises(StyleError, match=r"is version 0, expected 2: run `bio social-style` again"):
             social_style.load_profile(tmp_path / "old.json")
 
     def test_loci_record_carries_the_structure_without_vectors(self):
@@ -153,5 +154,5 @@ class TestUse:
                                "(posts: 9, inat_skeet bot posts excluded: 4). Rules: Rule one. Rule two. Examples: far away | closest")
         assert rec["metadata"]["examples_sample"] == ["far away", "closest"]
         assert (rec["metadata"]["kind"], rec["metadata"]["stats"], rec["metadata"]["rules"]) == (
-            "bsky_alt_text_style", {"alt_texts": 3, "chars_p90": 120}, ["Rule one.", "Rule two."])
+            "bsky_alt_text_style", {"alt_texts": 3, "chars_p25": 40, "chars_p75": 90, "chars_p90": 120}, ["Rule one.", "Rule two."])
         assert "vector" not in json.dumps(rec)

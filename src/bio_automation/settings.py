@@ -100,6 +100,12 @@ BSKY_CLIENT_ID = env("BIO_BSKY_CLIENT_ID", "https://rjmendez.github.io/bio-socia
 BSKY_REDIRECT_URI = env("BIO_BSKY_REDIRECT_URI", "https://rjmendez.github.io/bio-social-oauth/callback.html")
 BSKY_OAUTH_SCOPE = env("BIO_BSKY_OAUTH_SCOPE", "atproto repo:app.bsky.feed.post?action=create blob:image/*")   # create posts + upload images only
 BSKY_CLIENT_NAME = env("BIO_BSKY_CLIENT_NAME", "bio-automation photo posts")
+# "cleanup" profile: a second confidential client that can ONLY delete posts (removing the old inat_skeet bot posts); its own key,
+# session and sign-in, so the poster can never delete and the cleanup client can never post
+BSKY_CLEANUP_OAUTH_DIR = env_path("BIO_BSKY_CLEANUP_OAUTH_DIR", r"F:\services\bio-social\oauth-cleanup")
+BSKY_CLEANUP_CLIENT_ID = env("BIO_BSKY_CLEANUP_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/cleanup/client-metadata.json")
+BSKY_CLEANUP_SCOPE = env("BIO_BSKY_CLEANUP_SCOPE", "atproto repo:app.bsky.feed.post?action=delete")
+BSKY_ARCHIVE_DIR = env_path("BIO_BSKY_ARCHIVE_DIR", CACHE_DIR / "bsky-archive")   # repo exports, cleanup plans and their ledgers
 
 # --- local vision model (Ollama, GPU only). No model is named here: env BIO_VISION_MODEL, else the best-ranked installed "vision" model of
 # Loci's pool file
