@@ -133,6 +133,15 @@ raised leaves the draft `posting`, which blocks all posting until the owner chec
 (never resend on a guess). Never print a private-geoprivacy place. Daily task `Bio-Social-Daily` runs
 `F:/services/bio-social/run-social.ps1` (index -> draft -> post).
 
+**Sign-in is atproto OAuth through Bluesky's own client library (owner, 2026-10-22): use a mature, maintained
+implementation and never roll your own OAuth, DPoP, JWT or other crypto step.** Posting goes through the `bsky-oauth` library
+(private repo `rjmendez/bsky-oauth`, extra `[social]`, then `bsky-oauth install`), which is glue around
+`@atproto/oauth-client-node`, `@atproto/jwk-jose` and `@atproto/api` at pinned versions. bio-automation is its "poster" profile
+(`social.poster_profile()`): a confidential client (a public one is capped at 2-week sessions) whose metadata and PUBLIC key
+are published by repo `rjmendez/bio-social-oauth` (GitHub Pages, `settings.BSKY_CLIENT_ID`); the private key and the session
+stay in `settings.BSKY_OAUTH_DIR`. Scope: create posts and upload images only; other bots get their own profile and scope. The
+owner signs in once with `bio social-login`; the daily run keeps the session alive by refreshing it.
+
 **No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
 are shelved: do not build, extend, audit or fix them. The focus is bulk photo
 processing from the command line (render, tag, validate, build upload sets).

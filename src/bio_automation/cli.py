@@ -260,8 +260,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_social_post = sub.add_parser(
         "social-post",
         help="Post the oldest approved draft of this month (at most BIO_SOCIAL_POSTS_PER_DAY a day). Dry-run unless --live; --live needs "
-             "env BSKY_HANDLE and BSKY_APP_PASSWORD.")
+             "the OAuth session from `bio social-login`.")
     p_social_post.add_argument("--live", action="store_true")
+
+    p_social_login = sub.add_parser(
+        "social-login",
+        help="One-time Bluesky sign-in (atproto OAuth, Bluesky's official client): open the printed address, approve, paste the address "
+             "of the page you land on. Stores the session in BIO_BSKY_OAUTH_DIR; no password is stored.")
+    p_social_login.add_argument("--handle", default=settings.BSKY_HANDLE)
+
+    sub.add_parser("social-whoami", help="Refresh the stored Bluesky session and show its account, scope and expiry.")
+
+    p_social_metadata = sub.add_parser(
+        "social-metadata", help="Write the poster profile's client-metadata.json, jwks.json (public key) and callback.html for publishing.")
+    p_social_metadata.add_argument("out_dir")
 
     p_build_keywords = sub.add_parser("build-keywords")
     p_build_keywords.add_argument("folder")
@@ -707,9 +719,46 @@ def cmd_social_post(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bsky(call):
+    """Run a bsky-oauth call; its errors become SocialError so main() prints them as one line."""
+    from bsky_oauth import BskyError
+
+    from .social import SocialError
+
+    try:
+        return call()
+    except BskyError as e:
+        raise SocialError(str(e)) from e
+
+
+def cmd_social_login(args: argparse.Namespace) -> int:
+    from .social import poster_account
+
+    return _bsky(lambda: poster_account().login(args.handle))
+
+
+def cmd_social_whoami(args: argparse.Namespace) -> int:
+    import json
+
+    from .social import poster_account
+
+    print(json.dumps(_bsky(lambda: poster_account().whoami()), indent=2))
+    return 0
+
+
+def cmd_social_metadata(args: argparse.Namespace) -> int:
+    import json
+
+    from .social import poster_account
+
+    print(json.dumps(_bsky(lambda: poster_account().metadata(Path(args.out_dir))), indent=2))
+    return 0
+
+
 SOCIAL_COMMANDS = {"social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
-                   "social-post": cmd_social_post}
+                   "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
+                   "social-metadata": cmd_social_metadata}
 
 
 def cmd_process(args: argparse.Namespace) -> int:
