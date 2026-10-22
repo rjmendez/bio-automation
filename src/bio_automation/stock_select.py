@@ -17,6 +17,7 @@ import contextlib
 import csv
 import os
 import re
+import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -306,13 +307,19 @@ KEYWORD_SEP = "|"
 def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: list[dict], fetch=None, floor_path: Path | None = None,
               workers: int = 3, max_iso: int = DEFAULT_MAX_ISO, top_per_group: int | None = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
               excluded_groups: dict | None = None, embedder=None, photo_cache: Path | None = None, get_bytes=None,
-              min_similarity: float | None = None, window: float | None = None, render_dir: Path | None = None) -> list[dict]:
+              min_similarity: float | None = None, window: float | None = None, render_dir: Path | None = None,
+              timings: dict | None = None) -> list[dict]:
     """Score every frame of a LightCraft queue (items with lc_id, raw, day, t = capture epoch, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
+
+    `timings`, when given, is filled with how long each phase took, in seconds (match_s: DA-CLIP matching; label_s: iNat fetch + labels;
+    iso_s: reading ISO; score_s: scoring the raws; decide_s: deciding and writing the csv) and how much work each had (observations,
+    frames_scored).
 
     `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED, and the iNat photos decide which frames count: each photo of
     each observation takes the frame that looks most like it (inat_stock.match_photos_to_frames, DA-CLIP on the GPU; embedder/photo_cache/get_bytes are
     the injectable dependencies), so exactly the frames the owner uploaded are the candidates -- not their unuploaded siblings, and not frames shot near
-    an unrelated observation. Each matched observation is fetched live (fetch, default inat.fetch_inat_observation) and labelled; a frame that is not an
+    an unrelated observation. Each matched observation is fetched live (fetch; by default all of them at once, inat.fetch_inat_observations, with
+    taxon lineages from the persistent inat.TaxonLineageCache) and labelled; a frame that is not an
     uploaded photo, or whose observation cannot be labelled (no taxon, casual), is excluded with the reason. top_per_group (default: none) can still cap
     how many frames of one observation are kept.
     excluded_groups (keyed by observation id here): see decide().
@@ -327,14 +334,21 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     """
     from PIL import Image
 
-    from .inat import fetch_inat_observation
+    from .inat import TaxonLineageCache, fetch_inat_observations
     from .inat_stock import (PHOTO_CACHE_DEFAULT, PHOTO_MATCH_MIN_SIMILARITY, PHOTO_MATCH_WINDOW_S, LabelError, cached_photo, default_embedder,
                              label_observation, label_problems, match_photos_to_frames)
 
+    timings = {} if timings is None else timings
+    started = time.perf_counter()
+
+    def lap(name):
+        nonlocal started
+        now = time.perf_counter()
+        timings[name] = round(now - started, 3)
+        started = now
+
     queue = read_json(Path(queue_json))
     validate_queue_items(queue)
-    lineage_cache: dict = {}
-    fetch = fetch or (lambda i: fetch_inat_observation(i, with_lineage=True, lineage_cache=lineage_cache))
     floor = require_complete_floor(load_floor(floor_path))
     observed_on = {o["id"]: o.get("observed_on") for o in observations}
     photo_kw = {"get_bytes": get_bytes} if get_bytes else {}
@@ -349,8 +363,20 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
         v = x.get("variant_of")
         if v is not None and x["lc_id"] not in matches and v in matches:
             matches[x["lc_id"]], similarity[x["lc_id"]] = matches[v], similarity[v]
+    lap("match_s")
+    matched_obs = sorted(set(matches.values()))
+    timings["observations"] = len(matched_obs)
+    if fetch is None:
+        batch = fetch_inat_observations(matched_obs, with_lineage=True,
+                                        lineage_cache=TaxonLineageCache(settings.INAT_TAXON_CACHE, settings.INAT_TAXON_TTL_S))
+
+        def fetch(i):
+            got = batch[i]
+            if isinstance(got, Exception):
+                raise got
+            return got
     labels, exclusions = {}, dict(excluded_groups or {})
-    for obs_id in sorted(set(matches.values())):
+    for obs_id in matched_obs:
         try:
             labels[obs_id] = label_observation(obs_id, observed_on.get(obs_id), fetch=lambda i: fetch(i))
         except LabelError as e:
@@ -362,6 +388,7 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     for x in queue:
         if x["lc_id"] not in matches:
             exclusions.setdefault(-x["lc_id"], "not one of the photos uploaded to an iNat observation")
+    lap("label_s")
     cache_path = Path(str(out_csv) + ".raw")
     cached: dict = {}
     if cache_path.exists():
@@ -380,6 +407,8 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
                 x["iso"] = raw_iso(Path(x["raw_abs"])) or ""
             except Exception:
                 x["iso"] = ""
+    lap("iso_s")
+    timings["frames_scored"] = len(todo)
     new = not cache_path.exists()
     with open(cache_path, "a", newline="") as f, contextlib.ExitStack() as stack:
         if workers > 1:
@@ -393,6 +422,7 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
             w.writerow(r)
             f.flush()
             cached[int(r["lc_id"])] = {k: str(v) for k, v in r.items()}
+    lap("score_s")
     frames, scores, mp_source = [], {}, {}
     for x in queue:
         c = cached.get(x["lc_id"])
@@ -427,6 +457,7 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
         w = csv.DictWriter(f, list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)
+    lap("decide_s")
     return rows
 
 

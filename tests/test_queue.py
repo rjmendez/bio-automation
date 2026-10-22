@@ -294,3 +294,65 @@ class TestPayloadContract:
         from bio_automation import topics
 
         assert set(topics.PAYLOAD_KEYS) == set(topics.ALL)
+
+
+class TestTimings:
+    def run_one(self, q, clock, topic, queued_s, run_s, *, fail=False):
+        clock.now += 1.0
+        mid = q.publish(topic, {})
+        clock.now += queued_s
+        q.claim([topic], worker_id="w")
+        clock.now += run_s
+        if fail:
+            q.fail(mid, "boom", worker_id="w")
+        else:
+            q.ack(mid, worker_id="w")
+        return mid
+
+    def test_ack_and_fail_record_when_the_message_finished(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            done = self.run_one(q, clock, "t", 5.0, 7.0)
+            failed = self.run_one(q, clock, "t", 1.0, 2.0, fail=True)
+            rows = {r["id"]: r["finished_at"] for r in q._db.execute("SELECT id, finished_at FROM messages")}
+        assert rows == {done: 1013.0, failed: 1017.0}
+
+    def test_timings_give_the_median_and_p90_wait_and_run_per_topic(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            for queued, run in ((10.0, 1.0), (20.0, 2.0), (30.0, 3.0)):
+                self.run_one(q, clock, "a", queued, run)
+            self.run_one(q, clock, "b", 4.0, 8.0)
+            self.run_one(q, clock, "b", 99.0, 99.0, fail=True)          # failed: not part of the done timings
+            assert q.timings() == {
+                "a": {"done": 3, "wait_median_s": 20.0, "wait_p90_s": 28.0, "run_median_s": 2.0, "run_p90_s": 2.8},
+                "b": {"done": 1, "wait_median_s": 4.0, "wait_p90_s": 4.0, "run_median_s": 8.0, "run_p90_s": 8.0}}
+
+    def test_timings_since_only_count_messages_finished_from_then_on(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            self.run_one(q, clock, "a", 10.0, 1.0)
+            cut = clock.now + 0.5
+            self.run_one(q, clock, "a", 20.0, 2.0)
+            assert q.timings(since=cut) == {"a": {"done": 1, "wait_median_s": 20.0, "wait_p90_s": 20.0, "run_median_s": 2.0, "run_p90_s": 2.0}}
+            assert q.timings(since=clock.now + 1) == {}
+
+    def test_requeue_failed_clears_the_finish_time(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = self.run_one(q, clock, "t", 1.0, 1.0, fail=True)
+            assert q.requeue_failed("t") == 1
+            assert q._db.execute("SELECT finished_at FROM messages WHERE id=?", (mid,)).fetchone()[0] is None
+
+    def test_a_version_1_queue_is_migrated_with_its_messages_kept(self, tmp_path):
+        path = tmp_path / "old.sqlite3"
+        conn = sqlite3.connect(str(path))
+        conn.executescript(MIGRATIONS[0])
+        conn.execute("INSERT INTO messages (topic, payload, status, created, claimed_at, attempts) VALUES ('t', '{}', 'done', 1.0, 2.0, 1)")
+        conn.execute("PRAGMA user_version=1")
+        conn.commit()
+        conn.close()
+        with Queue(path) as q:
+            assert q.schema_version() == len(MIGRATIONS) == 2
+            assert q.counts() == {"done": 1}
+            assert q.timings() == {}                                   # finished before finish times were recorded: no made-up duration

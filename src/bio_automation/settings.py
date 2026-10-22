@@ -81,6 +81,12 @@ DAY_BRACKET_S = env_float("BIO_DAY_BRACKET_S", 12 * 3600)                # brack
 INAT_RETRIES = int(env("BIO_INAT_RETRIES", 5))                            # retries after the first attempt
 INAT_BACKOFF_S = env_float("BIO_INAT_BACKOFF_S", 2.0)                     # first wait; doubles each retry
 INAT_BACKOFF_MAX_S = env_float("BIO_INAT_BACKOFF_MAX_S", 120.0)           # no single wait is longer than this
+# one pace for the whole machine: every process that calls the API reserves its slot in this file, so N workers together stay at one request
+# per INAT_MIN_INTERVAL_S (a 429 pushes the next slot of every process back, not only the one that was throttled)
+INAT_MIN_INTERVAL_S = env_float("BIO_INAT_MIN_INTERVAL_S", 1.1)
+INAT_RATE_DB = env_path("BIO_INAT_RATE_DB", CACHE_DIR / "state" / "inat_rate.sqlite3")
+INAT_TAXON_CACHE = env_path("BIO_INAT_TAXON_CACHE", CACHE_DIR / "inat" / "taxa.sqlite3")   # taxon lineages (observations are always fetched live)
+INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space

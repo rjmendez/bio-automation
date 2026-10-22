@@ -547,21 +547,46 @@ class TestTagQueue:
         assert rows["2"]["obs_id"] == "11" and rows["2"]["category_id"] == "1" and rows["2"]["stock_candidate"] == "True"
         assert rows["5"]["obs_id"] == "" and rows["5"]["day"] == "2026-07-31" and rows["5"]["raw"] == "2026/d/DSC_5.NEF"
 
-    def test_default_fetch_asks_for_the_lineage_and_shares_one_cache(self, tmp_path, monkeypatch):
-        from bio_automation import inat
+    def default_fetch_run(self, tmp_path, monkeypatch, missing=()):
+        from bio_automation import inat, settings
 
         seen = []
 
-        def real(obs_id, **kw):
-            seen.append((obs_id, kw["with_lineage"], id(kw["lineage_cache"])))
-            return fake_fetch([])(obs_id)
+        def batch(ids, **kw):
+            seen.append((list(ids), kw["with_lineage"], type(kw["lineage_cache"]).__name__, kw["lineage_cache"].path))
+            return {i: inat.InatNotFoundError(f"observation {i}: no results in API response") if i in missing else fake_fetch([])(i) for i in ids}
 
-        monkeypatch.setattr(inat, "fetch_inat_observation", real)
+        monkeypatch.setattr(inat, "fetch_inat_observations", batch)
+        monkeypatch.setattr(settings, "INAT_TAXON_CACHE", tmp_path / "taxa.sqlite3")
         self.seed(tmp_path)
         monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
-        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json", workers=1)
-        assert [(o, w) for o, w, _ in seen] == [(11, True), (22, True)]
-        assert len({c for _, _, c in seen}) == 1                                      # one shared cache, so a taxon is looked up once
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json",
+                                      workers=1)
+        return {r["id"]: r for r in rows}, seen
+
+    def test_default_fetch_asks_once_for_every_matched_observation_with_the_persistent_lineage_cache(self, tmp_path, monkeypatch):
+        by, seen = self.default_fetch_run(tmp_path, monkeypatch)
+        assert seen == [([11, 22], True, "TaxonLineageCache", tmp_path / "taxa.sqlite3")]
+        assert by[4]["taxon"] == "Leiobunum verrucosum" and by[4]["stock_candidate"] is True
+
+    def test_default_fetch_refuses_only_the_observation_the_api_did_not_return(self, tmp_path, monkeypatch):
+        by, _ = self.default_fetch_run(tmp_path, monkeypatch, missing={22})
+        assert by[4]["stock_candidate"] is False
+        assert by[4]["reasons"] == ("group excluded: observation 22: fetch failed: InatNotFoundError: observation 22: no results in API response")
+        assert by[2]["taxon"] == "Leiobunum verrucosum"
+
+    def test_timings_report_each_phase_and_its_work(self, tmp_path, monkeypatch):
+        timings = {}
+        self.run(tmp_path, monkeypatch, timings=timings)
+        assert sorted(timings) == ["decide_s", "frames_scored", "iso_s", "label_s", "match_s", "observations", "score_s"]
+        assert timings["observations"] == 2 and timings["frames_scored"] == 4                # frames 1-4: the uploaded photos of 11 and 22
+        assert all(isinstance(timings[k], float) and timings[k] >= 0 for k in timings if k.endswith("_s"))
+
+    def test_a_rerun_scores_no_frame_and_says_so(self, tmp_path, monkeypatch):
+        self.run(tmp_path, monkeypatch)
+        timings = {}
+        self.run(tmp_path, monkeypatch, timings=timings)
+        assert timings["frames_scored"] == 0
 
     def test_iso_comes_from_the_raw_when_the_picture_has_no_exif(self, tmp_path, monkeypatch):
         from PIL import Image
