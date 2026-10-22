@@ -293,11 +293,18 @@ def validate_queue_items(items: list[dict]) -> None:
         raise QueueItemError(f"{len(bad)} of {len(items)} queue items are invalid: {shown}")
 
 def _score_item(item: dict) -> dict:
+    """The raw cache row for one frame, plus the file's size (`bytes`, 0 when it cannot be read) and how long scoring it took (`score_s`)."""
+    t0 = time.perf_counter()
     try:
         s = score_raw(Path(item["raw_abs"]))
-        return {"lc_id": item["lc_id"], "sharp": round(s.sharp, 2), "clip": round(s.clip, 5), "iso": item.get("iso", ""), "error": ""}
+        row = {"lc_id": item["lc_id"], "sharp": round(s.sharp, 2), "clip": round(s.clip, 5), "iso": item.get("iso", ""), "error": ""}
     except Exception as e:
-        return {"lc_id": item["lc_id"], "sharp": "", "clip": "", "iso": "", "error": f"{type(e).__name__}: {e}"}
+        row = {"lc_id": item["lc_id"], "sharp": "", "clip": "", "iso": "", "error": f"{type(e).__name__}: {e}"}
+    try:
+        size = os.path.getsize(item["raw_abs"])
+    except OSError:
+        size = 0
+    return {**row, "bytes": size, "score_s": time.perf_counter() - t0}
 
 
 LABEL_COLUMNS = ("obs_id", "taxon", "grade", "rank", "title", "keywords", "caption", "category", "category_id")
@@ -313,7 +320,7 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
 
     `timings`, when given, is filled with how long each phase took, in seconds (match_s: DA-CLIP matching; label_s: iNat fetch + labels;
     iso_s: reading ISO; score_s: scoring the raws; decide_s: deciding and writing the csv) and how much work each had (observations,
-    frames_scored).
+    frames_scored, score_bytes = the size of the raws scored; score_frame_max_s = the slowest single frame).
 
     `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED, and the iNat photos decide which frames count: each photo of
     each observation takes the frame that looks most like it (inat_stock.match_photos_to_frames, DA-CLIP on the GPU; embedder/photo_cache/get_bytes are
@@ -418,10 +425,14 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
         w = csv.DictWriter(f, RAW_CACHE_FIELDS)
         if new:
             w.writeheader()
+        per_frame = []
         for r in results:
+            per_frame.append((r.pop("bytes"), r.pop("score_s")))
             w.writerow(r)
             f.flush()
             cached[int(r["lc_id"])] = {k: str(v) for k, v in r.items()}
+        timings["score_bytes"] = sum(b for b, _ in per_frame)
+        timings["score_frame_max_s"] = round(max((t for _, t in per_frame), default=0.0), 3)
     lap("score_s")
     frames, scores, mp_source = [], {}, {}
     for x in queue:
