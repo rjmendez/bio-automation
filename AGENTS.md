@@ -211,3 +211,9 @@ that way — fix the test rather than adding an entry.
 (real rawpy decode of `tests/fixtures/sample_raw.NEF`, real OpenVINO model
 inference) and runs by default — it adds roughly 40-60s to the suite. That cost is
 deliberate (see rule 10 above); do not add a skip condition to make it faster.
+
+**Targeted tests on commits, the full suite at merge to main (owner, 2026-10-21).** On a
+feature-branch commit or push, run the test files for the modules the diff touches plus
+every test that imports them (`settings.py` or `cli.py` changed: all of their importers),
+and `python3 scripts/check_test_honesty.py`. The full suite (~9 min) runs once, when merging
+to main; say in the PR which tests were run.
