@@ -307,6 +307,12 @@ def _score_item(item: dict) -> dict:
     return {**row, "bytes": size, "score_s": time.perf_counter() - t0}
 
 
+def _resolved(todo: list[dict], resolve_raw):
+    """The todo items with raw_abs replaced by resolve_raw(raw_abs), one at a time as the consumer asks (no change when resolve_raw is None)."""
+    for x in todo:
+        yield x if resolve_raw is None else dict(x, raw_abs=str(resolve_raw(Path(x["raw_abs"]))))
+
+
 LABEL_COLUMNS = ("obs_id", "taxon", "grade", "rank", "title", "keywords", "caption", "category", "category_id")
 KEYWORD_SEP = "|"
 
@@ -315,12 +321,16 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
               workers: int = 3, max_iso: int = DEFAULT_MAX_ISO, top_per_group: int | None = DEFAULT_TOP_PER_GROUP, limit: int | None = None,
               excluded_groups: dict | None = None, embedder=None, photo_cache: Path | None = None, get_bytes=None,
               min_similarity: float | None = None, window: float | None = None, render_dir: Path | None = None,
-              timings: dict | None = None) -> list[dict]:
+              timings: dict | None = None, resolve_raw=None) -> list[dict]:
     """Score every frame of a LightCraft queue (items with lc_id, raw, day, t = capture epoch, w, h, copy, loc_source). Resumable via out_csv + '.raw'.
 
     `timings`, when given, is filled with how long each phase took, in seconds (match_s: DA-CLIP matching; label_s: iNat fetch + labels;
     iso_s: reading ISO; score_s: scoring the raws; decide_s: deciding and writing the csv) and how much work each had (observations,
     frames_scored, score_bytes = the size of the raws scored; score_frame_max_s = the slowest single frame).
+
+    `resolve_raw`, when given, maps a frame's raw path (raw_root/<raw>) to the path to read it from (raw_cache.RawCache.local: a copy of a NAS
+    raw on a local disk). With one worker each frame is resolved just before it is scored, so copies are made one at a time in queue order; with
+    several, all are resolved first. The score is the score of those bytes; None reads raw_root as it is.
 
     `observations` (the owner's iNat observations, inat_stock.load_snapshot) is REQUIRED, and the iNat photos decide which frames count: each photo of
     each observation takes the frame that looks most like it (inat_stock.match_photos_to_frames, DA-CLIP on the GPU; embedder/photo_cache/get_bytes are
@@ -418,10 +428,11 @@ def tag_queue(queue_json: Path, raw_root: Path, out_csv: Path, *, observations: 
     timings["frames_scored"] = len(todo)
     new = not cache_path.exists()
     with open(cache_path, "a", newline="") as f, contextlib.ExitStack() as stack:
+        resolved = _resolved(todo, resolve_raw)
         if workers > 1:
-            results = stack.enter_context(ProcessPoolExecutor(workers)).map(_score_item, todo, chunksize=4)
+            results = stack.enter_context(ProcessPoolExecutor(workers)).map(_score_item, list(resolved), chunksize=4)
         else:
-            results = map(_score_item, todo)
+            results = map(_score_item, resolved)
         w = csv.DictWriter(f, RAW_CACHE_FIELDS)
         if new:
             w.writeheader()

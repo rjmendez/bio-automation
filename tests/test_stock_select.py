@@ -645,6 +645,60 @@ class TestTagQueue:
                                       floor_path=tmp_path / "floor.json", workers=1, limit=2)
         assert [r["reasons"] for r in rows if r["id"] in (3, 4)] == ["unscored", "unscored"]
 
+    # ---- resolve_raw: the raw is read from the path the caller resolves it to (a local copy of a NAS raw), the score is unchanged
+    def test_each_todo_frame_is_resolved_just_before_it_is_scored_in_todo_order(self, tmp_path, monkeypatch):
+        self.seed(tmp_path)
+        events = []
+
+        def resolve(p):
+            events.append(("resolve", p))
+            return tmp_path / "local" / p.name
+
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: events.append(("score", p)) or FrameScore(90.0, 0.0))
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                               floor_path=tmp_path / "floor.json", workers=1, resolve_raw=resolve)
+        want = []
+        for n in (1, 2, 3, 4):                                                   # frames 5 and 6 are not photos of an observation: never read
+            want += [("resolve", tmp_path / "raws" / "2026" / "d" / f"DSC_{n}.NEF"), ("score", tmp_path / "local" / f"DSC_{n}.NEF")]
+        assert events == want
+
+    def test_a_resolved_run_writes_byte_identical_score_rows_to_an_unresolved_one(self, tmp_path, monkeypatch):
+        sharp = {"DSC_1.NEF": 30.126, "DSC_2.NEF": 90.0, "DSC_3.NEF": 500.5, "DSC_4.NEF": 40.0}
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(sharp[p.name], 0.012345678))
+        out = {}
+        for name, resolve in (("plain", None), ("resolved", lambda p: tmp_path / "local" / p.name)):
+            d = tmp_path / name
+            d.mkdir()
+            self.seed(d)
+            stock_select.tag_queue(d / "q.json", d / "raws", d / "out.csv", observations=OBS, fetch=fake_fetch([]), floor_path=d / "floor.json",
+                                   workers=1, resolve_raw=resolve)
+            out[name] = (d / "out.csv.raw").read_bytes()
+        assert out["resolved"] == out["plain"]
+        assert out["plain"].decode().splitlines() == ["lc_id,sharp,clip,iso,error", "1,30.13,0.01235,100,", "2,90.0,0.01235,200,",
+                                                      "3,500.5,0.01235,6400,", "4,40.0,0.01235,100,"]
+
+    def test_with_several_workers_the_frames_are_resolved_before_they_go_to_the_pool(self, tmp_path):
+        self.seed(tmp_path)
+        resolved = []
+
+        def resolve(p):
+            resolved.append(p.name)
+            return FIXTURES / ("sample_raw_fungus.NEF" if p.name in ("DSC_2.NEF", "DSC_4.NEF") else "sample_raw.NEF")
+
+        # score_raw is the real one, run in the pool's own processes on the real NEF fixtures
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                               floor_path=tmp_path / "floor.json", workers=2, resolve_raw=resolve)
+        assert resolved == ["DSC_1.NEF", "DSC_2.NEF", "DSC_3.NEF", "DSC_4.NEF"]
+        assert (tmp_path / "out.csv.raw").read_text().splitlines() == [
+            "lc_id,sharp,clip,iso,error", "1,48.28,0.04104,100,", "2,70.65,0.0134,200,", "3,48.28,0.04104,6400,", "4,70.65,0.0134,100,"]
+
+    def test_with_several_workers_and_no_resolver_the_raws_are_read_where_they_are(self, tmp_path):
+        self.seed(tmp_path)
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                               floor_path=tmp_path / "floor.json", workers=2)
+        err = "LibRawIOError: b'Input/output error'"                              # nothing exists under raws/: the unresolved path is what was read
+        assert (tmp_path / "out.csv.raw").read_text().splitlines() == ["lc_id,sharp,clip,iso,error"] + [f"{i},,,,{err}" for i in (1, 2, 3, 4)]
+
     def test_observations_are_required(self, tmp_path):
         self.seed(tmp_path)
         with pytest.raises(TypeError, match="observations"):

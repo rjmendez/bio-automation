@@ -43,6 +43,12 @@ QUEUE_DB = env_path("BIO_QUEUE_DB", CACHE_DIR / "state" / "queue.sqlite3")
 STOCK_FLOOR = env_path("BIO_STOCK_FLOOR", PHOTOS_CACHE / "stock_floor.json")
 INAT_PHOTO_CACHE = env_path("BIO_INAT_PHOTO_CACHE", PHOTOS_CACHE / "inat_photos")
 
+# --- raw working cache (raw_cache.py): a NAS raw is read over the network once, then served from a bounded copy on D: ("0"/"false"/"no" = off: NAS paths)
+RAW_CACHE = env("BIO_RAW_CACHE", "1") not in ("0", "false", "no")
+RAW_CACHE_DIR = env_path("BIO_RAW_CACHE_DIR", CACHE_DIR / "raw-work")
+RAW_CACHE_GB = env_float("BIO_RAW_CACHE_GB", 40)                          # least recently used entries are evicted past this
+RAW_CACHE_LOCK_STALE_S = env_float("BIO_RAW_CACHE_LOCK_STALE_S", 600)     # a fill lock older than this belongs to a dead process
+
 # --- external tools: <NAME>_ENV is read at call time by the module that runs the tool (then PATH, then <NAME>_DEFAULT)
 PROGRAM_FILES = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
 LIGHTCRAFT_CLI_ENV = "BIO_LIGHTCRAFT_CLI"
@@ -90,4 +96,5 @@ INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space
+RAW_CACHE_MIN_FREE_GB = env_float("BIO_RAW_CACHE_MIN_FREE_GB", MIN_FREE_GB)   # below this the cache is not filled: the NAS path is read
 
