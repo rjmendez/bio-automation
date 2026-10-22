@@ -88,9 +88,12 @@ SOCIAL_LEDGER = env_path("BIO_SOCIAL_LEDGER", CACHE_DIR / "state" / "social_ledg
 GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gallery_obs_index.json")   # gallery file -> iNat observation
 SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
 SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 1))
-# app.bsky.embed.images allows 2,000,000 B per image (raised from 1 MB in 2026); 1 MB also passes a PDS still on the old cap
-BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 1_000_000))
-BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 2000))
+# app.bsky.embed.images allows 2,000,000 B per image (formerly 1 MB); the official app compresses post images to the same pair
+# (social-app src/lib/constants.ts IMAGE_SIZE_CONFIG_POSTS: maxDimension 4000, maxSize 2000000)
+BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 2_000_000))
+BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 4000))
+# observation id -> where to buy a print (e.g. its Darkroom product page; Darkroom has no API, so the owner keeps this csv: obs_id,url)
+SOCIAL_PRINTS_FILE = env_path("BIO_SOCIAL_PRINTS_FILE", RESULTS_DIR / "social" / "prints.csv")
 # Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
 # @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
 # rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
