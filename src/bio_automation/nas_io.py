@@ -7,7 +7,8 @@ within a stage), so a tag copy waits for one import chunk, not for a whole day's
 
 State is one SQLite file shared by every process (the same pattern as inat.SharedRateLimiter: BEGIN IMMEDIATE, sleeping outside the
 transaction, wall-clock time): `holders` are the reads in progress, `waiters` the reads queued. Nothing is ever killed:
- - a holder renews its row every hold_ttl_s/3 while its read runs; a process that dies frees its slot after hold_ttl_s;
+ - a holder renews its row every hold_ttl_s/3 while its read runs, for at most hold_max_s (a hung read then gives its slot back);
+   a process that dies frees its slot after hold_ttl_s;
  - a waiter refreshes its row on every poll; a waiter not seen for waiter_ttl_s is dead and blocks nobody.
 The gate never fails a read: if its file cannot be used (sqlite3.Error) it says so once and lets the read go ungated.
 """
@@ -43,14 +44,15 @@ def _wait_event(stop: threading.Event, seconds: float) -> bool:
 
 
 class NasIoGate:
-    def __init__(self, path: Path | str, slots: int, *, hold_ttl_s: float = 120, waiter_ttl_s: float = 5, poll_s: float = 0.25,
-                 time_fn: Callable[[], float] = time.time, sleep_fn: Callable[[float], None] = time.sleep,
+    def __init__(self, path: Path | str, slots: int, *, hold_ttl_s: float = 120, hold_max_s: float = 1800, waiter_ttl_s: float = 5,
+                 poll_s: float = 0.25, time_fn: Callable[[], float] = time.time, sleep_fn: Callable[[float], None] = time.sleep,
                  pid_fn: Callable[[], int] = os.getpid, renew_wait_fn: Callable[[threading.Event, float], bool] = _wait_event):
         if slots < 1:
             raise ValueError(f"slots must be >= 1, got {slots!r}")
         self.path = Path(path)
         self.slots = slots
         self.hold_ttl_s = hold_ttl_s
+        self.hold_max_s = hold_max_s
         self.waiter_ttl_s = waiter_ttl_s
         self.poll_s = poll_s
         self._time_fn = time_fn
@@ -134,10 +136,19 @@ class NasIoGate:
 
     # --- the holder's renewal
 
-    def _renew_loop(self, token: str, stop: threading.Event) -> None:
+    def _renew_loop(self, token: str, stage: str, stop: threading.Event) -> None:
+        """Renew the holder's row every hold_ttl_s/3 until the read is over, but for at most hold_max_s: a read that hangs (a LightCraft call
+        that never answers, a stalled SMB read) then lets its slot expire instead of holding it from every other process for good."""
+        started = self._time_fn()
+
         def step(db, now):
             db.execute("UPDATE holders SET expires = ? WHERE token = ?", (now + self.hold_ttl_s, token))
         while not self._renew_wait_fn(stop, self.hold_ttl_s / 3):
+            held = self._time_fn() - started
+            if held >= self.hold_max_s:
+                log.warning("NAS I/O gate: a %s read has held its slot for %.0f s (hold_max_s %.0f): no longer renewed, the slot is free "
+                            "again within %.0f s", stage, held, self.hold_max_s, self.hold_ttl_s)
+                return
             with contextlib.suppress(sqlite3.Error):
                 self._write(step)
 
@@ -158,7 +169,7 @@ class NasIoGate:
             return
         waited = self._time_fn() - t0
         stop = threading.Event()
-        renewer = threading.Thread(target=self._renew_loop, args=(token, stop), daemon=True, name="nas-io-renew")
+        renewer = threading.Thread(target=self._renew_loop, args=(token, stage, stop), daemon=True, name="nas-io-renew")
         renewer.start()
         try:
             yield waited
@@ -207,8 +218,8 @@ def gate(*, enabled: str | bool | None = None, path: Path | str | None = None, s
     if on is False or str(on).lower() in ("0", "false", "no"):
         return NullGate()
     key = (str(settings.NAS_IO_DB if path is None else path), settings.NAS_IO_SLOTS if slots is None else slots,
-           settings.NAS_IO_HOLD_TTL_S if hold_ttl_s is None else hold_ttl_s)
+           settings.NAS_IO_HOLD_TTL_S if hold_ttl_s is None else hold_ttl_s, settings.NAS_IO_HOLD_MAX_S)
     with _defaults_lock:
         if key not in _defaults:
-            _defaults[key] = NasIoGate(key[0], key[1], hold_ttl_s=key[2])
+            _defaults[key] = NasIoGate(key[0], key[1], hold_ttl_s=key[2], hold_max_s=key[3])
         return _defaults[key]

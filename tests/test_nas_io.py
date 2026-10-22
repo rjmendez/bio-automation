@@ -291,6 +291,20 @@ class TestExpiry:
             assert sleeper.calls == [POLL] * 5
             assert waited == 1.25
 
+    def test_a_waiter_that_keeps_polling_keeps_its_place_past_the_waiter_ttl(self, tmp_path, holds):
+        clock = Clock()
+        sleeper = Sleeper(clock)
+        g = make_gate(tmp_path, 1, clock, sleeper, hold_ttl_s=1000, waiter_ttl_s=5)
+        h = holds(g, "lightcraft")
+        queue_waiter(g, "T", "tag", clock())                              # queued at +0
+        clock.advance(4)
+        queue_waiter(g, "T", "tag", 1000.0)                               # its next poll at +4 (same since): seen is now +4
+        h.close()
+        clock.advance(4)                                                  # +8: 8 s since it queued, 4 s since it was last seen
+        with g.acquire("render") as waited:                               # it blocks until seen < now - 5, i.e. now = +9.25
+            assert sleeper.calls == [POLL] * 5
+            assert waited == 1.25
+
 
 class TestRenewal:
     def test_a_holder_renews_its_row_every_third_of_the_ttl_so_a_long_read_keeps_its_slot(self, tmp_path):
@@ -317,6 +331,47 @@ class TestRenewal:
         clock.advance(1)                                                  # 1031: past the row's original expiry
         with g.acquire("render"):
             assert sleeper.calls == [POLL]                                # still held, so the render reader waited for the release
+
+    def test_a_holder_stops_renewing_after_hold_max_s_so_a_hung_read_gives_its_slot_back(self, tmp_path, caplog):
+        clock = Clock(1000.0)
+        intervals = []
+
+        def renew_wait(stop, seconds):
+            intervals.append(seconds)
+            if len(intervals) > 3:                                       # the later tag holder's timer: never fires
+                return stop.wait()
+            clock.advance(seconds)
+            return False
+        sleeper = Sleeper(clock)
+        g = NasIoGate(tmp_path / "gate.sqlite3", 1, hold_ttl_s=HOLD_TTL, hold_max_s=25, time_fn=clock, sleep_fn=sleeper, pid_fn=lambda: 4242,
+                      poll_s=POLL, renew_wait_fn=renew_wait)
+        with caplog.at_level(logging.WARNING, logger="bio_automation.nas_io"), g.acquire("lightcraft"):    # the read never finishes here
+            wait_until(lambda: not any(t.name == "nas-io-renew" and t.is_alive() for t in threading.enumerate()))
+            assert intervals == [10.0, 10.0, 10.0]                         # renewed at 1010 and 1020; at 1030 (30 s >= 25) it stops
+            assert rows(g.path, "SELECT expires FROM holders") == [(1050.0,)]
+            clock.t = 1051.0
+            with g.acquire("tag"):                                       # the hung holder's row has expired: granted with no wait
+                assert sleeper.calls == []
+        assert [r.getMessage() for r in caplog.records] == [
+            "NAS I/O gate: a lightcraft read has held its slot for 30 s (hold_max_s 25): no longer renewed, the slot is free again within 30 s"]
+
+    def test_a_holder_within_hold_max_s_keeps_renewing(self, tmp_path, caplog):
+        clock = Clock(1000.0)
+        intervals, reached = [], threading.Event()
+
+        def renew_wait(stop, seconds):
+            intervals.append(seconds)
+            if len(intervals) >= 4:
+                reached.set()
+                return stop.wait()
+            clock.advance(seconds)
+            return False
+        g = NasIoGate(tmp_path / "gate.sqlite3", 1, hold_ttl_s=HOLD_TTL, hold_max_s=31, time_fn=clock, sleep_fn=Sleeper(clock), pid_fn=lambda: 4242,
+                      poll_s=POLL, renew_wait_fn=renew_wait)
+        with caplog.at_level(logging.WARNING, logger="bio_automation.nas_io"), g.acquire("lightcraft"):
+            assert reached.wait(15)
+            assert rows(g.path, "SELECT expires FROM holders") == [(1060.0,)]     # renewed at 1010, 1020 and 1030 (30 s < 31)
+        assert caplog.records == []
 
     def test_the_default_timer_renews_in_real_time(self, tmp_path):
         g = NasIoGate(tmp_path / "gate.sqlite3", 1, hold_ttl_s=0.3)
@@ -435,9 +490,10 @@ class TestDefaultGate:
         monkeypatch.setattr(settings, "NAS_IO_GATE", "1")
         monkeypatch.setattr(settings, "NAS_IO_SLOTS", 3)
         monkeypatch.setattr(settings, "NAS_IO_HOLD_TTL_S", 77.0)
+        monkeypatch.setattr(settings, "NAS_IO_HOLD_MAX_S", 600.0)
         g = nas_io.gate()
         assert isinstance(g, NasIoGate)
-        assert (g.path, g.slots, g.hold_ttl_s) == (tmp_path / "state" / "nas_io.sqlite3", 3, 77.0)
+        assert (g.path, g.slots, g.hold_ttl_s, g.hold_max_s) == (tmp_path / "state" / "nas_io.sqlite3", 3, 77.0, 600.0)
         assert nas_io.gate() is g
         assert not (tmp_path / "state").exists()                          # lazily opened: building it creates no file
         other = nas_io.gate(slots=1)

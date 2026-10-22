@@ -139,6 +139,39 @@ class TestFill:
         got = cache_for(env, copy=rec)[0].local(src, stage="tag")
         assert got.read_bytes() == b"real" and len(rec.calls) == 1
 
+    def test_a_cached_file_cut_short_under_a_matching_sidecar_is_copied_again(self, env):
+        nas, root = env
+        src = put(nas, "2024/d/x.NEF", b"0123456789")
+        rec = Recorder()
+        c, events = cache_for(env, copy=rec)
+        key = c.local(src, stage="tag")
+        key.write_bytes(b"01234")                                                   # damaged on disk; the sidecar still names the source
+        assert c.local(src, stage="tag").read_bytes() == b"0123456789"
+        assert (len(rec.calls), [e["outcome"] for e in events]) == (2, ["fill", "fill"])
+
+    def test_a_whole_cached_file_under_a_matching_sidecar_is_a_hit(self, env):
+        nas, root = env
+        src = put(nas, "2024/d/x.NEF", b"0123456789")
+        rec = Recorder()
+        c, events = cache_for(env, copy=rec)
+        c.local(src, stage="tag")
+        assert c.local(src, stage="tag").read_bytes() == b"0123456789"
+        assert (len(rec.calls), [e["outcome"] for e in events]) == (1, ["fill", "hit"])
+
+    def test_the_fill_lock_is_held_while_the_copy_runs_and_gone_after(self, env):
+        nas, root = env
+        src = put(nas, "2024/d/x.NEF", b"abc")
+        lock = root / "2024" / "d" / "x.NEF.lock"
+        seen = []
+
+        def copy(s, d):
+            seen.append(lock.exists())
+            return raw_cache.copy_file(s, d)
+
+        c, _ = cache_for(env, copy=Recorder(copy))
+        c.local(src, stage="tag")
+        assert (seen, lock.exists()) == ([True], False)
+
     def test_a_path_outside_the_nas_is_returned_unchanged_with_no_copy(self, env, tmp_path):
         _, root = env
         other = put(tmp_path / "elsewhere", "lib/y.NEF", b"y")
@@ -234,6 +267,45 @@ class TestFailOpen:
         c, events = cache_for(env, copy=rec, min_free_gb=0, disk_usage_fn=lambda p: Usage(100 * 10**9, 90 * 10**9, 10 * 10**9))
         assert c.local(src, stage="tag") == root / "2024" / "d" / "x.NEF"
         assert len(rec.calls) == 1 and [e["outcome"] for e in events] == ["fill"]
+
+    @staticmethod
+    def budget_disk(root: Path, budget: int):
+        """A drive with `budget` bytes free before the cache: every cached raw entry takes its size off it (sidecars and locks are ignored)."""
+        def disk(path):
+            used = sum(p.stat().st_size for p in root.rglob("*.NEF") if p.is_file())
+            return Usage(10**9, 0, budget - used)
+        return disk
+
+    def test_a_fill_short_of_min_free_evicts_the_oldest_entries_until_it_fits(self, env):
+        nas, root = env
+        srcs = {n: put(nas, f"2024/d/{n}.NEF", n.encode() * 100) for n in "abc"}     # 100 bytes each; min_free 1000 B
+        c, events = cache_for(env, min_free_gb=1e-6, time_fn=Clock(), disk_usage_fn=self.budget_disk(root, 1250))
+        for n in "abc":                                                             # c: 1250 - 200 - 100 < 1000, so a goes first
+            c.local(srcs[n], stage="tag")
+        assert files(root) == ["2024/d/b.NEF", "2024/d/b.NEF.src.json", "2024/d/c.NEF", "2024/d/c.NEF.src.json"]
+        assert [e["outcome"] for e in events] == ["fill", "fill", "fill"]
+
+    def test_a_fill_with_min_free_to_spare_evicts_nothing(self, env):
+        nas, root = env
+        srcs = {n: put(nas, f"2024/d/{n}.NEF", n.encode() * 100) for n in "abc"}
+        c, events = cache_for(env, min_free_gb=1e-6, time_fn=Clock(), disk_usage_fn=self.budget_disk(root, 1350))
+        for n in "abc":                                                             # c: 1350 - 200 - 100 = 1050 >= 1000
+            c.local(srcs[n], stage="tag")
+        assert files(root) == ["2024/d/a.NEF", "2024/d/a.NEF.src.json", "2024/d/b.NEF", "2024/d/b.NEF.src.json",
+                               "2024/d/c.NEF", "2024/d/c.NEF.src.json"]
+        assert [e["outcome"] for e in events] == ["fill", "fill", "fill"]
+
+    def test_a_drive_short_even_with_the_cache_emptied_gives_every_entry_back_and_reads_the_nas(self, env):
+        nas, root = env
+        srcs = {n: put(nas, f"2024/d/{n}.NEF", n.encode() * 100) for n in "abc"}
+        budget = {"free": 10**6}
+        c, events = cache_for(env, min_free_gb=1e-6, time_fn=Clock(),
+                              disk_usage_fn=lambda p: self.budget_disk(root, budget["free"])(p))
+        c.local(srcs["a"], stage="tag")
+        c.local(srcs["b"], stage="tag")
+        budget["free"] = 1000                                                       # something else filled the drive
+        assert c.local(srcs["c"], stage="tag") == srcs["c"]
+        assert (files(root), [e["outcome"] for e in events]) == ([], ["fill", "fill", "fallback:disk"])
 
     @pytest.mark.parametrize("free,outcome", [(2500, "fallback:disk"), (3500, "fill")])
     def test_the_file_being_copied_must_still_leave_min_free_after_it(self, env, free, outcome):
@@ -445,3 +517,12 @@ def test_the_switch_reads_BIO_RAW_CACHE(value, want):
     out = subprocess.run([sys.executable, "-c", "from bio_automation import settings; print(settings.RAW_CACHE)"], env=child_env,
                          capture_output=True, text=True, check=True)
     assert out.stdout.strip() == str(want)
+
+
+@pytest.mark.parametrize("env_vars,want", [({"BIO_MIN_FREE_GB": "15"}, "25.0"), ({"BIO_MIN_FREE_GB": "40"}, "50.0"),
+                                           ({"BIO_MIN_FREE_GB": "15", "BIO_RAW_CACHE_MIN_FREE_GB": "7"}, "7.0")])
+def test_the_cache_keeps_ten_gb_more_free_than_the_stages_pause_at_unless_set(env_vars, want):
+    child_env = {k: v for k, v in os.environ.items() if k not in ("BIO_MIN_FREE_GB", "BIO_RAW_CACHE_MIN_FREE_GB")} | env_vars
+    out = subprocess.run([sys.executable, "-c", "from bio_automation import settings; print(settings.RAW_CACHE_MIN_FREE_GB)"], env=child_env,
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == want

@@ -13,7 +13,8 @@ slot, its turn ordered by the stage's priority. A hit, a fallback and the stat o
 
 Entries: `<key>` (the raw), `<key>.src.json` (the source's size and mtime_ns when it was copied: a changed source is copied again),
 `<key>.lock` (held while one process fills the entry), `<key>.part.<pid>` (the copy in progress). Least recently touched entries are evicted
-when the total passes `max_bytes`; an entry another process has open (PermissionError on Windows) is skipped and kept.
+when the total passes `max_bytes`, and before a fill that would leave less than `min_free_gb` free on the drive (only if that is not enough
+does the fill fall back to the source); an entry another process has open (PermissionError on Windows) is skipped and kept.
 """
 from __future__ import annotations
 
@@ -136,7 +137,7 @@ class RawCache:
         """'fill' (copied now), 'hit' (another process copied it while this one waited) or 'fallback:disk'. OSError: nothing usable was made.
         waited[0] is set to the seconds the copy queued for its gate slot."""
         self.root.mkdir(parents=True, exist_ok=True)
-        if self._disk_usage(self.root).free - size < self.min_free_gb * 1e9:
+        if not self._room_for(size, keep=key):
             return "fallback:disk"
         key.parent.mkdir(parents=True, exist_ok=True)
         lock = self._lock(key)
@@ -238,6 +239,19 @@ class RawCache:
                 continue
             out.append((st.st_mtime, st.st_size, p))
         return out
+
+    def _room_for(self, size: int, keep: Path) -> bool:
+        """True when copying `size` bytes still leaves min_free_gb free on the cache's drive. When it would not, the least recently touched
+        entries (never `keep`, never one open elsewhere) are deleted first: the cache gives its space back before anything else on the drive
+        runs short (the pipeline's stages pause under MIN_FREE_GB), instead of holding it while every fill falls back to the NAS."""
+        def short() -> bool:
+            return self._disk_usage(self.root).free - size < self.min_free_gb * 1e9
+        if not short():
+            return True
+        for _, _, p in sorted(self._entries(), key=lambda e: e[0]):
+            if p != keep and self._delete(p) and not short():
+                return True
+        return False
 
     def _enforce(self, keep: Path) -> None:
         """Delete the least recently touched entries until the total is within max_bytes; never `keep`."""

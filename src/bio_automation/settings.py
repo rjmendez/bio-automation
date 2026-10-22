@@ -54,6 +54,7 @@ NAS_IO_GATE = env("BIO_NAS_IO_GATE", "1")                                  # "0"
 NAS_IO_DB = env_path("BIO_NAS_IO_DB", CACHE_DIR / "state" / "nas_io.sqlite3")
 NAS_IO_SLOTS = int(env("BIO_NAS_IO_SLOTS", 2))
 NAS_IO_HOLD_TTL_S = env_float("BIO_NAS_IO_HOLD_TTL_S", 120)               # a slot whose holder stops renewing (it died) is free after this
+NAS_IO_HOLD_MAX_S = env_float("BIO_NAS_IO_HOLD_MAX_S", 1800)              # a holder renews for at most this long: a hung read gives its slot back
 NAS_IMPORT_CHUNK = int(env("BIO_NAS_IMPORT_CHUNK", 8))                     # raws per LightCraft import call, each call inside one slot (~14 s at 1.7 s a new raw)
 
 # --- external tools: <NAME>_ENV is read at call time by the module that runs the tool (then PATH, then <NAME>_DEFAULT)
@@ -103,5 +104,6 @@ INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space
-RAW_CACHE_MIN_FREE_GB = env_float("BIO_RAW_CACHE_MIN_FREE_GB", MIN_FREE_GB)   # below this the cache is not filled: the NAS path is read
+RAW_CACHE_MIN_FREE_GB = env_float("BIO_RAW_CACHE_MIN_FREE_GB", MIN_FREE_GB + 10)   # a fill first evicts old entries to keep this free, else reads the NAS:
+                                                                                   # above MIN_FREE_GB, so the cache gives its space back before a stage pauses
 
