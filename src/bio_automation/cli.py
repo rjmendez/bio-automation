@@ -707,6 +707,11 @@ def cmd_social_post(args: argparse.Namespace) -> int:
     return 0
 
 
+SOCIAL_COMMANDS = {"social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+                   "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
+                   "social-post": cmd_social_post}
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     import json
 
@@ -804,20 +809,14 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
-    if args.command == "social-index":
-        return cmd_social_index(args)
-    if args.command == "social-draft":
-        return cmd_social_draft(args)
-    if args.command == "social-list":
-        return cmd_social_list(args)
-    if args.command == "social-approve":
-        return cmd_social_approve(args)
-    if args.command == "social-reject":
-        return cmd_social_reject(args)
-    if args.command == "social-resolve":
-        return cmd_social_resolve(args)
-    if args.command == "social-post":
-        return cmd_social_post(args)
+    if args.command.startswith("social-"):
+        from .social import SocialError
+
+        try:
+            return SOCIAL_COMMANDS[args.command](args)
+        except SocialError as e:          # the message says what to do; a traceback would only bury it
+            print(f"bio {args.command}: {e}", file=sys.stderr)
+            return 1
     if args.command == "build-keywords":
         return cmd_build_keywords(args)
     if args.command == "process":
