@@ -231,6 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_social_index.add_argument("--candidates", nargs="*", default=[], help="Stock candidate csv(s) (glob patterns allowed)")
     p_social_index.add_argument("--out", default=str(settings.GALLERY_OBS_INDEX))
 
+    p_darkroom = sub.add_parser(
+        "darkroom-sync",
+        help="Read the owner's Darkroom storefront (home page, collections, pages), fetch and match its new products to the gallery by "
+             "DA-CLIP similarity (GPU) and write prints.csv for social-draft. Products that did not match go to darkroom_review.csv.")
+    p_darkroom.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_darkroom.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_darkroom.add_argument("--dry-run", action="store_true", help="match and report, but write neither prints.csv nor the review csv")
+
     p_social_draft = sub.add_parser(
         "social-draft",
         help="Top up this month's unposted Bluesky drafts: observations with gallery photos in this month of any year, fetched live, "
@@ -833,7 +841,27 @@ def cmd_social_metadata(args: argparse.Namespace) -> int:
     return 0
 
 
-SOCIAL_COMMANDS = {"social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+def cmd_darkroom_sync(args: argparse.Namespace) -> int:
+    import json
+
+    from . import daclip, darkroom
+    from .social import load_index
+
+    session = []
+
+    def embed_file(path):                                             # DA-CLIP on the GPU, loaded once and only when something needs embedding
+        if not session:
+            session.append(daclip.load_session())
+        return daclip.embed_path(path, session[0])[0]
+
+    summary = darkroom.sync(index=load_index(Path(args.index)), gallery_dir=Path(args.gallery_dir), work_dir=settings.DARKROOM_DIR,
+                            out_file=settings.SOCIAL_PRINTS_FILE, manual_file=settings.SOCIAL_PRINTS_MANUAL_FILE, base=settings.DARKROOM_URL,
+                            embed_file=embed_file, pause_s=settings.DARKROOM_PAUSE_S, write=not args.dry_run)
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+SOCIAL_COMMANDS = {"darkroom-sync": cmd_darkroom_sync, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
                    "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,
@@ -938,12 +966,13 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
-    if args.command.startswith("social-"):
+    if args.command.startswith("social-") or args.command == "darkroom-sync":
+        from .darkroom import DarkroomError
         from .social import SocialError
 
         try:
             return SOCIAL_COMMANDS[args.command](args)
-        except SocialError as e:          # the message says what to do; a traceback would only bury it
+        except (SocialError, DarkroomError) as e:          # the message says what to do; a traceback would only bury it
             print(f"bio {args.command}: {e}", file=sys.stderr)
             return 1
     if args.command == "build-keywords":

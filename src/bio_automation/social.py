@@ -681,6 +681,8 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
     """Top up `today`'s month's unposted drafts (drafted or approved) to keep_pending, from the observations with gallery files in that
     month of any year that are not taken: posted, rejected or awaiting an outcome (posting) ever, or drafted in this month already. A draft
     of an earlier month that was never posted has expired (only the current month posts), so its observation comes back next year.
+    Observations listed in `prints` are candidates whatever month they were photographed in (owner, 2026-10-22: ignore the month rule for
+    them) and are drafted first; the draft belongs to today's month, so it posts this month.
     The owner's alt-text style is required: style_source() (default: the saved profile + the pool's embed model) is loaded once, before
     any drafting; a missing profile raises and drafts nothing. prints ({obs_id: url}, default load_prints()) adds a print link to the
     observations it lists. Returns {"month", "pending", "drafted", "skipped"}."""
@@ -694,11 +696,17 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
         return report
     seen = {int(v["obs_id"]) for v in known.values()
             if v.get("obs_id") is not None and (v["state"] in ("posted", "rejected", "posting") or v["month"] == month)}
+    prints = load_prints() if prints is None else prints
     cands = month_observations(index, today.month)
+    for rel, obs in index["files"].items():                       # an observation with a print is a candidate whatever month it was shot in
+        if int(obs) in prints and int(obs) not in cands:
+            cands.setdefault(int(obs), []).append(rel)
+    cands = {o: sorted(r) for o, r in cands.items()}
     model = model or pick_model()
     style = (style_source or default_style)()
-    prints = load_prints() if prints is None else prints
-    for obs_id in order_candidates(cands, seen, seed=today.isoformat()):
+    order = order_candidates(cands, seen, seed=today.isoformat())
+    order.sort(key=lambda o: o not in prints)                     # observations with a print first (stable: the year rotation is kept inside each group)
+    for obs_id in order:
         if len(report["drafted"]) >= need:
             break
         try:
