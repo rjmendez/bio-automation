@@ -123,6 +123,38 @@ Rollback: copy `F:/services/tls/caddy/Caddyfile.bak-photos-lan-20261020-091908` 
 `Caddyfile`, then Stop+Start scheduled task `Lab-TLS-FrontDoor` (blips the loci/litellm/ollama
 names ~5 s). Caddyfile has MIXED newlines (LF + one trailing CRLF): never assume one style.
 
+**Bluesky posts (owner, 2026-10-21; `social.py`, folded in from github.com/rjmendez/inat_skeet).** Daily posts of the
+owner's photos from the CURRENT month of every year in the gallery (`<year>/<year>-<MM>/`), one iNat observation per post,
+gallery renders only (never iNat's 2048 px copies). Alt text comes from the LOCAL vision model (env `BIO_VISION_MODEL`, else
+the pool's `vision` role; never a literal model name), given the embedded Stock label and the live observation; GPU only.
+**Every post is approved by the owner** (`bio social-approve`); nothing auto-approves, and a draft edited after approval needs a
+new approval. `bio social-post` is dry-run unless `--live`, posts at most `BIO_SOCIAL_POSTS_PER_DAY` a day, and a send that
+raised leaves the draft `posting`, which blocks all posting until the owner checks the profile and runs `bio social-resolve`
+(never resend on a guess). Never print a private-geoprivacy place. Alt text follows the owner's own style
+(`bio social-style` -> `settings.SOCIAL_STYLE_PROFILE`, learned from alt texts they wrote on Bluesky, inat_skeet bot posts
+excluded; deterministic statistics + rules + nearest examples, nothing model-written; drafting refuses to run without it;
+mirrored in Loci investigation `bsky-alt-text-style`). Daily task `Bio-Social-Daily` runs
+`F:/services/bio-social/run-social.ps1` (index -> draft -> post). Images go up at the official app's post limits (4000 px,
+2,000,000 B; `BSKY_IMAGE_MAX_*`); the 2 MB cap is the lexicon's, so no other upload path can carry more. A print link
+("Prints: <url>", e.g. the Darkroom product page) is added from the owner's `settings.SOCIAL_PRINTS_FILE` csv (`obs_id,url`);
+Darkroom has no API, so only the owner fills it; hashtags are dropped before the print link when the text is over 300.
+
+**Removing the old inat_skeet posts (owner, 2026-10-22: "all without replies", "dry-run list, then one go").**
+`bio social-cleanup-plan` lists, from live public data, every post in inat_skeet's template that has no replies (posts with
+replies are kept so no conversation is orphaned) and saves the plan with an id; `bio social-cleanup-run <plan> --confirm <id>`
+deletes exactly that list through the separate delete-only "cleanup" profile (its own client, key, session and sign-in;
+scope `repo:app.bsky.feed.post?action=delete`), resumable via a ledger next to the plan. The full account export is archived in
+`settings.BSKY_ARCHIVE_DIR` first. Never delete anything outside an owner-confirmed plan.
+
+**Sign-in is atproto OAuth through Bluesky's own client library (owner, 2026-10-22): use a mature, maintained
+implementation and never roll your own OAuth, DPoP, JWT or other crypto step.** Posting goes through the `bsky-oauth` library
+(private repo `rjmendez/bsky-oauth`, extra `[social]`, then `bsky-oauth install`), which is glue around
+`@atproto/oauth-client-node`, `@atproto/jwk-jose` and `@atproto/api` at pinned versions. bio-automation is its "poster" profile
+(`social.poster_profile()`): a confidential client (a public one is capped at 2-week sessions) whose metadata and PUBLIC key
+are published by repo `rjmendez/bio-social-oauth` (GitHub Pages, `settings.BSKY_CLIENT_ID`); the private key and the session
+stay in `settings.BSKY_OAUTH_DIR`. Scope: create posts and upload images only; other bots get their own profile and scope. The
+owner signs in once with `bio social-login`; the daily run keeps the session alive by refreshing it.
+
 **No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
 are shelved: do not build, extend, audit or fix them. The focus is bulk photo
 processing from the command line (render, tag, validate, build upload sets).
@@ -179,3 +211,9 @@ that way — fix the test rather than adding an entry.
 (real rawpy decode of `tests/fixtures/sample_raw.NEF`, real OpenVINO model
 inference) and runs by default — it adds roughly 40-60s to the suite. That cost is
 deliberate (see rule 10 above); do not add a skip condition to make it faster.
+
+**Targeted tests on commits, the full suite at merge to main (owner, 2026-10-21).** On a
+feature-branch commit or push, run the test files for the modules the diff touches plus
+every test that imports them (`settings.py` or `cli.py` changed: all of their importers),
+and `python3 scripts/check_test_honesty.py`. The full suite (~9 min) runs once, when merging
+to main; say in the PR which tests were run.

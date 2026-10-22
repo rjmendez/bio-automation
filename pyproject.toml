@@ -13,6 +13,9 @@ dependencies = [
     "tzdata; sys_platform == 'win32'",   # settings.LOCAL_TZ: Windows has no system zoneinfo database
 ]
 
+[project.optional-dependencies]
+social = ["bsky-oauth @ git+https://github.com/rjmendez/bsky-oauth@v0.2.0"]   # Bluesky posting (social-post/-login); `bsky-oauth install` after
+
 [project.scripts]
 bio = "bio_automation.cli:main"
 
