@@ -18,6 +18,7 @@ sent twice; only a failed login, before anything is sent, is recorded as "failed
 from __future__ import annotations
 
 import base64
+import contextlib
 import csv
 import datetime as dt
 import hashlib
@@ -33,7 +34,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from PIL import Image, ImageOps
 
@@ -738,6 +739,8 @@ def resolve(ledger: Ledger, draft_id: str, *, posted_uri: str | None, now: dt.da
     d = ledger.drafts().get(draft_id)
     if d is None or d["state"] != "posting":
         raise SocialError(f"draft {draft_id} is not awaiting an outcome (state {d and d['state']})")
+    if posted_uri is not None and not re.fullmatch(r"at://\S+", posted_uri):
+        raise SocialError(f"posted_uri must be the post's at:// URI, got {posted_uri!r}")
     if posted_uri:
         return ledger.append("posted", draft_id, obs_id=d["obs_id"], month=d["month"], uri=posted_uri, resolved=True, now=now)
     return ledger.append("failed", draft_id, obs_id=d["obs_id"], month=d["month"], error="not posted (resolved by the owner)", now=now)
@@ -777,7 +780,55 @@ def bsky_post(payload: dict, *, account=None) -> tuple[str, str]:
         raise
     except BskyError as e:
         raise NothingSent(str(e)) from e
+    except OSError as e:                                       # a local file that could not be read: that happens before any network call
+        raise _local_read_failure(e, payload) from e
     return ref.uri, ref.cid
+
+
+def _local_read_failure(e: OSError, payload: dict) -> OSError:
+    """NothingSent when `e` names an image of the post or a file of the OAuth session; any other OSError (the network) is returned as it is,
+    because the post may exist."""
+    if e.filename:
+        name = Path(str(e.filename))
+        for i in payload["images"]:
+            if name == Path(i["path"]):
+                return NothingSent(f"cannot read the image {i['path']}: {e.strerror or e}")
+        if name.is_relative_to(Path(settings.BSKY_OAUTH_DIR)):
+            return NothingSent(f"cannot read the Bluesky session file {name}: {e.strerror or e}")
+    return e
+
+
+@contextlib.contextmanager
+def ledger_lock(ledger_path: Path | str) -> Iterator[None]:
+    """Hold the ledger's poster lock (an OS byte-range lock on <ledger>.lock, released by the OS if the process dies). A second holder
+    raises SocialError at once instead of waiting: two runs that both read the ledger before either appends "posting" would post one draft twice."""
+    path = Path(str(ledger_path) + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a+b")
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            raise SocialError(f"another social-post run is posting ({path}); nothing was sent by this one") from e
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                import msvcrt
+
+                f.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        f.close()
 
 
 def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool = False, posts_per_day: int | None = None,
@@ -787,6 +838,14 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
 
     Live: "posting" is recorded before the send. A send that stopped before anything went out (NothingSent) records an "error"
     note and the draft stays approved for the next run; any other failure leaves it "posting" (outcome unknown -> social-resolve)."""
+    if not live:
+        return _post_next(ledger, drafts_dir, now=now, live=False, posts_per_day=posts_per_day, send=send)
+    with ledger_lock(ledger.path):                                    # the checks, the "posting" record and the send are one step
+        return _post_next(ledger, drafts_dir, now=now, live=True, posts_per_day=posts_per_day, send=send)
+
+
+def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool, posts_per_day: int | None,
+               send: Callable[[dict], tuple[str, str]]) -> dict:
     posts_per_day = settings.SOCIAL_POSTS_PER_DAY if posts_per_day is None else posts_per_day
     month = f"{now.year}-{now.month:02d}"
     drafts = ledger.drafts()
