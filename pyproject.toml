@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-social = ["atproto==0.0.73"]   # bio social-post (Bluesky); everything else in social.py runs without it
+social = ["bsky-oauth @ git+https://github.com/rjmendez/bsky-oauth@v0.1.0"]   # Bluesky posting (social-post/-login); `bsky-oauth install` after
 
 [project.scripts]
 bio = "bio_automation.cli:main"

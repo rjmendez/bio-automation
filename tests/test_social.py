@@ -316,13 +316,6 @@ class TestText:
         with pytest.raises(SocialError, match=r"observation 42: post text is \d+ characters even without hashtags"):
             social.text_segments(observation(place="P" * 400))
 
-    def test_real_text_builder_makes_link_and_tag_facets(self):
-        tb = social.text_builder(social.text_segments(observation()))
-        facets = tb.build_facets()
-        kinds = [f.features[0].py_type for f in facets]
-        assert kinds == ["app.bsky.richtext.facet#link"] + ["app.bsky.richtext.facet#tag"] * 5
-        assert tb.build_text() == social.segments_text(social.text_segments(observation()))
-
 
 # ----------------------------------------------------------------------------------------------------------- drafting
 
@@ -447,20 +440,20 @@ class TestDraft:
 
 # ----------------------------------------------------------------------------------------------------------- approval + posting
 
-class FakeResp:
-    uri = "at://did:plc:me/app.bsky.feed.post/3abc"
-    cid = "bafyabc"
+URI = "at://did:plc:me/app.bsky.feed.post/3abc"
 
 
-class RecordingClient:
+class RecordingSend:
+    """Stands in for bsky_post (the helper boundary): records every request, then answers or raises as configured."""
+
     def __init__(self, fail=None):
         self.calls, self.fail = [], fail
 
-    def send_images(self, **kw):
-        self.calls.append(kw)
+    def __call__(self, request):
+        self.calls.append(request)
         if self.fail:
             raise self.fail
-        return FakeResp()
+        return URI, "bafyabc"
 
 
 def write_draft(drafts_dir: Path, draft_id: str, obs_id: int, month: str) -> Path:
@@ -489,43 +482,40 @@ class TestPosting:
         social.approve(ledger, drafts, "2026-10-obs2")
         social.approve(ledger, drafts, "2026-10-obs1")
         before = ledger.records()
+        send = RecordingSend()
 
-        def no_client():
-            raise AssertionError("dry-run must not log in")
-
-        result = social.post_next(ledger, drafts, now=NOW, client_factory=no_client)
+        result = social.post_next(ledger, drafts, now=NOW, send=send)
 
         assert result["status"] == "dry-run" and result["draft_id"] == "2026-10-obs2"
         assert result["alts"] == ["first alt", "second alt"]
         assert result["image_bytes"] == [(drafts / "2026-10-obs2" / f).stat().st_size for f in ("1.jpg", "2.jpg")]
         assert ledger.records() == before
+        assert send.calls == []
 
     def test_live_post_sends_text_images_alts_ratios_and_records_the_uri(self, tmp_path):
         ledger, drafts = self.ready(tmp_path, 1)
         social.approve(ledger, drafts, "2026-10-obs1")
-        client = RecordingClient()
+        send = RecordingSend()
 
-        result = social.post_next(ledger, drafts, now=NOW, live=True, client_factory=lambda: client)
+        result = social.post_next(ledger, drafts, now=NOW, live=True, send=send)
 
-        assert result["status"] == "posted" and result["uri"] == FakeResp.uri
-        (call,) = client.calls
-        assert call["text"].build_text() == social.segments_text(social.text_segments(observation(1)))
-        assert call["images"] == [(drafts / "2026-10-obs1" / f).read_bytes() for f in ("1.jpg", "2.jpg")]
-        assert call["image_alts"] == ["first alt", "second alt"] and call["langs"] == ["en"]
-        assert [(r.width, r.height) for r in call["image_aspect_ratios"]] == [(300, 200), (200, 300)]
-        assert [(r["event"], r.get("uri")) for r in ledger.records()][-2:] == [("posting", None), ("posted", FakeResp.uri)]
+        assert result["status"] == "posted" and result["uri"] == URI
+        assert send.calls == [{"text": social.segments_text(social.text_segments(observation(1))), "langs": ["en"],
+                               "images": [{"path": str(drafts / "2026-10-obs1" / "1.jpg"), "alt": "first alt", "width": 300, "height": 200},
+                                          {"path": str(drafts / "2026-10-obs1" / "2.jpg"), "alt": "second alt", "width": 200, "height": 300}]}]
+        assert [(r["event"], r.get("uri")) for r in ledger.records()][-2:] == [("posting", None), ("posted", URI)]
 
     def test_one_post_a_day(self, tmp_path):
         ledger, drafts = self.ready(tmp_path)
         social.approve(ledger, drafts, "2026-10-obs1")
         social.approve(ledger, drafts, "2026-10-obs2")
-        client = RecordingClient()
-        social.post_next(ledger, drafts, now=NOW, live=True, client_factory=lambda: client)
+        send = RecordingSend()
+        social.post_next(ledger, drafts, now=NOW, live=True, send=send)
 
-        again = social.post_next(ledger, drafts, now=NOW + dt.timedelta(hours=3), live=True, client_factory=lambda: client)
+        again = social.post_next(ledger, drafts, now=NOW + dt.timedelta(hours=3), live=True, send=send)
         assert again == {"status": "done for today", "posted_today": ["2026-10-obs1"]}
-        assert len(client.calls) == 1
-        tomorrow = social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, client_factory=lambda: client)
+        assert len(send.calls) == 1
+        tomorrow = social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send)
         assert tomorrow["status"] == "posted" and tomorrow["draft_id"] == "2026-10-obs2"
 
     def test_only_this_months_approved_drafts_are_posted(self, tmp_path):
@@ -551,42 +541,42 @@ class TestPosting:
         social.approve(ledger, drafts, "2026-10-obs1")
         assert social.post_next(ledger, drafts, now=NOW)["alts"] == ["edited alt", "second alt"]
 
-    def test_failed_login_is_a_clean_failure_that_can_be_approved_again(self, tmp_path):
-        ledger, drafts = self.ready(tmp_path, 1)
-        social.approve(ledger, drafts, "2026-10-obs1")
-
-        def bad_login():
-            raise RuntimeError("bad app password")
-
-        with pytest.raises(RuntimeError, match="bad app password"):
-            social.post_next(ledger, drafts, now=NOW, live=True, client_factory=bad_login)
-        assert ledger.drafts()["2026-10-obs1"]["state"] == "failed"
-        assert ledger.records()[-1]["error"] == "login: RuntimeError: bad app password"
-        social.approve(ledger, drafts, "2026-10-obs1")
-        client = RecordingClient()
-        assert social.post_next(ledger, drafts, now=NOW, live=True, client_factory=lambda: client)["status"] == "posted"
-
-    def test_a_send_that_raises_blocks_posting_until_resolved(self, tmp_path):
+    def test_nothing_sent_keeps_the_approval_and_its_place_in_line(self, tmp_path):
         ledger, drafts = self.ready(tmp_path)
         social.approve(ledger, drafts, "2026-10-obs1")
         social.approve(ledger, drafts, "2026-10-obs2")
-        with pytest.raises(SocialError, match=r"posting 2026-10-obs1 failed with an unknown outcome \(ConnectionError: reset\)"):
-            social.post_next(ledger, drafts, now=NOW, live=True, client_factory=lambda: RecordingClient(fail=ConnectionError("reset")))
+
+        with pytest.raises(SocialError, match=r"nothing was posted \(refresh refused\); 2026-10-obs1 stays approved for the next run"):
+            social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(fail=social.NothingSent("refresh refused")))
+
+        state = ledger.drafts()["2026-10-obs1"]
+        assert state["state"] == "approved"
+        assert state["last_error"]["error"] == "refresh refused"
+        send = RecordingSend()
+        result = social.post_next(ledger, drafts, now=NOW + dt.timedelta(hours=1), live=True, send=send)
+        assert result["draft_id"] == "2026-10-obs1" and result["status"] == "posted"
+
+    def test_a_send_that_raises_otherwise_blocks_posting_until_resolved(self, tmp_path):
+        ledger, drafts = self.ready(tmp_path)
+        social.approve(ledger, drafts, "2026-10-obs1")
+        social.approve(ledger, drafts, "2026-10-obs2")
+        with pytest.raises(SocialError, match=r"posting 2026-10-obs1 failed with an unknown outcome \(SocialError: helper exit 4: timeout\)"):
+            social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(fail=SocialError("helper exit 4: timeout")))
         assert ledger.drafts()["2026-10-obs1"]["state"] == "posting"
-        client = RecordingClient()
+        send = RecordingSend()
         with pytest.raises(SocialError, match=r"outcome unknown for 2026-10-obs1"):
-            social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, client_factory=lambda: client)
-        assert client.calls == []
+            social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send)
+        assert send.calls == []
 
         social.resolve(ledger, "2026-10-obs1", posted_uri="at://did:plc:me/app.bsky.feed.post/3zzz")
         assert ledger.drafts()["2026-10-obs1"]["state"] == "posted"
-        assert social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, client_factory=lambda: client)["draft_id"] == "2026-10-obs2"
+        assert social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send)["draft_id"] == "2026-10-obs2"
 
     def test_resolve_not_posted_makes_it_approvable_again(self, tmp_path):
         ledger, drafts = self.ready(tmp_path, 1)
         social.approve(ledger, drafts, "2026-10-obs1")
         with pytest.raises(SocialError, match="unknown outcome"):
-            social.post_next(ledger, drafts, now=NOW, live=True, client_factory=lambda: RecordingClient(fail=TimeoutError("t")))
+            social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(fail=TimeoutError("t")))
         social.resolve(ledger, "2026-10-obs1", posted_uri=None)
         assert ledger.drafts()["2026-10-obs1"]["state"] == "failed"
         social.approve(ledger, drafts, "2026-10-obs1")
@@ -604,11 +594,60 @@ class TestPosting:
         with pytest.raises(SocialError, match=r"unknown ledger event 'bogus'"):
             ledger.append("bogus", "x")
 
-    def test_missing_credentials_name_the_variables(self, monkeypatch):
-        monkeypatch.delenv("BSKY_HANDLE", raising=False)
-        monkeypatch.setenv("BSKY_APP_PASSWORD", "x")
-        with pytest.raises(SocialError, match=r"set BSKY_HANDLE and BSKY_APP_PASSWORD"):
-            social.bluesky_client()
+
+# ----------------------------------------------------------------------------------------------------------- bsky-oauth boundary
+
+class RecordingAccount:
+    """Stands in for bsky_oauth.Account: records post() calls, then answers or raises as configured."""
+
+    def __init__(self, fail=None):
+        self.calls, self.fail = [], fail
+
+    def post(self, text, images, *, langs):
+        self.calls.append((text, images, langs))
+        if self.fail:
+            raise self.fail
+        from bsky_oauth import PostRef
+
+        return PostRef("at://did:plc:me/app.bsky.feed.post/3x", "bafyx")
+
+
+REQUEST = {"text": "Ä spider #nature", "langs": ["en"], "images": [{"path": "D:/d/1.jpg", "alt": "first", "width": 300, "height": 200},
+                                                                   {"path": "D:/d/2.jpg", "alt": "second", "width": 200, "height": 300}]}
+
+
+class TestBskyBoundary:
+    def test_poster_profile_comes_from_settings(self, tmp_path, monkeypatch):
+        from bsky_oauth import Profile
+
+        monkeypatch.setattr(social.settings, "BSKY_OAUTH_DIR", tmp_path / "oauth")
+        assert social.poster_profile() == Profile(
+            "poster", "https://rjmendez.github.io/bio-social-oauth/poster/client-metadata.json",
+            "https://rjmendez.github.io/bio-social-oauth/callback.html", "atproto repo:app.bsky.feed.post?action=create blob:image/*",
+            tmp_path / "oauth", "bio-automation photo posts")
+
+    def test_bsky_post_hands_the_request_to_the_account_and_returns_uri_and_cid(self):
+        from bsky_oauth import Image
+
+        acct = RecordingAccount()
+        assert social.bsky_post(REQUEST, account=acct) == ("at://did:plc:me/app.bsky.feed.post/3x", "bafyx")
+        assert acct.calls == [("Ä spider #nature", [Image(Path("D:/d/1.jpg"), "first", 300, 200), Image(Path("D:/d/2.jpg"), "second", 200, 300)],
+                               ("en",))]
+
+    def test_errors_before_the_write_are_nothing_sent_and_an_unknown_outcome_is_not(self):
+        from bsky_oauth import BskyError, NothingSent, UnknownOutcome
+
+        with pytest.raises(social.NothingSent, match=r"^no Bluesky session yet$"):
+            social.bsky_post(REQUEST, account=RecordingAccount(fail=NothingSent("no Bluesky session yet")))
+        with pytest.raises(social.NothingSent, match=r"^the Node dependencies are not installed$"):
+            social.bsky_post(REQUEST, account=RecordingAccount(fail=BskyError("the Node dependencies are not installed")))
+        with pytest.raises(UnknownOutcome, match=r"^createRecord timed out$"):
+            social.bsky_post(REQUEST, account=RecordingAccount(fail=UnknownOutcome("createRecord timed out")))
+
+    def test_the_real_library_without_a_session_sends_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(social.settings, "BSKY_OAUTH_DIR", tmp_path / "oauth")
+        with pytest.raises(social.NothingSent, match=r"no Bluesky session yet for this profile"):
+            social.bsky_post(REQUEST)
 
 
 # ----------------------------------------------------------------------------------------------------------- CLI

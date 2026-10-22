@@ -62,6 +62,7 @@ ICONIC_TAGS = {
 }
 GRADE_TEXT = {"research": "Research Grade", "needs_id": "Needs ID"}
 STATES = ("drafted", "approved", "rejected", "posting", "posted", "failed")
+NOTES = ("error",)    # recorded, not a state change
 
 
 class SocialError(Exception):
@@ -220,7 +221,7 @@ class Ledger:
         return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     def append(self, event: str, draft_id: str, *, now: dt.datetime | None = None, **fields) -> dict:
-        if event not in STATES:
+        if event not in STATES + NOTES:
             raise SocialError(f"unknown ledger event {event!r}")
         rec = {"at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds"), "event": event, "draft_id": draft_id, **fields}
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,13 +230,19 @@ class Ledger:
         return rec
 
     def drafts(self) -> dict[str, dict]:
-        """{draft_id: {"state", "obs_id", "month", "drafted_at", "last": <last record>, "seq": its ledger position, "approved_hash"}}."""
+        """{draft_id: {"state", "obs_id", "month", "drafted_at", "last": <last state record>, "seq": its ledger position, "approved_hash",
+        "approved_seq": position of the owner's approval, "last_error": the last error note}}."""
         out: dict[str, dict] = {}
         for seq, r in enumerate(self.records()):
             d = out.setdefault(r["draft_id"], {"obs_id": r.get("obs_id"), "month": r.get("month"), "drafted_at": r["at"], "approved_hash": None})
+            if r["event"] in NOTES:
+                d["last_error"] = r
+                continue
             d["state"], d["last"], d["seq"] = r["event"], r, seq       # seq: ledger position (timestamps tie within a second)
             if r["event"] == "approved":
                 d["approved_hash"] = r.get("hash")
+                if not r.get("restored"):              # an approval given back after a send that sent nothing keeps its place in line
+                    d["approved_seq"] = seq
         return out
 
 
@@ -419,22 +426,6 @@ def segments_text(segs: list[list[str]]) -> str:
     return "".join(s[1] for s in segs)
 
 
-def text_builder(segs: list[list[str]]):
-    from atproto import client_utils
-
-    tb = client_utils.TextBuilder()
-    for s in segs:
-        if s[0] == "text":
-            tb.text(s[1])
-        elif s[0] == "link":
-            tb.link(s[1], s[2])
-        elif s[0] == "tag":
-            tb.tag(s[1], s[2])
-        else:
-            raise SocialError(f"unknown text segment {s[0]!r}")
-    return tb
-
-
 # --------------------------------------------------------------------------------------------------- drafting
 
 def _fetch(obs_id: int) -> dict:
@@ -553,22 +544,48 @@ def resolve(ledger: Ledger, draft_id: str, *, posted_uri: str | None) -> dict:
 
 # --------------------------------------------------------------------------------------------------- posting
 
-def bluesky_client():
-    """A logged-in atproto Client from env BSKY_HANDLE + BSKY_APP_PASSWORD."""
-    handle, password = os.environ.get(settings.BSKY_HANDLE_ENV), os.environ.get(settings.BSKY_APP_PASSWORD_ENV)
-    if not handle or not password:
-        raise SocialError(f"set {settings.BSKY_HANDLE_ENV} and {settings.BSKY_APP_PASSWORD_ENV} (a Bluesky app password) to post")
-    from atproto import Client
+class NothingSent(SocialError):
+    """The send stopped before anything was posted (no session, refresh refused, an image upload failed): safe to retry."""
 
-    client = Client()
-    client.login(handle, password)
-    return client
+
+def poster_profile():
+    """The bsky-oauth "poster" profile from settings (env overrides apply)."""
+    from bsky_oauth import Profile
+
+    return Profile(name="poster", client_id=settings.BSKY_CLIENT_ID, redirect_uri=settings.BSKY_REDIRECT_URI,
+                   scope=settings.BSKY_OAUTH_SCOPE, state_dir=Path(settings.BSKY_OAUTH_DIR), client_name=settings.BSKY_CLIENT_NAME)
+
+
+def poster_account():
+    from bsky_oauth import Account
+
+    return Account(poster_profile())
+
+
+def bsky_post(payload: dict, *, account=None) -> tuple[str, str]:
+    """Post through bsky-oauth: payload {text, langs, images: [{path, alt, width, height}]} -> (uri, cid).
+    bsky_oauth.UnknownOutcome (the createRecord call failed) propagates; every other bsky-oauth error stopped before that call, so it
+    becomes NothingSent."""
+    from bsky_oauth import BskyError, Image, UnknownOutcome
+
+    acct = account or poster_account()
+    try:
+        ref = acct.post(payload["text"], [Image(Path(i["path"]), i["alt"], i["width"], i["height"]) for i in payload["images"]],
+                        langs=tuple(payload["langs"]))
+    except UnknownOutcome:
+        raise
+    except BskyError as e:
+        raise NothingSent(str(e)) from e
+    return ref.uri, ref.cid
 
 
 def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool = False, posts_per_day: int | None = None,
-              client_factory: Callable[[], object] = bluesky_client) -> dict:
+              send: Callable[[dict], tuple[str, str]] = bsky_post) -> dict:
     """Post the oldest approved draft of now's month. Dry-run (the default) returns what would be sent and records nothing.
-    Refuses while any post's outcome is unknown; does nothing once posts_per_day posts went out on now's local day."""
+    Refuses while any post's outcome is unknown; does nothing once posts_per_day posts went out on now's local day.
+
+    Live: "posting" is recorded before the send. A send that stopped before anything went out (NothingSent) records an "error"
+    note and the draft stays approved for the next run; any other failure leaves it "posting" (outcome unknown -> social-resolve)."""
     posts_per_day = settings.SOCIAL_POSTS_PER_DAY if posts_per_day is None else posts_per_day
     month = f"{now.year}-{now.month:02d}"
     drafts = ledger.drafts()
@@ -579,7 +596,7 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
     posted_today = [r for r in ledger.records() if r["event"] == "posted" and r["at"][:10] == today]
     if len(posted_today) >= posts_per_day:
         return {"status": "done for today", "posted_today": [r["draft_id"] for r in posted_today]}
-    ready = [(v["seq"], d) for d, v in drafts.items() if v["state"] == "approved" and v["month"] == month]
+    ready = [(v["approved_seq"], d) for d, v in drafts.items() if v["state"] == "approved" and v["month"] == month]
     if not ready:
         return {"status": "nothing approved", "month": month}
     draft_id = min(ready)[1]
@@ -587,25 +604,21 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
     if draft_hash(ddir) != drafts[draft_id]["approved_hash"]:
         raise SocialError(f"draft {draft_id} changed after it was approved: review it and approve it again")
     draft = load_draft(ddir)
-    images = [(ddir / i["file"]).read_bytes() for i in draft["images"]]
-    payload = {"draft_id": draft_id, "text": segments_text(draft["text"]), "alts": [i["alt"] for i in draft["images"]],
-               "image_bytes": [len(b) for b in images]}
+    request = {"text": segments_text(draft["text"]), "langs": ["en"],
+               "images": [{"path": str(ddir / i["file"]), "alt": i["alt"], "width": i["width"], "height": i["height"]} for i in draft["images"]]}
+    payload = {"draft_id": draft_id, "text": request["text"], "alts": [i["alt"] for i in draft["images"]],
+               "image_bytes": [(ddir / i["file"]).stat().st_size for i in draft["images"]]}
     if not live:
         return {"status": "dry-run", **payload}
-    from atproto import models
-
-    tb = text_builder(draft["text"])
-    ratios = [models.AppBskyEmbedDefs.AspectRatio(width=i["width"], height=i["height"]) for i in draft["images"]]
-    try:
-        client = client_factory()
-    except Exception as e:  # noqa: BLE001 -- nothing was sent: recorded as failed with its message, then re-raised unchanged
-        ledger.append("failed", draft_id, obs_id=draft["obs_id"], month=month, error=f"login: {type(e).__name__}: {e}"[:500])
-        raise
     ledger.append("posting", draft_id, obs_id=draft["obs_id"], month=month)
     try:
-        resp = client.send_images(text=tb, images=images, image_alts=payload["alts"], langs=["en"], image_aspect_ratios=ratios)
+        uri, cid = send(request)
+    except NothingSent as e:
+        ledger.append("approved", draft_id, obs_id=draft["obs_id"], month=month, hash=drafts[draft_id]["approved_hash"], restored=True)
+        ledger.append("error", draft_id, obs_id=draft["obs_id"], month=month, error=str(e)[:500])
+        raise SocialError(f"nothing was posted ({e}); {draft_id} stays approved for the next run") from e
     except Exception as e:  # noqa: BLE001 -- the post may or may not exist now: the draft stays "posting" and blocks until resolved
         raise SocialError(f"posting {draft_id} failed with an unknown outcome ({type(e).__name__}: {e}); check the profile, then "
                           f"`bio social-resolve {draft_id} --posted-uri <at:// uri>` or `--not-posted`") from e
-    ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=month, uri=resp.uri, cid=resp.cid)
-    return {"status": "posted", "uri": resp.uri, **payload}
+    ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=month, uri=uri, cid=cid)
+    return {"status": "posted", "uri": uri, **payload}

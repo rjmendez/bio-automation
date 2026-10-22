@@ -91,8 +91,15 @@ SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 1))
 # app.bsky.embed.images allows 2,000,000 B per image (raised from 1 MB in 2026); 1 MB also passes a PDS still on the old cap
 BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 1_000_000))
 BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 2000))
-BSKY_HANDLE_ENV = "BSKY_HANDLE"                                    # read at post time, never stored
-BSKY_APP_PASSWORD_ENV = "BSKY_APP_PASSWORD"                        # a Bluesky app password, not the account password
+# Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
+# @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
+# rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
+BSKY_HANDLE = env("BIO_BSKY_HANDLE", "trunkfullofdeadhookers.com")
+BSKY_OAUTH_DIR = env_path("BIO_BSKY_OAUTH_DIR", r"F:\services\bio-social\oauth")
+BSKY_CLIENT_ID = env("BIO_BSKY_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/poster/client-metadata.json")
+BSKY_REDIRECT_URI = env("BIO_BSKY_REDIRECT_URI", "https://rjmendez.github.io/bio-social-oauth/callback.html")
+BSKY_OAUTH_SCOPE = env("BIO_BSKY_OAUTH_SCOPE", "atproto repo:app.bsky.feed.post?action=create blob:image/*")   # create posts + upload images only
+BSKY_CLIENT_NAME = env("BIO_BSKY_CLIENT_NAME", "bio-automation photo posts")
 
 # --- local vision model (Ollama, GPU only). No model is named here: env BIO_VISION_MODEL, else the best-ranked installed "vision" model of
 # Loci's pool file
