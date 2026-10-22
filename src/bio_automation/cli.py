@@ -256,6 +256,9 @@ def build_parser() -> argparse.ArgumentParser:
     g = p_social_resolve.add_mutually_exclusive_group(required=True)
     g.add_argument("--posted-uri", default=None)
     g.add_argument("--not-posted", action="store_true")
+    p_social_resolve.add_argument("--posted-at", default=None, metavar="ISO_DATETIME",
+                                  help="When the post went out (local time unless it carries an offset), e.g. 2026-10-20T23:50; "
+                                       "default: now. The posts-per-day count follows this day.")
 
     p_social_post = sub.add_parser(
         "social-post",
@@ -723,9 +726,19 @@ def cmd_social_reject(args: argparse.Namespace) -> int:
 
 
 def cmd_social_resolve(args: argparse.Namespace) -> int:
-    from .social import Ledger, resolve
+    import datetime as dt
 
-    rec = resolve(Ledger(), args.draft_id, posted_uri=None if args.not_posted else args.posted_uri)
+    from .social import Ledger, SocialError, resolve
+
+    when = None
+    if args.posted_at:
+        try:
+            when = dt.datetime.fromisoformat(args.posted_at)
+        except ValueError as e:
+            raise SocialError(f"--posted-at must be an ISO date and time like 2026-10-20T23:50, got {args.posted_at!r}") from e
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=settings.LOCAL_TZ)
+    rec = resolve(Ledger(), args.draft_id, posted_uri=None if args.not_posted else args.posted_uri, now=when)
     print(f"{args.draft_id}: {rec['event']}")
     return 0
 
