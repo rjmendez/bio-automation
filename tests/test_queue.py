@@ -356,3 +356,43 @@ class TestTimings:
             assert q.schema_version() == len(MIGRATIONS) == 2
             assert q.counts() == {"done": 1}
             assert q.timings() == {}                                   # finished before finish times were recorded: no made-up duration
+
+
+class TestExtendLease:
+    def test_a_renewed_lease_keeps_the_message_from_being_reclaimed(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = q.publish("t", {})
+            q.claim(["t"], worker_id="w1", lease_s=60.0)
+            clock.now += 50.0
+            assert q.extend_lease(mid, worker_id="w1", lease_s=60.0) == 1110.0
+            clock.now += 50.0                                       # past the first lease, inside the renewed one
+            assert q.claim(["t"], worker_id="w2") is None
+            q.ack(mid, worker_id="w1")
+            assert q.counts("t") == {"done": 1}
+
+    def test_without_renewal_the_same_message_is_reclaimed(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = q.publish("t", {})
+            q.claim(["t"], worker_id="w1", lease_s=60.0)
+            clock.now += 100.0
+            assert q.claim(["t"], worker_id="w2").id == mid
+
+    def test_a_worker_that_lost_its_claim_cannot_renew_it(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = q.publish("t", {})
+            q.claim(["t"], worker_id="w1", lease_s=60.0)
+            clock.now += 100.0
+            q.claim(["t"], worker_id="w2", lease_s=60.0)
+            with pytest.raises(QueueLeaseLost, match=r"is claimed by 'w2', not by 'w1'"):
+                q.extend_lease(mid, worker_id="w1")
+            assert q._db.execute("SELECT lease_until FROM messages WHERE id=?", (mid,)).fetchone()[0] == 1160.0
+
+    def test_a_finished_message_cannot_be_renewed(self, q):
+        mid = q.publish("t", {})
+        q.claim(["t"], worker_id="w1")
+        q.ack(mid, worker_id="w1")
+        with pytest.raises(QueueLeaseLost, match=r"is not claimed \(status 'done'"):
+            q.extend_lease(mid, worker_id="w1")
