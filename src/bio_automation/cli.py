@@ -270,9 +270,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_social_post = sub.add_parser(
         "social-post",
-        help="Post the oldest approved draft of this month (at most BIO_SOCIAL_POSTS_PER_DAY a day). Dry-run unless --live; --live needs "
+        help="Post the oldest approved draft of this month, approving the oldest drafted one first when none is approved "
+             "(BIO_SOCIAL_AUTO_APPROVE); at most BIO_SOCIAL_POSTS_PER_DAY scheduled posts a day. Dry-run unless --live; --live needs "
              "the OAuth session from `bio social-login`.")
     p_social_post.add_argument("--live", action="store_true")
+    p_social_post.add_argument("--manual", action="store_true", help="a manual post: not counted in, and not stopped by, the daily cap")
+    p_social_post.add_argument("--draft", default=None, metavar="DRAFT_ID",
+                               help="post this very draft (any month; approved first if it is not) as a manual post")
 
     p_social_login = sub.add_parser(
         "social-login",
@@ -757,7 +761,8 @@ def cmd_social_post(args: argparse.Namespace) -> int:
 
     from .social import Ledger, post_next
 
-    result = post_next(Ledger(), settings.SOCIAL_DIR / "drafts", now=dt.datetime.now(settings.LOCAL_TZ), live=args.live)
+    result = post_next(Ledger(), settings.SOCIAL_DIR / "drafts", now=dt.datetime.now(settings.LOCAL_TZ), live=args.live,
+                       manual=args.manual, draft_id=args.draft)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
