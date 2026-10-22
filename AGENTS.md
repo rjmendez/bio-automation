@@ -123,6 +123,16 @@ Rollback: copy `F:/services/tls/caddy/Caddyfile.bak-photos-lan-20261020-091908` 
 `Caddyfile`, then Stop+Start scheduled task `Lab-TLS-FrontDoor` (blips the loci/litellm/ollama
 names ~5 s). Caddyfile has MIXED newlines (LF + one trailing CRLF): never assume one style.
 
+**Bluesky posts (owner, 2026-10-21; `social.py`, folded in from github.com/rjmendez/inat_skeet).** Daily posts of the
+owner's photos from the CURRENT month of every year in the gallery (`<year>/<year>-<MM>/`), one iNat observation per post,
+gallery renders only (never iNat's 2048 px copies). Alt text comes from the LOCAL vision model (env `BIO_VISION_MODEL`, else
+the pool's `vision` role; never a literal model name), given the embedded Stock label and the live observation; GPU only.
+**Every post is approved by the owner** (`bio social-approve`); nothing auto-approves, and a draft edited after approval needs a
+new approval. `bio social-post` is dry-run unless `--live`, posts at most `BIO_SOCIAL_POSTS_PER_DAY` a day, and a send that
+raised leaves the draft `posting`, which blocks all posting until the owner checks the profile and runs `bio social-resolve`
+(never resend on a guess). Never print a private-geoprivacy place. Daily task `Bio-Social-Daily` runs
+`F:/services/bio-social/run-social.ps1` (index -> draft -> post).
+
 **No web UI work (owner, 2026-10-20).** The review console / inat_console web UIs
 are shelved: do not build, extend, audit or fix them. The focus is bulk photo
 processing from the command line (render, tag, validate, build upload sets).
