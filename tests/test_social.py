@@ -666,6 +666,77 @@ class TestPosting:
             ledger.append("bogus", "x")
 
 
+class TestOnePosterAtATime:
+    def approved(self, tmp_path):
+        ledger, drafts = Ledger(tmp_path / "l.jsonl"), tmp_path / "drafts"
+        write_draft(drafts, "2026-10-obs1", 1, "2026-10")
+        ledger.append("drafted", "2026-10-obs1", obs_id=1, month="2026-10", now=NOW - dt.timedelta(days=2))
+        social.approve(ledger, drafts, "2026-10-obs1")
+        return ledger, drafts
+
+    def test_a_live_run_refuses_while_another_run_holds_the_ledger_and_sends_nothing(self, tmp_path):
+        ledger, drafts = self.approved(tmp_path)
+        send = RecordingSend()
+        with social.ledger_lock(ledger.path):
+            with pytest.raises(SocialError, match=r"^another social-post run is posting \(.*l\.jsonl\.lock\); nothing was sent by this one$"):
+                social.post_next(ledger, drafts, now=NOW, live=True, send=send)
+        assert (send.calls, ledger.drafts()["2026-10-obs1"]["state"]) == ([], "approved")
+
+    def test_the_same_run_posts_once_the_other_is_done(self, tmp_path):
+        ledger, drafts = self.approved(tmp_path)
+        with social.ledger_lock(ledger.path):
+            pass
+        send = RecordingSend()
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=send)["status"] == "posted"
+        assert len(send.calls) == 1
+
+    def test_a_dry_run_does_not_need_the_lock(self, tmp_path):
+        ledger, drafts = self.approved(tmp_path)
+        with social.ledger_lock(ledger.path):
+            assert social.post_next(ledger, drafts, now=NOW, send=RecordingSend())["status"] == "dry-run"
+
+    def test_the_lock_is_held_while_the_send_runs(self, tmp_path):
+        ledger, drafts = self.approved(tmp_path)
+        seen = []
+
+        def send(request):
+            try:
+                with social.ledger_lock(ledger.path):
+                    seen.append("a second run got in")
+            except SocialError as e:
+                seen.append(str(e).split(" (")[0])
+            return URI, "bafyabc"
+
+        social.post_next(ledger, drafts, now=NOW, live=True, send=send)
+        assert seen == ["another social-post run is posting"]
+        with social.ledger_lock(ledger.path):                                 # and released afterwards
+            pass
+
+
+class TestResolveRecords:
+    def stuck(self, tmp_path):
+        ledger, drafts = Ledger(tmp_path / "l.jsonl"), tmp_path / "drafts"
+        write_draft(drafts, "2026-10-obs1", 1, "2026-10")
+        ledger.append("drafted", "2026-10-obs1", obs_id=1, month="2026-10", now=NOW - dt.timedelta(days=2))
+        social.approve(ledger, drafts, "2026-10-obs1")
+        with pytest.raises(SocialError, match="unknown outcome"):
+            social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(fail=TimeoutError("t")))
+        return ledger
+
+    def test_a_resolved_post_is_stamped_with_the_time_the_owner_gives(self, tmp_path):
+        ledger = self.stuck(tmp_path)
+        when = dt.datetime(2026, 10, 20, 23, 50, tzinfo=TZ)
+        assert social.resolve(ledger, "2026-10-obs1", posted_uri=URI, now=when)["at"].startswith("2026-10-20T23:50:00")
+
+    def test_an_owner_supplied_uri_that_is_not_an_at_uri_is_refused_and_the_draft_stays_posting(self, tmp_path):
+        ledger = self.stuck(tmp_path)
+        for bad in ("https://bsky.app/profile/x/post/3x", "  ", "3x"):
+            with pytest.raises(SocialError, match=r"^posted_uri must be the post's at:// URI, got '"):
+                social.resolve(ledger, "2026-10-obs1", posted_uri=bad)
+        assert ledger.drafts()["2026-10-obs1"]["state"] == "posting"
+        assert social.resolve(ledger, "2026-10-obs1", posted_uri=URI)["event"] == "posted"
+
+
 # ----------------------------------------------------------------------------------------------------------- bsky-oauth boundary
 
 class RecordingAccount:
@@ -721,6 +792,26 @@ class TestBskyBoundary:
             social.bsky_post(REQUEST)
 
 
+class TestLocalFailuresBeforeTheWrite:
+    def test_an_unreadable_image_is_nothing_sent(self):
+        acct = RecordingAccount(fail=FileNotFoundError(2, "No such file or directory", "D:/d/1.jpg"))
+        with pytest.raises(social.NothingSent, match=r"^cannot read the image D:.d.1\.jpg: "):
+            social.bsky_post(REQUEST, account=acct)
+
+    def test_an_unreadable_session_file_is_nothing_sent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(social.settings, "BSKY_OAUTH_DIR", tmp_path / "oauth")
+        acct = RecordingAccount(fail=PermissionError(13, "Permission denied", str(tmp_path / "oauth" / "account.json")))
+        with pytest.raises(social.NothingSent, match=r"^cannot read the Bluesky session file .*account\.json: "):
+            social.bsky_post(REQUEST, account=acct)
+
+    def test_an_oserror_that_names_no_local_file_is_not_nothing_sent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(social.settings, "BSKY_OAUTH_DIR", tmp_path / "oauth")
+        with pytest.raises(ConnectionResetError, match="reset by peer"):
+            social.bsky_post(REQUEST, account=RecordingAccount(fail=ConnectionResetError("reset by peer")))
+        with pytest.raises(PermissionError, match="elsewhere"):
+            social.bsky_post(REQUEST, account=RecordingAccount(fail=PermissionError(13, "elsewhere", str(tmp_path / "other.txt"))))
+
+
 # ----------------------------------------------------------------------------------------------------------- CLI
 
 class TestCli:
@@ -739,6 +830,22 @@ class TestCli:
         monkeypatch.setattr("sys.argv", ["bio", "social-approve", "nope"])
         assert cli.main() == 1
         assert capsys.readouterr().err == f"bio social-approve: no draft 'nope' in {tmp_path / 'l.jsonl'}\n"
+
+
+    def test_social_resolve_takes_the_time_the_post_went_out(self, tmp_path, monkeypatch):
+        from bio_automation import cli, settings
+
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "l.jsonl")
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "social")
+        write_draft(tmp_path / "social" / "drafts", "2026-10-obs1", 1, "2026-10")
+        ledger = Ledger()
+        ledger.append("drafted", "2026-10-obs1", obs_id=1, month="2026-10")
+        ledger.append("approved", "2026-10-obs1", obs_id=1, month="2026-10", hash="h")
+        ledger.append("posting", "2026-10-obs1", obs_id=1, month="2026-10")
+
+        monkeypatch.setattr("sys.argv", ["bio", "social-resolve", "2026-10-obs1", "--posted-uri", URI, "--posted-at", "2026-10-20T23:50"])
+        assert cli.main() == 0
+        assert [(r["event"], r["at"][:16]) for r in Ledger().records()][-1] == ("posted", "2026-10-20T23:50")
 
 
 # ----------------------------------------------------------------------------------------------------------- owner's style in alt text
