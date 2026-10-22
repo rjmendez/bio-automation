@@ -18,6 +18,13 @@ from bio_automation.inat_stock import embed_label
 from bio_automation.social import Ledger, SkipObservation, SocialError, VisionError
 
 TZ = dt.timezone(dt.timedelta(hours=-4))
+PRINT = "https://rjmendez.darkroom.com/products/1350563"
+
+
+@pytest.fixture(autouse=True)
+def no_real_prints_file(tmp_path, monkeypatch):
+    """draft_month loads settings.SOCIAL_PRINTS_FILE by default; point it at a file that does not exist."""
+    monkeypatch.setattr(social.settings, "SOCIAL_PRINTS_FILE", tmp_path / "no-prints.csv")
 
 
 def jpeg(path: Path, size=(64, 48), color=(10, 90, 10)) -> Path:
@@ -169,6 +176,17 @@ class TestPrepareImage:
         assert b"Exif" not in out
         assert dict(Image.open(tmp_path / "o.jpg").getexif()) == {}
 
+    def test_defaults_are_the_official_apps_post_limits_4000_px_and_2_mb(self, tmp_path):
+        src = tmp_path / "big.jpg"
+        grad = np.tile(np.linspace(0, 255, 5000, dtype=np.uint8), (3000, 1))
+        Image.fromarray(np.stack([grad, grad, grad], -1)).save(src, "JPEG", quality=95)
+
+        info = social.prepare_image(src, tmp_path / "o.jpg")
+
+        assert (info["width"], info["height"], info["quality"]) == (4000, 2400, 90)
+        assert info["bytes"] <= 2_000_000
+        assert (social.settings.BSKY_IMAGE_MAX_BYTES, social.settings.BSKY_IMAGE_MAX_EDGE) == (2_000_000, 4000)
+
     def test_impossible_limit_raises(self, tmp_path):
         src = jpeg(tmp_path / "x.jpg", size=(400, 300))
         with pytest.raises(SocialError, match=r"no JPEG of at least 256 px fits 10 bytes"):
@@ -312,9 +330,43 @@ class TestText:
         assert len(over) == 287
         assert over.endswith("\n#macrophotography #nature #inaturalist #Fungi #mycology #mushrooms")
 
+    def test_a_print_link_goes_after_the_inat_link(self):
+        segs = social.text_segments(observation(), PRINT)
+        assert social.segments_text(segs) == ("Lattice Orbweaver (Araneus thaddeus)\nResearch Grade\nOctober 1, 2024 · Bucks County, PA, USA\n"
+                                              "https://www.inaturalist.org/observations/42\nPrints: " + PRINT + "\n"
+                                              "Alt text: local AI model, reviewed.\n#macrophotography #nature #inaturalist #Arachnida #arachnids")
+        assert [s[2] for s in segs if s[0] == "link"] == ["https://www.inaturalist.org/observations/42", PRINT]
+        assert social.text_segments(observation(), None) == social.text_segments(observation())
+
+    def test_tags_go_before_the_print_link_and_come_back_when_it_has_to_go(self):
+        # a 94-character place fits with the print link and no tags (300); at 95 the link goes and the tags that fit return (291)
+        kept = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 94), PRINT))
+        assert len(kept) == 300 and kept.endswith("Prints: " + PRINT + "\nAlt text: local AI model, reviewed.\n")
+        dropped = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 95), PRINT))
+        assert len(dropped) == 291 and "Prints:" not in dropped
+        assert dropped.endswith("\nAlt text: local AI model, reviewed.\n#macrophotography #nature #inaturalist #Fungi")
+
     def test_too_long_without_tags_raises(self):
         with pytest.raises(SocialError, match=r"observation 42: post text is \d+ characters even without hashtags"):
             social.text_segments(observation(place="P" * 400))
+
+
+class TestPrints:
+    def test_csv_is_read_into_obs_id_to_url_and_a_missing_file_is_empty(self, tmp_path):
+        path = write_csv(tmp_path / "p.csv", [{"obs_id": "42", "url": PRINT}, {"obs_id": " 7 ", "url": "https://example.com/x "},
+                                              {"obs_id": "42", "url": PRINT}])
+        assert social.load_prints(path) == {42: PRINT, 7: "https://example.com/x"}
+        assert social.load_prints(tmp_path / "none.csv") == {}
+
+    @pytest.mark.parametrize("rows,error", [
+        ([{"obs": "42", "url": PRINT}], r"p\.csv: needs the header obs_id,url"),
+        ([{"obs_id": "42", "url": "http://insecure.example/x"}], r"p\.csv line 2: expected an observation id and an https:// url"),
+        ([{"obs_id": "x42", "url": PRINT}], r"p\.csv line 2: expected an observation id"),
+        ([{"obs_id": "42", "url": PRINT}, {"obs_id": "42", "url": "https://example.com/other"}],
+         r"p\.csv line 3: observation 42 already has " + PRINT)])
+    def test_malformed_rows_raise_naming_the_line(self, tmp_path, rows, error):
+        with pytest.raises(SocialError, match=error):
+            social.load_prints(write_csv(tmp_path / "p.csv", rows))
 
 
 # ----------------------------------------------------------------------------------------------------------- drafting
@@ -427,6 +479,25 @@ class TestDraft:
 
         assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2"]
         assert sorted(fetch.calls) == [1, 2]
+
+    def test_draft_month_adds_the_print_link_only_to_listed_observations_and_reads_the_csv_by_default(self, tmp_path, monkeypatch):
+        g = tmp_path / "gallery"
+        index = {"files": {}}
+        for obs in (1, 2):
+            rel = f"2024/2024-10/2024-10-0{obs}_DSC_{obs}.jpg"
+            jpeg(g / rel, size=(300, 200))
+            index["files"][rel] = obs
+        monkeypatch.setattr(social.settings, "SOCIAL_PRINTS_FILE", write_csv(tmp_path / "prints.csv", [{"obs_id": "2", "url": PRINT}]))
+
+        report = social.draft_month(index, Ledger(tmp_path / "ledger.jsonl"), today=dt.date(2026, 10, 21), gallery_dir=g,
+                                    drafts_dir=tmp_path / "drafts", keep_pending=2, model="vis:1",
+                                    fetch=RecordingFetch({1: observation(1), 2: observation(2)}), read_label=labels,
+                                    describe_fn=RecordingDescribe(), pick_model=no_model, style_source=lambda: None)
+
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2"]
+        links = {d: [s[2] for s in social.load_draft(tmp_path / "drafts" / d)["text"] if s[0] == "link"] for d in report["drafted"]}
+        assert links == {"2026-10-obs1": ["https://www.inaturalist.org/observations/1"],
+                         "2026-10-obs2": ["https://www.inaturalist.org/observations/2", PRINT]}
 
     def test_draft_month_does_nothing_when_enough_are_pending(self, tmp_path):
         ledger = Ledger(tmp_path / "ledger.jsonl")

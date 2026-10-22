@@ -134,7 +134,10 @@ raised leaves the draft `posting`, which blocks all posting until the owner chec
 (`bio social-style` -> `settings.SOCIAL_STYLE_PROFILE`, learned from alt texts they wrote on Bluesky, inat_skeet bot posts
 excluded; deterministic statistics + rules + nearest examples, nothing model-written; drafting refuses to run without it;
 mirrored in Loci investigation `bsky-alt-text-style`). Daily task `Bio-Social-Daily` runs
-`F:/services/bio-social/run-social.ps1` (index -> draft -> post).
+`F:/services/bio-social/run-social.ps1` (index -> draft -> post). Images go up at the official app's post limits (4000 px,
+2,000,000 B; `BSKY_IMAGE_MAX_*`); the 2 MB cap is the lexicon's, so no other upload path can carry more. A print link
+("Prints: <url>", e.g. the Darkroom product page) is added from the owner's `settings.SOCIAL_PRINTS_FILE` csv (`obs_id,url`);
+Darkroom has no API, so only the owner fills it; hashtags are dropped before the print link when the text is over 300.
 
 **Removing the old inat_skeet posts (owner, 2026-10-22: "all without replies", "dry-run list, then one go").**
 `bio social-cleanup-plan` lists, from live public data, every post in inat_skeet's template that has no replies (posts with

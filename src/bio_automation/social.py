@@ -553,23 +553,48 @@ def hashtags(iconic: str | None) -> list[str]:
     return tags
 
 
-def text_segments(obs: dict) -> list[list[str]]:
-    """The post as [kind, text(, target)] segments: ["text", s], ["link", s, url], ["tag", "#t", "t"]. Tags are dropped from the end
-    while the text is over Bluesky's limits; a post still over them without any tag raises."""
+def text_segments(obs: dict, prints_url: str | None = None) -> list[list[str]]:
+    """The post as [kind, text(, target)] segments: ["text", s], ["link", s, url], ["tag", "#t", "t"]. prints_url adds a "Prints:" line
+    after the iNat link. While the text is over Bluesky's limits, tags are dropped from the end; if it is still over without any tag, the
+    prints line goes and the tags are tried again; a post over them even then raises."""
     taxon = obs.get("taxon") or {}
     url = INAT_OBS_URL.format(obs["observation_id"])
     head = [display_name(taxon), GRADE_TEXT.get(obs.get("quality_grade") or "", ""),
             " · ".join(x for x in (format_date(obs.get("observed_on")), public_place(obs)) if x)]
-    segs = [["text", "\n".join(x for x in head if x) + "\n"], ["link", url, url], ["text", "\nAlt text: local AI model, reviewed.\n"]]
-    tags = hashtags(taxon.get("iconic_taxon_name"))
-    while True:
-        out = segs + [s for t in tags for s in (["tag", "#" + t, t], ["text", " "])][:-1]
-        text = segments_text(out)
-        if len(text) <= TEXT_MAX_GRAPHEMES and len(text.encode("utf-8")) <= TEXT_MAX_BYTES:   # code points >= graphemes: a safe count
-            return out
-        if not tags:
-            raise SocialError(f"observation {obs['observation_id']}: post text is {len(text)} characters even without hashtags")
-        tags.pop()
+    all_tags = hashtags(taxon.get("iconic_taxon_name"))
+    for prints in ([[["text", "\nPrints: "], ["link", prints_url, prints_url]]] if prints_url else []) + [[]]:
+        tags = list(all_tags)
+        while True:
+            out = ([["text", "\n".join(x for x in head if x) + "\n"], ["link", url, url]] + prints
+                   + [["text", "\nAlt text: local AI model, reviewed.\n"]] + [s for t in tags for s in (["tag", "#" + t, t], ["text", " "])][:-1])
+            text = segments_text(out)
+            if len(text) <= TEXT_MAX_GRAPHEMES and len(text.encode("utf-8")) <= TEXT_MAX_BYTES:   # code points >= graphemes: a safe count
+                return out
+            if not tags:
+                break
+            tags.pop()
+    raise SocialError(f"observation {obs['observation_id']}: post text is {len(text)} characters even without hashtags")
+
+
+def load_prints(path: Path | None = None) -> dict[int, str]:
+    """{obs_id: print url} from the owner's csv (header obs_id,url); no file -> {}. A malformed row raises, naming its line."""
+    path = Path(path or settings.SOCIAL_PRINTS_FILE)
+    if not path.is_file():
+        return {}
+    out: dict[int, str] = {}
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if not {"obs_id", "url"} <= set(reader.fieldnames or ()):
+            raise SocialError(f"{path}: needs the header obs_id,url")
+        for row in reader:
+            obs, url = (row["obs_id"] or "").strip(), (row["url"] or "").strip()
+            where = f"{path} line {reader.line_num}"
+            if not obs.isdigit() or not url.startswith("https://") or " " in url:
+                raise SocialError(f"{where}: expected an observation id and an https:// url, got {obs!r}, {url!r}")
+            if int(obs) in out and out[int(obs)] != url:
+                raise SocialError(f"{where}: observation {obs} already has {out[int(obs)]}")
+            out[int(obs)] = url
+    return out
 
 
 def segments_text(segs: list[list[str]]) -> str:
@@ -593,7 +618,7 @@ def _read_label(path: Path) -> dict:
 def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, drafts_dir: Path, model: str,
                fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                describe_fn: Callable[..., str] = describe, style: Callable[[str], dict] | None = None,
-               now: dt.datetime | None = None) -> dict:
+               prints_url: str | None = None, now: dt.datetime | None = None) -> dict:
     """Write drafts_dir/<month>-obs<obs_id>/ (draft.json + 1.jpg..4.jpg) and return the draft. The observation is fetched live: casual,
     deleted and taxon-less observations raise SkipObservation. style(subject) -> {"rules", "examples", ...}: the owner's alt-text style
     for this photo (social_style.style_for), given to the vision model and recorded per image."""
@@ -632,7 +657,7 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
             raise
         images.append({"file": name, "source": rel, "alt": alt, **info, "alt_attempts": context["attempts"],
                        **({"style_examples": context["style"]["examples"]} if style is not None else {})})
-    draft = {"draft_id": draft_id, "month": month, "obs_id": obs_id, "url": INAT_OBS_URL.format(obs_id), "text": text_segments(obs),
+    draft = {"draft_id": draft_id, "month": month, "obs_id": obs_id, "url": INAT_OBS_URL.format(obs_id), "text": text_segments(obs, prints_url),
              "images": images, "vision_model": model, "observation": obs,
              "created_at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds")}
     (out / "draft.json").write_text(json.dumps(draft, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -651,12 +676,13 @@ def default_style() -> Callable[[str], dict]:
 def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Path, drafts_dir: Path, keep_pending: int | None = None,
                 model: str | None = None, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                 describe_fn: Callable[..., str] = describe, pick_model: Callable[[], str] = vision_model,
-                style_source: Callable[[], Callable[[str], dict]] | None = None) -> dict:
+                style_source: Callable[[], Callable[[str], dict]] | None = None, prints: dict[int, str] | None = None) -> dict:
     """Top up `today`'s month's unposted drafts (drafted or approved) to keep_pending, from the observations with gallery files in that
     month of any year that are not taken: posted, rejected or awaiting an outcome (posting) ever, or drafted in this month already. A draft
     of an earlier month that was never posted has expired (only the current month posts), so its observation comes back next year.
     The owner's alt-text style is required: style_source() (default: the saved profile + the pool's embed model) is loaded once, before
-    any drafting; a missing profile raises and drafts nothing. Returns {"month", "pending", "drafted", "skipped"}."""
+    any drafting; a missing profile raises and drafts nothing. prints ({obs_id: url}, default load_prints()) adds a print link to the
+    observations it lists. Returns {"month", "pending", "drafted", "skipped"}."""
     keep_pending = settings.SOCIAL_KEEP_PENDING if keep_pending is None else keep_pending
     month = f"{today.year}-{today.month:02d}"
     known = ledger.drafts()
@@ -670,12 +696,13 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
     cands = month_observations(index, today.month)
     model = model or pick_model()
     style = (style_source or default_style)()
+    prints = load_prints() if prints is None else prints
     for obs_id in order_candidates(cands, seen, seed=today.isoformat()):
         if len(report["drafted"]) >= need:
             break
         try:
             draft = make_draft(obs_id, cands[obs_id], month=month, gallery_dir=gallery_dir, drafts_dir=drafts_dir, model=model,
-                               fetch=fetch, read_label=read_label, describe_fn=describe_fn, style=style)
+                               fetch=fetch, read_label=read_label, describe_fn=describe_fn, style=style, prints_url=prints.get(obs_id))
         except SkipObservation as e:
             report["skipped"][obs_id] = str(e)
             continue
