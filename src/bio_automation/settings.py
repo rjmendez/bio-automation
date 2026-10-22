@@ -102,6 +102,45 @@ INAT_RATE_DB = env_path("BIO_INAT_RATE_DB", CACHE_DIR / "state" / "inat_rate.sql
 INAT_TAXON_CACHE = env_path("BIO_INAT_TAXON_CACHE", CACHE_DIR / "inat" / "taxa.sqlite3")   # taxon lineages (observations are always fetched live)
 INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 
+# --- social posts (Bluesky): drafts the owner approves, one posted a day, from the current month of every year in the gallery
+SOCIAL_DIR = env_path("BIO_SOCIAL_DIR", RESULTS_DIR / "social")                     # drafts/<draft id>/: draft.json + the post's images
+SOCIAL_LEDGER = env_path("BIO_SOCIAL_LEDGER", CACHE_DIR / "state" / "social_ledger.jsonl")   # append-only draft/approve/post events
+GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gallery_obs_index.json")   # gallery file -> iNat observation
+SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
+SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 1))
+# app.bsky.embed.images allows 2,000,000 B per image (formerly 1 MB); the official app compresses post images to the same pair
+# (social-app src/lib/constants.ts IMAGE_SIZE_CONFIG_POSTS: maxDimension 4000, maxSize 2000000)
+BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 2_000_000))
+BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 4000))
+# observation id -> where to buy a print (e.g. its Darkroom product page; Darkroom has no API, so the owner keeps this csv: obs_id,url)
+SOCIAL_PRINTS_FILE = env_path("BIO_SOCIAL_PRINTS_FILE", RESULTS_DIR / "social" / "prints.csv")
+# Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
+# @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
+# rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
+BSKY_HANDLE = env("BIO_BSKY_HANDLE", "trunkfullofdeadhookers.com")
+BSKY_OAUTH_DIR = env_path("BIO_BSKY_OAUTH_DIR", r"F:\services\bio-social\oauth")
+BSKY_CLIENT_ID = env("BIO_BSKY_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/poster/client-metadata.json")
+BSKY_REDIRECT_URI = env("BIO_BSKY_REDIRECT_URI", "https://rjmendez.github.io/bio-social-oauth/callback.html")
+BSKY_OAUTH_SCOPE = env("BIO_BSKY_OAUTH_SCOPE", "atproto repo:app.bsky.feed.post?action=create blob:image/*")   # create posts + upload images only
+BSKY_CLIENT_NAME = env("BIO_BSKY_CLIENT_NAME", "bio-automation photo posts")
+# "cleanup" profile: a second confidential client that can ONLY delete posts (removing the old inat_skeet bot posts); its own key,
+# session and sign-in, so the poster can never delete and the cleanup client can never post
+BSKY_CLEANUP_OAUTH_DIR = env_path("BIO_BSKY_CLEANUP_OAUTH_DIR", r"F:\services\bio-social\oauth-cleanup")
+BSKY_CLEANUP_CLIENT_ID = env("BIO_BSKY_CLEANUP_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/cleanup/client-metadata.json")
+BSKY_CLEANUP_SCOPE = env("BIO_BSKY_CLEANUP_SCOPE", "atproto repo:app.bsky.feed.post?action=delete")
+BSKY_ARCHIVE_DIR = env_path("BIO_BSKY_ARCHIVE_DIR", CACHE_DIR / "bsky-archive")   # repo exports, cleanup plans and their ledgers
+
+# --- local vision model (Ollama, GPU only). No model is named here: env BIO_VISION_MODEL, else the best-ranked installed "vision" model of
+# Loci's pool file
+OLLAMA_URL = env("BIO_OLLAMA", "http://127.0.0.1:11440")         # the server itself: the resident proxy on :11435 rewrites model names
+VISION_MODEL_ENV = "BIO_VISION_MODEL"
+EMBED_MODEL_ENV = "BIO_EMBED_MODEL"                                 # else the pool's "embed" role (the owner's alt-text style examples)
+SOCIAL_STYLE_PROFILE = env_path("BIO_SOCIAL_STYLE_PROFILE", CACHE_DIR / "state" / "bsky_style_profile.json")
+BSKY_APPVIEW = env("BIO_BSKY_APPVIEW", "https://public.api.bsky.app")   # public, unauthenticated reads
+PLC_URL = env("BIO_PLC_URL", "https://plc.directory")
+MODEL_POOL_FILE = env_path("BIO_MODEL_POOL", HOME / ".loci" / "backends.toml")
+VISION_IMAGE_EDGE = int(env("BIO_VISION_IMAGE_EDGE", 1024))       # long edge of the copy the vision model sees
+
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space
 RAW_CACHE_MIN_FREE_GB = env_float("BIO_RAW_CACHE_MIN_FREE_GB", MIN_FREE_GB + 10)   # a fill first evicts old entries to keep this free, else reads the NAS:

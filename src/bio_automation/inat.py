@@ -245,6 +245,9 @@ def _reshape(observation: dict, requested_id: int) -> dict:
             "rank": taxon.get("rank"),
         },
         "place_guess": observation.get("place_guess"),
+        # social posts print the date and must know when iNat hides the location (not merged into observation.json: INAT_OWNED_FIELDS)
+        "observed_on": observation.get("observed_on"),
+        "geoprivacy": observation.get("geoprivacy"),
         "license": observation.get("license_code"),
         "quality_grade": observation.get("quality_grade"),
         "keywords_seed": keywords_seed,
@@ -274,7 +277,7 @@ def fetch_inat_observation(observation_id: int, *, get_fn: Callable[[str, str], 
     """Fetch one observation from the public iNaturalist v1 API (read-only,
     unauthenticated GET to ``{INAT_API_BASE}/observations/{id}``) and
     reshape it into the iNat-owned subset of observation.json fields:
-    observation_id, source, taxon, place_guess, license, quality_grade,
+    observation_id, source, taxon, place_guess, observed_on, geoprivacy, license, quality_grade,
     keywords_seed. Returns bio-automation's own field names, not iNat's raw
     JSON shape. Performs no writes -- callers merge the result into an
     existing Observation via pipeline.merge_inat_fields().
