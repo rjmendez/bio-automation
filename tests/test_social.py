@@ -537,6 +537,56 @@ def write_draft(drafts_dir: Path, draft_id: str, obs_id: int, month: str) -> Pat
     return d
 
 
+class TestPrintsIgnoreTheMonth:
+    """An observation with a print is a draft candidate whatever month it was shot in, and is drafted first (owner, 2026-10-22)."""
+
+    def gallery(self, tmp_path):
+        g, index = tmp_path / "gallery", {"files": {}}
+        for obs, rel in ((1, "2024/2024-10/2024-10-01_DSC_1.jpg"), (2, "2025/2025-10/2025-10-02_DSC_2.jpg"),
+                         (3, "2026/2026-10/2026-10-03_DSC_3.jpg"), (7, "2025/2025-07/2025-07-07_DSC_7.jpg")):
+            jpeg(g / rel, size=(300, 200))
+            index["files"][rel] = obs
+        return g, index
+
+    def run(self, tmp_path, index, g, *, prints, keep_pending, ledger=None):
+        fetch = RecordingFetch({o: observation(o) for o in (1, 2, 3, 7)})
+        ledger = ledger or Ledger(tmp_path / "ledger.jsonl")
+        report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
+                                    keep_pending=keep_pending, model="vis:1", fetch=fetch, read_label=labels,
+                                    describe_fn=RecordingDescribe(), pick_model=no_model, style_source=lambda: None, prints=prints)
+        return report, fetch, ledger
+
+    def test_a_july_observation_with_a_print_is_drafted_in_october_and_belongs_to_october(self, tmp_path):
+        g, index = self.gallery(tmp_path)
+        report, fetch, ledger = self.run(tmp_path, index, g, prints={7: PRINT}, keep_pending=1)
+        assert (report["drafted"], fetch.calls) == (["2026-10-obs7"], [7])
+        assert ledger.drafts()["2026-10-obs7"]["month"] == "2026-10"
+        links = [s[2] for s in social.load_draft(tmp_path / "drafts" / "2026-10-obs7")["text"] if s[0] == "link"]
+        assert links == ["https://www.inaturalist.org/observations/7", PRINT]
+
+    def test_without_a_print_the_same_july_observation_is_not_a_candidate(self, tmp_path):
+        g, index = self.gallery(tmp_path)
+        report, fetch, _ = self.run(tmp_path, index, g, prints={}, keep_pending=10)
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]
+        assert 7 not in fetch.calls
+
+    def test_a_print_does_not_bring_back_a_posted_observation(self, tmp_path):
+        g, index = self.gallery(tmp_path)
+        ledger = Ledger(tmp_path / "ledger.jsonl")
+        ledger.append("drafted", "2025-07-obs7", obs_id=7, month="2025-07")
+        ledger.append("posted", "2025-07-obs7", obs_id=7, month="2025-07")
+        report, fetch, _ = self.run(tmp_path, index, g, prints={7: PRINT}, keep_pending=10, ledger=ledger)
+        assert 7 not in fetch.calls and "2026-10-obs7" not in report["drafted"]
+
+    def test_observations_with_a_print_come_first_and_the_rest_keep_their_order(self, tmp_path):
+        g, index = self.gallery(tmp_path)
+        baseline, _, _ = self.run(tmp_path / "a", index, g, prints={}, keep_pending=3)
+        order = [int(d.rsplit("obs", 1)[1]) for d in baseline["drafted"]]
+        last = order[-1]
+        with_print, _, _ = self.run(tmp_path / "b", index, g, prints={last: PRINT}, keep_pending=3)
+        assert [int(d.rsplit("obs", 1)[1]) for d in with_print["drafted"]] == [last] + order[:-1]
+
+
 NOW = dt.datetime(2026, 10, 21, 9, 0, tzinfo=TZ)
 
 
