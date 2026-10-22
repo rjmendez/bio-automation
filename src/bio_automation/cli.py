@@ -271,6 +271,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("social-whoami", help="Refresh the stored Bluesky session and show its account, scope and expiry.")
 
+    p_social_style = sub.add_parser(
+        "social-style",
+        help="Learn the owner's alt-text style from their own public Bluesky posts (inat_skeet bot posts left out) and save the profile "
+             "social-draft uses; also writes <profile>.loci.json, the structured record for Loci memory.")
+    p_social_style.add_argument("--handle", default=settings.BSKY_HANDLE)
+    p_social_style.add_argument("--out", default=str(settings.SOCIAL_STYLE_PROFILE))
+
     p_social_metadata = sub.add_parser(
         "social-metadata", help="Write the poster profile's client-metadata.json, jwks.json (public key) and callback.html for publishing.")
     p_social_metadata.add_argument("out_dir")
@@ -746,6 +753,22 @@ def cmd_social_whoami(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_social_style(args: argparse.Namespace) -> int:
+    import json
+
+    from .social import embedder
+    from .social_style import build_profile, loci_record, save_profile
+
+    model, embed = embedder()
+    profile = build_profile(args.handle, embed=embed, embed_model=model)
+    path = save_profile(profile, Path(args.out))
+    loci = path.with_suffix(".loci.json")
+    loci.write_text(json.dumps(loci_record(profile), indent=1, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps({"profile": str(path), "loci_record": str(loci), "source": profile["source"], "stats": profile["stats"],
+                      "rules": profile["rules"]}, indent=2, ensure_ascii=False))
+    return 0
+
+
 def cmd_social_metadata(args: argparse.Namespace) -> int:
     import json
 
@@ -758,7 +781,7 @@ def cmd_social_metadata(args: argparse.Namespace) -> int:
 SOCIAL_COMMANDS = {"social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
-                   "social-metadata": cmd_social_metadata}
+                   "social-metadata": cmd_social_metadata, "social-style": cmd_social_style}
 
 
 def cmd_process(args: argparse.Namespace) -> int:

@@ -105,6 +105,10 @@ BSKY_CLIENT_NAME = env("BIO_BSKY_CLIENT_NAME", "bio-automation photo posts")
 # Loci's pool file
 OLLAMA_URL = env("BIO_OLLAMA", "http://127.0.0.1:11440")         # the server itself: the resident proxy on :11435 rewrites model names
 VISION_MODEL_ENV = "BIO_VISION_MODEL"
+EMBED_MODEL_ENV = "BIO_EMBED_MODEL"                                 # else the pool's "embed" role (the owner's alt-text style examples)
+SOCIAL_STYLE_PROFILE = env_path("BIO_SOCIAL_STYLE_PROFILE", CACHE_DIR / "state" / "bsky_style_profile.json")
+BSKY_APPVIEW = env("BIO_BSKY_APPVIEW", "https://public.api.bsky.app")   # public, unauthenticated reads
+PLC_URL = env("BIO_PLC_URL", "https://plc.directory")
 MODEL_POOL_FILE = env_path("BIO_MODEL_POOL", HOME / ".loci" / "backends.toml")
 VISION_IMAGE_EDGE = int(env("BIO_VISION_IMAGE_EDGE", 1024))       # long edge of the copy the vision model sees
 
