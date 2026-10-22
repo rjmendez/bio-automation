@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -141,27 +142,30 @@ class RawCache:
             return "fallback:disk"
         key.parent.mkdir(parents=True, exist_ok=True)
         lock = self._lock(key)
-        self._acquire(lock)
-        if self._fresh(key, size, mtime_ns):                      # filled by the process that held the lock
-            self._release(lock)
-            self._touch(key)
-            return "hit"
         part = key.with_name(f"{key.name}.part.{os.getpid()}")
-        try:
-            with self._gated(stage) as slot_wait:
-                waited[0] = slot_wait
-                written = self._copy(src, part)
-            on_disk = part.stat().st_size
-            if written != size or on_disk != size:
-                raise OSError(f"copied {written} bytes ({on_disk} on disk) of {size}: {src}")
-            self._sidecar(key).unlink(missing_ok=True)            # until the new sidecar is written the entry reads as stale
-            os.replace(part, key)
-            self._sidecar(key).write_text(json.dumps({"size": size, "mtime_ns": mtime_ns}), encoding="utf-8")
-            self._touch(key)
-        finally:
-            with contextlib.suppress(OSError):
-                part.unlink(missing_ok=True)
-            self._release(lock)
+        # The gate slot comes first: a fill queued behind other stages for minutes holds no lock, so another process cannot take it for a dead
+        # process's (lock_stale_s) and copy the same raw a second time. Whoever holds the lock is copying, never queued.
+        with self._gated(stage) as slot_wait:
+            waited[0] = slot_wait
+            token = self._acquire(lock)
+            try:
+                if self._fresh(key, size, mtime_ns):                  # filled by the process that held the lock
+                    self._touch(key)
+                    return "hit"
+                try:
+                    written = self._copy(src, part)
+                    on_disk = part.stat().st_size
+                    if written != size or on_disk != size:
+                        raise OSError(f"copied {written} bytes ({on_disk} on disk) of {size}: {src}")
+                    self._sidecar(key).unlink(missing_ok=True)        # until the new sidecar is written the entry reads as stale
+                    os.replace(part, key)
+                    self._sidecar(key).write_text(json.dumps({"size": size, "mtime_ns": mtime_ns}), encoding="utf-8")
+                    self._touch(key)
+                finally:
+                    with contextlib.suppress(OSError):
+                        part.unlink(missing_ok=True)
+            finally:
+                self._release(lock, token)
         with contextlib.suppress(OSError):                       # a failed sweep must not discard the copy just made
             self._enforce(keep=key)
         return "fill"
@@ -170,9 +174,10 @@ class RawCache:
         """The NAS read slot of this stage, yielding the seconds waited for it (0.0 when the cache has no gate)."""
         return self.gate.acquire(stage) if self.gate is not None else contextlib.nullcontext(0.0)
 
-    def _acquire(self, lock: Path) -> None:
-        """Create the lock exclusively. While another process holds it, poll until it goes; a lock older than lock_stale_s is a dead
-        process's and is taken over."""
+    def _acquire(self, lock: Path) -> str:
+        """Create the lock exclusively and return the token written into it. While another process holds it, poll until it goes; a lock
+        older than lock_stale_s is a dead process's and is taken over."""
+        token = f"{os.getpid()}.{uuid.uuid4().hex}"
         while True:
             try:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -188,13 +193,15 @@ class RawCache:
                     self._sleep(LOCK_POLL_S)
                 continue
             with os.fdopen(fd, "w") as f:
-                f.write(str(os.getpid()))
-            return
+                f.write(token)
+            return token
 
     @staticmethod
-    def _release(lock: Path) -> None:
+    def _release(lock: Path, token: str) -> None:
+        """Remove the lock only if it is still the one this fill wrote: after a takeover it belongs to the other process."""
         with contextlib.suppress(OSError):
-            lock.unlink(missing_ok=True)
+            if lock.read_text(encoding="utf-8") == token:
+                lock.unlink(missing_ok=True)
 
     # --- eviction
 
