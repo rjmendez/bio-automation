@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections import namedtuple
 from pathlib import Path
 
@@ -454,6 +455,54 @@ class TestLocks:
         assert c.local(src, stage="tag") == root / "2024" / "d" / "x.NEF"
         assert (slept, len(rec.calls), [e["outcome"] for e in events]) == ([], 1, ["fill"])
         assert files(root) == ["2024/d/x.NEF", "2024/d/x.NEF.src.json"]
+
+
+class HookGate:
+    """A gate that runs `hook` while the reader is queued for its slot (what other processes do meanwhile), then grants it."""
+
+    def __init__(self, hook):
+        self.hook = hook
+
+    @contextlib.contextmanager
+    def acquire(self, stage):
+        self.hook()
+        yield 0.0
+
+
+class TestLockOwnership:
+    def test_a_fill_queued_for_a_gate_slot_does_not_hold_the_lock_so_it_is_never_taken_over_as_stale(self, env):
+        nas, root = env
+        src = put(nas, "2024/d/x.NEF", b"abc")
+        now = [time.time()]                                                         # lock files carry real mtimes
+        rec_a, rec_b = Recorder(), Recorder()
+        other, _ = cache_for(env, copy=rec_b, time_fn=lambda: now[0], lock_stale_s=600)
+
+        def while_a_waits_for_its_slot():                                         # 11 minutes pass; another process wants the same raw
+            now[0] += 660
+            other.local(src, stage="render")
+
+        a, events = cache_for(env, copy=rec_a, time_fn=lambda: now[0], lock_stale_s=600, gate=HookGate(while_a_waits_for_its_slot))
+        assert a.local(src, stage="tag") == root / "2024" / "d" / "x.NEF"
+        assert (len(rec_b.calls), len(rec_a.calls), [e["outcome"] for e in events]) == (1, 0, ["hit"])    # one NAS read for the two readers
+
+    def test_a_fill_releases_only_its_own_lock(self, env):
+        nas, root = env
+        src = put(nas, "2024/d/x.NEF", b"abc")
+        lock = root / "2024" / "d" / "x.NEF.lock"
+
+        def copy_while_the_lock_is_taken_over(s, d):                              # a stale-lock takeover by another process mid-copy
+            lock.write_text("thief", encoding="utf-8")
+            return raw_cache.copy_file(s, d)
+
+        c, _ = cache_for(env, copy=Recorder(copy_while_the_lock_is_taken_over))
+        c.local(src, stage="tag")
+        assert lock.read_text(encoding="utf-8") == "thief"
+
+    def test_a_fill_that_keeps_its_lock_removes_it_when_done(self, env):
+        nas, root = env
+        src = put(nas, "2024/d/x.NEF", b"abc")
+        cache_for(env)[0].local(src, stage="tag")
+        assert not (root / "2024" / "d" / "x.NEF.lock").exists()
 
 
 class WaitingGate:
