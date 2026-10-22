@@ -114,6 +114,11 @@ BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 2_000_000))
 BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 4000))
 # observation id -> where to buy a print (e.g. its Darkroom product page; Darkroom has no API, so the owner keeps this csv: obs_id,url)
 SOCIAL_PRINTS_FILE = env_path("BIO_SOCIAL_PRINTS_FILE", RESULTS_DIR / "social" / "prints.csv")
+SOCIAL_PRINTS_MANUAL_FILE = env_path("BIO_SOCIAL_PRINTS_MANUAL_FILE", SOCIAL_DIR / "prints_manual.csv")   # owner's obs_id,url rows: they win over darkroom-sync's
+DARKROOM_URL = env("BIO_DARKROOM_URL", "https://rjmendez.darkroom.com")             # the owner's storefront
+DARKROOM_DIR = env_path("BIO_DARKROOM_DIR", CACHE_DIR / "darkroom")                 # product images, vectors, the sync state, the review csv
+DARKROOM_MARGIN = env_float("BIO_DARKROOM_MARGIN", 0.005)                           # a print matches only if no other observation is this close
+DARKROOM_PAUSE_S = env_float("BIO_DARKROOM_PAUSE_S", 1.0)                           # between storefront page requests
 # Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
 # @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
 # rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
