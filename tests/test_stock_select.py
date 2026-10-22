@@ -1195,3 +1195,36 @@ def test_publish_uses_the_shared_topic_name():
     from bio_automation import topics
     assert topics.GALLERY_REINDEX == "gallery.reindex"                        # the literal the deployed gallery worker consumes today
     assert len(set(topics.ALL)) == len(topics.ALL)
+
+
+class TestImageSources:
+    """A day with no raw uses its exported JPEG/TIFF: it is scored and sized like a raw, at the same half-size scale."""
+
+    def jpeg(self, tmp_path, size=(400, 300), name="DSC_9.jpg"):
+        from PIL import Image
+
+        rng = np.random.default_rng(0)
+        p = tmp_path / name
+        Image.fromarray(rng.integers(0, 255, (size[1], size[0], 3), dtype=np.uint8)).save(p, "JPEG", quality=95)
+        return p
+
+    def test_a_jpeg_is_scored_on_its_half_size_image(self, tmp_path, monkeypatch):
+        from PIL import Image
+
+        p = self.jpeg(tmp_path)
+        seen = []
+        monkeypatch.setattr(stock_select, "tile_sharpness", lambda rgb: seen.append(rgb.shape) or FrameScore(1.0, 0.0))
+        assert stock_select.score_raw(p) == FrameScore(1.0, 0.0)
+        assert seen == [(150, 200, 3)]
+
+    def test_a_jpeg_has_its_pixel_size_in_megapixels(self, tmp_path):
+        assert stock_select.raw_megapixels(self.jpeg(tmp_path, size=(4000, 3000))) == 12.0
+
+    def test_a_raw_still_goes_through_rawpy(self, tmp_path, monkeypatch):
+        import rawpy
+
+        calls = []
+        monkeypatch.setattr(rawpy, "imread", lambda p: calls.append(p) or (_ for _ in ()).throw(RuntimeError("no raw here")))
+        with pytest.raises(RuntimeError, match="no raw here"):
+            stock_select.score_raw(tmp_path / "DSC_1.NEF")
+        assert calls == [str(tmp_path / "DSC_1.NEF")]
