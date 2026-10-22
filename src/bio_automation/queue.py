@@ -37,9 +37,23 @@ MIGRATIONS = (
     CREATE INDEX messages_claimable ON messages (status, lease_until, id);
     CREATE INDEX messages_topic ON messages (topic, status, id);
     """,
+    # when ack()/fail() closed the message: with created and claimed_at it gives each message's wait (created -> last claim) and run
+    # (last claim -> finished), see timings(). Messages finished before this column existed have none.
+    """
+    ALTER TABLE messages ADD COLUMN finished_at REAL;
+    CREATE INDEX messages_finished ON messages (topic, finished_at);
+    """,
 )
 
 DEFAULT_LEASE_S = 60.0
+
+
+def _quantile(ordered: list[float], q: float) -> float:
+    """The q-quantile of an ascending, non-empty list, interpolating linearly between neighbours (q=0.5 is the usual median)."""
+    pos = (len(ordered) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    return round(ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo), 3)
 DEFAULT_DB = settings.QUEUE_DB
 
 
@@ -165,19 +179,20 @@ class Queue:
     def ack(self, message_id: int, *, worker_id: str) -> None:
         """Done -- only by the worker that holds the claim (claim()'s worker_id). A worker whose lease expired and whose message was
         reclaimed gets QueueLeaseLost and changes nothing: the new claimant's result is the one that counts."""
-        self._finish(message_id, worker_id, "UPDATE messages SET status='done'", ())
+        self._finish(message_id, worker_id, "UPDATE messages SET status='done', finished_at=?", (self._clock(),))
 
     def fail(self, message_id: int, error: str, *, worker_id: str) -> None:
         """Terminal: a worker decided this message cannot be processed. It stays in the table as status='failed' with its reason, visible
         to requeue_failed() or direct inspection -- never silently dropped. Like ack(), only the claim holder may do this (QueueLeaseLost)."""
-        self._finish(message_id, worker_id, "UPDATE messages SET status='failed', error=?", (error,))
+        self._finish(message_id, worker_id, "UPDATE messages SET status='failed', error=?, finished_at=?", (error, self._clock()))
 
     def requeue_failed(self, topic: str | None = None) -> int:
         """Move every `failed` message (in `topic`, or all topics) back to `pending` for another attempt. Returns how many."""
         with self._lock:
             if topic is None:
-                return self._db.execute("UPDATE messages SET status='pending', error=NULL WHERE status='failed'").rowcount
-            return self._db.execute("UPDATE messages SET status='pending', error=NULL WHERE status='failed' AND topic=?", (topic,)).rowcount
+                return self._db.execute("UPDATE messages SET status='pending', error=NULL, finished_at=NULL WHERE status='failed'").rowcount
+            return self._db.execute("UPDATE messages SET status='pending', error=NULL, finished_at=NULL WHERE status='failed' AND topic=?",
+                                    (topic,)).rowcount
 
     # -- introspection
     def counts(self, topic: str | None = None) -> dict[str, int]:
@@ -187,6 +202,26 @@ class Queue:
         with self._lock:
             rows = self._db.execute(sql + " GROUP BY status", args).fetchall()
         return {r["status"]: r["n"] for r in rows}
+
+    def timings(self, since: float | None = None) -> dict[str, dict[str, float]]:
+        """Per topic, over the messages acked (status done) at or after `since` (None = all that carry a finish time): how many (`done`), the
+        median and 90th percentile of their wait (created -> last claim: time spent queued, including earlier failed attempts) and of their
+        run (last claim -> ack: time the worker spent on it), in seconds. A topic with no such message is absent."""
+        sql = "SELECT topic, claimed_at - created AS wait, finished_at - claimed_at AS run FROM messages WHERE status='done' AND finished_at IS NOT NULL"
+        args: list[Any] = []
+        if since is not None:
+            sql, args = sql + " AND finished_at >= ?", [since]
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        by_topic: dict[str, list] = {}
+        for r in rows:
+            by_topic.setdefault(r["topic"], []).append((r["wait"], r["run"]))
+        out = {}
+        for topic, pairs in sorted(by_topic.items()):
+            waits, runs = sorted(w for w, _ in pairs), sorted(r for _, r in pairs)
+            out[topic] = {"done": len(pairs), "wait_median_s": _quantile(waits, 0.5), "wait_p90_s": _quantile(waits, 0.9),
+                          "run_median_s": _quantile(runs, 0.5), "run_p90_s": _quantile(runs, 0.9)}
+        return out
 
     def open_payloads(self, topic: str) -> list[dict]:
         """Payloads of every `topic` message still waiting or in progress (pending or claimed), oldest first -- what a backfill must not
