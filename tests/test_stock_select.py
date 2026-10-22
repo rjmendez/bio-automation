@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 
 import numpy as np
+import json
+
 import pytest
 
 from bio_automation import cli, pipeline, stock_select
@@ -510,14 +512,29 @@ class TestTagQueue:
         assert by[4]["reasons"] == "group excluded: label: 13 keywords (need at least 15)"
         assert (by[4]["stock_candidate"], by[4]["title"]) == (False, "Amanita muscaria - Pennsylvania")      # the label stays visible so the owner sees why
 
-    def test_a_failed_fetch_excludes_the_observation(self, tmp_path, monkeypatch):
+    def test_a_deleted_observation_excludes_its_frames_with_the_reason(self, tmp_path, monkeypatch):
+        from bio_automation.inat import InatNotFoundError
+
         def fetch(i):
             if i == 22:
-                raise ConnectionError("offline")
+                raise InatNotFoundError("observation 22: no results in API response")
             return fake_fetch([])(i)
 
         by, _ = self.run(tmp_path, monkeypatch, fetch=fetch)
-        assert by[4]["reasons"] == "group excluded: observation 22: fetch failed: ConnectionError: offline"
+        assert by[4]["reasons"] == "group excluded: observation 22: fetch failed: InatNotFoundError: observation 22: no results in API response"
+        assert by[2]["stock_candidate"] is True
+
+    def test_a_rate_limited_fetch_fails_the_whole_tag_and_writes_no_csv(self, tmp_path, monkeypatch):
+        from bio_automation.inat import InatTransientError
+
+        def fetch(i):
+            if i == 22:
+                raise InatTransientError("iNaturalist API error 429 for https://api.inaturalist.org/v1/observations/22, still failing after 6 attempts")
+            return fake_fetch([])(i)
+
+        with pytest.raises(InatTransientError, match=r"iNaturalist API error 429 .*observations/22, still failing after 6 attempts"):
+            self.run(tmp_path, monkeypatch, fetch=fetch)
+        assert not (tmp_path / "out.csv").exists()               # no candidates csv with a throttle recorded as an exclusion
 
     def test_hand_flagged_observation_is_excluded(self, tmp_path, monkeypatch):
         by, _ = self.run(tmp_path, monkeypatch, excluded_groups={11: "flagged people_visible"})
@@ -530,21 +547,61 @@ class TestTagQueue:
         assert rows["2"]["obs_id"] == "11" and rows["2"]["category_id"] == "1" and rows["2"]["stock_candidate"] == "True"
         assert rows["5"]["obs_id"] == "" and rows["5"]["day"] == "2026-07-31" and rows["5"]["raw"] == "2026/d/DSC_5.NEF"
 
-    def test_default_fetch_asks_for_the_lineage_and_shares_one_cache(self, tmp_path, monkeypatch):
-        from bio_automation import inat
+    def default_fetch_run(self, tmp_path, monkeypatch, missing=()):
+        from bio_automation import inat, settings
 
         seen = []
 
-        def real(obs_id, **kw):
-            seen.append((obs_id, kw["with_lineage"], id(kw["lineage_cache"])))
-            return fake_fetch([])(obs_id)
+        def batch(ids, **kw):
+            seen.append((list(ids), kw["with_lineage"], type(kw["lineage_cache"]).__name__, kw["lineage_cache"].path))
+            return {i: inat.InatNotFoundError(f"observation {i}: no results in API response") if i in missing else fake_fetch([])(i) for i in ids}
 
-        monkeypatch.setattr(inat, "fetch_inat_observation", real)
+        monkeypatch.setattr(inat, "fetch_inat_observations", batch)
+        monkeypatch.setattr(settings, "INAT_TAXON_CACHE", tmp_path / "taxa.sqlite3")
         self.seed(tmp_path)
         monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(90.0, 0.0))
-        stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json", workers=1)
-        assert [(o, w) for o, w, _ in seen] == [(11, True), (22, True)]
-        assert len({c for _, _, c in seen}) == 1                                      # one shared cache, so a taxon is looked up once
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", observations=OBS, floor_path=tmp_path / "floor.json",
+                                      workers=1)
+        return {r["id"]: r for r in rows}, seen
+
+    def test_default_fetch_asks_once_for_every_matched_observation_with_the_persistent_lineage_cache(self, tmp_path, monkeypatch):
+        by, seen = self.default_fetch_run(tmp_path, monkeypatch)
+        assert seen == [([11, 22], True, "TaxonLineageCache", tmp_path / "taxa.sqlite3")]
+        assert by[4]["taxon"] == "Leiobunum verrucosum" and by[4]["stock_candidate"] is True
+
+    def test_default_fetch_refuses_only_the_observation_the_api_did_not_return(self, tmp_path, monkeypatch):
+        by, _ = self.default_fetch_run(tmp_path, monkeypatch, missing={22})
+        assert by[4]["stock_candidate"] is False
+        assert by[4]["reasons"] == ("group excluded: observation 22: fetch failed: InatNotFoundError: observation 22: no results in API response")
+        assert by[2]["taxon"] == "Leiobunum verrucosum"
+
+    def test_timings_report_each_phase_and_its_work(self, tmp_path, monkeypatch):
+        timings = {}
+        self.run(tmp_path, monkeypatch, timings=timings)
+        assert sorted(timings) == ["decide_s", "frames_scored", "iso_s", "label_s", "match_s", "observations", "score_bytes", "score_frame_max_s",
+                                   "score_s"]
+        assert timings["observations"] == 2 and timings["frames_scored"] == 4                # frames 1-4: the uploaded photos of 11 and 22
+        assert all(isinstance(timings[k], float) and timings[k] >= 0 for k in timings if k.endswith("_s"))
+
+    def test_timings_sum_the_bytes_scored_and_keep_the_slowest_frame(self, tmp_path, monkeypatch):
+        sizes = iter([(100, 1.5), (200, 4.0), (300, 2.0), (400, 0.5)])
+
+        def fake(item):
+            b, t = next(sizes)
+            return {"lc_id": item["lc_id"], "sharp": 90.0, "clip": 0.0, "iso": "", "error": "", "bytes": b, "score_s": t}
+
+        monkeypatch.setattr(stock_select, "_score_item", fake)
+        timings = {}
+        self.run(tmp_path, monkeypatch, timings=timings)
+        assert (timings["frames_scored"], timings["score_bytes"], timings["score_frame_max_s"]) == (4, 1000, 4.0)
+        with open(str(tmp_path / "out.csv") + ".raw", newline="") as f:
+            assert next(csv.reader(f)) == stock_select.RAW_CACHE_FIELDS             # the cache keeps its own columns only
+
+    def test_a_rerun_scores_no_frame_and_says_so(self, tmp_path, monkeypatch):
+        self.run(tmp_path, monkeypatch)
+        timings = {}
+        self.run(tmp_path, monkeypatch, timings=timings)
+        assert timings["frames_scored"] == 0
 
     def test_iso_comes_from_the_raw_when_the_picture_has_no_exif(self, tmp_path, monkeypatch):
         from PIL import Image
@@ -588,14 +645,151 @@ class TestTagQueue:
                                       floor_path=tmp_path / "floor.json", workers=1, limit=2)
         assert [r["reasons"] for r in rows if r["id"] in (3, 4)] == ["unscored", "unscored"]
 
+    # ---- resolve_raw: the raw is read from the path the caller resolves it to (a local copy of a NAS raw), the score is unchanged
+    def test_each_todo_frame_is_resolved_just_before_it_is_scored_in_todo_order(self, tmp_path, monkeypatch):
+        self.seed(tmp_path)
+        events = []
+
+        def resolve(p):
+            events.append(("resolve", p))
+            return tmp_path / "local" / p.name
+
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: events.append(("score", p)) or FrameScore(90.0, 0.0))
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                               floor_path=tmp_path / "floor.json", workers=1, resolve_raw=resolve)
+        want = []
+        for n in (1, 2, 3, 4):                                                   # frames 5 and 6 are not photos of an observation: never read
+            want += [("resolve", tmp_path / "raws" / "2026" / "d" / f"DSC_{n}.NEF"), ("score", tmp_path / "local" / f"DSC_{n}.NEF")]
+        assert events == want
+
+    def test_a_resolved_run_writes_byte_identical_score_rows_to_an_unresolved_one(self, tmp_path, monkeypatch):
+        sharp = {"DSC_1.NEF": 30.126, "DSC_2.NEF": 90.0, "DSC_3.NEF": 500.5, "DSC_4.NEF": 40.0}
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(sharp[p.name], 0.012345678))
+        out = {}
+        for name, resolve in (("plain", None), ("resolved", lambda p: tmp_path / "local" / p.name)):
+            d = tmp_path / name
+            d.mkdir()
+            self.seed(d)
+            stock_select.tag_queue(d / "q.json", d / "raws", d / "out.csv", observations=OBS, fetch=fake_fetch([]), floor_path=d / "floor.json",
+                                   workers=1, resolve_raw=resolve)
+            out[name] = (d / "out.csv.raw").read_bytes()
+        assert out["resolved"] == out["plain"]
+        assert out["plain"].decode().splitlines() == ["lc_id,sharp,clip,iso,error", "1,30.13,0.01235,100,", "2,90.0,0.01235,200,",
+                                                      "3,500.5,0.01235,6400,", "4,40.0,0.01235,100,"]
+
+    def test_with_several_workers_the_frames_are_resolved_before_they_go_to_the_pool(self, tmp_path):
+        self.seed(tmp_path)
+        resolved = []
+
+        def resolve(p):
+            resolved.append(p.name)
+            return FIXTURES / ("sample_raw_fungus.NEF" if p.name in ("DSC_2.NEF", "DSC_4.NEF") else "sample_raw.NEF")
+
+        # score_raw is the real one, run in the pool's own processes on the real NEF fixtures
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                               floor_path=tmp_path / "floor.json", workers=2, resolve_raw=resolve)
+        assert resolved == ["DSC_1.NEF", "DSC_2.NEF", "DSC_3.NEF", "DSC_4.NEF"]
+        assert (tmp_path / "out.csv.raw").read_text().splitlines() == [
+            "lc_id,sharp,clip,iso,error", "1,48.28,0.04104,100,", "2,70.65,0.0134,200,", "3,48.28,0.04104,6400,", "4,70.65,0.0134,100,"]
+
+    def test_with_several_workers_and_no_resolver_the_raws_are_read_where_they_are(self, tmp_path):
+        self.seed(tmp_path)
+        stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                               floor_path=tmp_path / "floor.json", workers=2)
+        err = "LibRawIOError: b'Input/output error'"                              # nothing exists under raws/: the unresolved path is what was read
+        assert (tmp_path / "out.csv.raw").read_text().splitlines() == ["lc_id,sharp,clip,iso,error"] + [f"{i},,,,{err}" for i in (1, 2, 3, 4)]
+
     def test_observations_are_required(self, tmp_path):
         self.seed(tmp_path)
         with pytest.raises(TypeError, match="observations"):
             stock_select.tag_queue(tmp_path / "q.json", tmp_path, tmp_path / "out.csv", floor_path=tmp_path / "floor.json", workers=1)
 
+    # ---- the Stock size bar is judged on what ships (finding: sensor MP of an uncropped raw passed a 0.7 MP crop)
+    def test_an_existing_render_decides_the_size_not_the_sensor(self, tmp_path, monkeypatch):
+        from PIL import Image
+
+        render = tmp_path / "renders" / "2026" / "2026-07-31" / "2026-07-31_DSC_2.jpg"
+        render.parent.mkdir(parents=True)
+        Image.new("RGB", (840, 877)).save(render, "JPEG")                         # the crop the owner made: 0.74 MP
+        by, _ = self.run(tmp_path, monkeypatch, render_dir=tmp_path / "renders")
+        assert (by[2]["stock_candidate"], by[2]["reasons"], by[2]["mp"], by[2]["mp_source"]) == (False, "0.7 MP outside 4-100", 0.7, "render")
+        assert (by[1]["stock_candidate"], by[1]["mp"], by[1]["mp_source"]) == (True, 45.4, "sensor")      # positive twin: no render yet
+
+    def test_the_export_size_after_the_crop_is_used_when_the_producer_knows_it(self, tmp_path, monkeypatch):
+        self.seed(tmp_path)
+        items = read_json(tmp_path / "q.json")
+        items[0].update(out_w=1000, out_h=1000)                                  # 1.0 MP after the crop
+        items[1].update(out_w=4000, out_h=3000)                                  # 12.0 MP after the crop
+        write_json(tmp_path / "q.json", items)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(100.0, 0.0))
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1)
+        by = {r["id"]: r for r in rows}
+        assert (by[1]["stock_candidate"], by[1]["reasons"], by[1]["mp_source"]) == (False, "1.0 MP outside 4-100", "export")
+        assert (by[2]["stock_candidate"], by[2]["mp"], by[2]["mp_source"]) == (True, 12.0, "export")
+
+    # ---- a NEF and its Enhanced-NR DNG are one frame
+    def tag_with_raws(self, tmp_path, monkeypatch, raws):
+        self.seed(tmp_path)
+        items = read_json(tmp_path / "q.json")
+        for it in items:
+            it["raw"] = raws.get(it["lc_id"], it["raw"])
+        write_json(tmp_path / "q.json", items)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(100.0, 0.0))
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1)
+        return {r["id"]: r for r in rows}
+
+    def test_a_nef_and_its_enhanced_nr_dng_of_one_observation_are_one_candidate(self, tmp_path, monkeypatch):
+        by = self.tag_with_raws(tmp_path, monkeypatch, {1: "2026/d/DSC_1 (2026_07_31 13_00_00 UTC).nef",
+                                                        2: "2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng"})
+        assert (by[2]["stock_candidate"], by[2]["reasons"]) == (True, "")                     # the Enhanced-NR variant is kept
+        assert (by[1]["stock_candidate"], by[1]["reasons"]) == (
+            False, "same frame as 2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng (id 2), which is the candidate")
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [2, 4]
+
+    def crop_and_original(self, tmp_path, monkeypatch, variant_link=True, crop_size=(1597, 1250)):
+        """Frame 1 is the matched Enhanced-NR crop (its export is crop_size); frame 6 is the same exposure's original NEF, which DA-CLIP
+        did not match (a full frame does not look like the cropped iNat photo)."""
+        self.seed(tmp_path)
+        items = read_json(tmp_path / "q.json")
+        items[0].update(raw="2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng", out_w=crop_size[0], out_h=crop_size[1])
+        items[5].update(raw="2026/d/DSC_1 (2026_07_31 13_00_00 UTC).NEF")
+        if variant_link:
+            items[5]["variant_of"] = 1
+        write_json(tmp_path / "q.json", items)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(100.0, 0.0))
+        rows = stock_select.tag_queue(tmp_path / "q.json", tmp_path / "raws", tmp_path / "out.csv", observations=OBS, fetch=fake_fetch([]),
+                                      floor_path=tmp_path / "floor.json", workers=1)
+        return {r["id"]: r for r in rows}
+
+    def test_a_crop_below_the_stock_minimum_gives_way_to_its_full_size_original(self, tmp_path, monkeypatch):
+        by = self.crop_and_original(tmp_path, monkeypatch)
+        assert (by[6]["stock_candidate"], by[6]["obs_id"], by[6]["mp"]) == (True, 11, 45.4)          # inherited the crop's match
+        assert (by[1]["stock_candidate"], by[1]["reasons"]) == (False, "2.0 MP outside 4-100")           # the crop is too small on its own
+
+    def test_a_crop_big_enough_for_stock_is_still_preferred_over_its_original(self, tmp_path, monkeypatch):
+        by = self.crop_and_original(tmp_path, monkeypatch, crop_size=(4000, 3000))
+        assert (by[1]["stock_candidate"], by[1]["mp"]) == (True, 12.0)
+        assert (by[6]["stock_candidate"], by[6]["reasons"]) == (
+            False, "same frame as 2026/d/DSC_1-Enhanced-NR (2026_08_02 10_00_00 UTC).dng (id 1), which is the candidate")
+
+    def test_without_the_variant_link_the_unmatched_original_is_not_a_candidate(self, tmp_path, monkeypatch):
+        by = self.crop_and_original(tmp_path, monkeypatch, variant_link=False)
+        assert (by[6]["stock_candidate"], by[6]["obs_id"]) == (False, "")
+
+    def test_the_same_stem_matched_to_another_observation_is_not_collapsed(self, tmp_path, monkeypatch):
+        by = self.tag_with_raws(tmp_path, monkeypatch, {4: "2026/d/DSC_1-Enhanced-NR.dng"})       # frame 4 is observation 22's photo
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 2, 4]
+
+    def test_different_frames_of_one_observation_both_stay(self, tmp_path, monkeypatch):
+        by = self.tag_with_raws(tmp_path, monkeypatch, {1: "2026/d/DSC_1.NEF", 2: "2026/d/DSC_10-Enhanced-NR.dng"})
+        assert [i for i, r in by.items() if r["stock_candidate"]] == [1, 2, 4]
+
 
 LABEL_COLS = {"title": "Warty Harvestman Leiobunum verrucosum - Pennsylvania", "caption": "Warty Harvestman photographed at Pennsylvania, US.",
               "keywords": "|".join(f"kw{i}" for i in range(16)), "category": "Animals", "category_id": "1"}
+
 
 
 class TestPublish:
@@ -605,8 +799,11 @@ class TestPublish:
 
     @pytest.fixture(autouse=True)
     def floor_file(self, tmp_path, monkeypatch):
+        from bio_automation import settings
+
         write_json(tmp_path / "pubfloor.json", FLOOR)
         monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "pubfloor.json")
+        monkeypatch.setattr(settings, "GALLERY_DIR", tmp_path / "settings-main")              # the default other galleries: never the live ones
 
     def csv_file(self, tmp_path, rows=None):
         p = tmp_path / "c.csv"
@@ -650,7 +847,8 @@ class TestPublish:
         self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_2.jpg")                       # a render exists for the non-candidate: still not shipped
         self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
         out = self.publish(tmp_path)
-        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": [], "adobe_csv_rows": 2, "queued_reindex": False}
+        assert out == {"candidates": 2, "plain_decoded": 0, "linked": 2, "missing": [], "failed": [], "refused": [], "skipped": [], "adobe_csv_rows": 2,
+                       "queued_reindex": False, "not_published_csv": str(tmp_path / "render" / "not_published" / "adobe_stock_metadata.csv")}
         link = tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg"
         assert os.path.samefile(src1, link)
         assert inat_stock.read_label(link) == {"title": LABEL_COLS["title"], "caption": LABEL_COLS["caption"], "keywords": LABEL_COLS["keywords"].split("|")}
@@ -775,6 +973,137 @@ class TestPublish:
         out = self.publish(tmp_path, [self.ROWS[0]])
         assert out["failed"] == [{"raw": "2026/d/DSC_1.NEF", "error": "JPEG quality below 95 (quantisation table coarser than q95)"}]
 
+    # ---- a gallery file from another source is never replaced or duplicated
+    def foreign(self, tmp_path, rel, data=b"another pipeline's render"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+        return p
+
+    def not_published(self, tmp_path):
+        with open(tmp_path / "render" / "not_published" / "adobe_stock_metadata.csv", newline="", encoding="utf-8") as f:
+            return [(r["raw"], r["name"], r["status"], r["reason"]) for r in csv.DictReader(f)]
+
+    def test_a_different_file_under_the_same_gallery_name_is_refused_and_left_alone(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        theirs = self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert theirs.read_bytes() == b"another pipeline's render"              # not unlinked, not replaced
+        assert (out["linked"], out["adobe_csv_rows"], out["failed"]) == (0, 0, [])
+        [refusal] = out["refused"]
+        assert refusal["raw"] == "2026/d/DSC_1.NEF"
+        assert refusal["error"].startswith(f"the gallery already holds a different file under this name: {theirs} (25 B, modified ")
+        assert refusal["error"].endswith(", 1 link); not replaced (delete it first if this render should replace it)")
+        assert self.not_published(tmp_path) == [("2026/d/DSC_1.NEF", "2026-07-31_DSC_1.jpg", "refused", refusal["error"])]
+        theirs.unlink()                                                          # positive twin: once it is gone, the render is linked
+        again = self.publish(tmp_path, [self.ROWS[0]])
+        assert (again["linked"], again["refused"]) == (1, [])
+        assert os.path.samefile(tmp_path / "render/2026/2026-07-31/2026-07-31_DSC_1.jpg", theirs)
+        assert self.not_published(tmp_path) == []
+
+    def test_the_frame_already_in_this_gallery_under_another_name_is_refused(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        other = self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1_555.jpg")      # its Enhanced-NR render, published earlier
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert out["linked"] == 0
+        assert [e["error"].split(" (")[0] for e in out["refused"]] == [f"this frame is already published as {other}"]
+        assert not (tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg").exists()
+
+    def test_a_different_frame_with_a_longer_counter_is_not_the_same_frame(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_10.jpg")
+        self.foreign(tmp_path, "gallery/2026/2026-07/2026-07-31_DSC_1_x.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert (out["linked"], out["refused"]) == (1, [])
+
+    def test_the_frame_already_in_another_gallery_is_refused(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        self.render(tmp_path, "2026-08-01", "2026-08-01_DSC_3.jpg")
+        main = self.foreign(tmp_path, "main/2026/2026-07/2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, other_galleries=[tmp_path / "main"])
+        assert [(e["raw"], e["error"].split(" (")[0]) for e in out["refused"]] == [("2026/d/DSC_1.NEF", f"this frame is already published as {main}")]
+        assert out["linked"] == 1 and (tmp_path / "gallery/2026/2026-08/2026-08-01_DSC_3.jpg").is_file()      # the other frame is linked
+        assert not (tmp_path / "gallery/2026/2026-07/2026-07-31_DSC_1.jpg").exists()
+
+    def test_the_other_galleries_default_to_the_main_and_results_galleries_from_settings(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        main = self.foreign(tmp_path, "settings-main/2026/2026-07/2026-07-31_DSC_1.jpg")
+        out = self.publish(tmp_path, [self.ROWS[0]])
+        assert [e["error"].split(" (")[0] for e in out["refused"]] == [f"this frame is already published as {main}"]
+
+    def test_publishing_into_the_main_gallery_itself_does_not_count_it_as_another(self, tmp_path):
+        from bio_automation import settings
+
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render",
+                                              settings.GALLERY_DIR)
+        assert (out["linked"], out["refused"]) == (1, [])
+        out2 = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render",
+                                               settings.GALLERY_DIR)
+        assert (out2["linked"], out2["refused"], out2["adobe_csv_rows"]) == (1, [], 1)        # its own link, refreshed (re-embedding)
+        assert os.path.samefile(tmp_path / "render/2026/2026-07-31/2026-07-31_DSC_1.jpg",
+                                settings.GALLERY_DIR / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg")
+
+    # ---- a NEF and its Enhanced-NR DNG in one csv are published once
+    def test_a_nef_and_enhanced_nr_pair_is_published_once_as_the_enhanced_nr(self, tmp_path):
+        nef = {"id": "630", "obs_id": "289244981", "sharp": "62.92", "raw": "2025/2025-06-08/DSC_4296 (2025_06_08 22_03_07 UTC).nef",
+               "day": "2025-06-08", "stock_candidate": "True", **LABEL_COLS}
+        dng = {**nef, "id": "629", "sharp": "62.85", "raw": "2025/2025-06-08/DSC_4296-Enhanced-NR (2025_06_12 13_01_33 UTC).dng"}
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4296_630.jpg")
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4296_629.jpg")
+        out = self.publish(tmp_path, [nef, dng])
+        assert (out["linked"], out["refused"]) == (1, [])
+        assert out["skipped"] == [{"raw": nef["raw"], "error": f"same frame as {dng['raw']} (id 629), which is published instead"}]
+        assert sorted(p.name for p in (tmp_path / "gallery/2025/2025-06").iterdir()) == ["2025-06-08_DSC_4296_629.jpg"]
+        assert self.not_published(tmp_path) == [(nef["raw"], "2025-06-08_DSC_4296_630.jpg", "skipped", out["skipped"][0]["error"])]
+
+    def test_two_different_frames_of_one_observation_are_both_published(self, tmp_path):
+        a = {"id": "630", "obs_id": "9", "sharp": "1", "raw": "2025/2025-06-08/DSC_4296.nef", "day": "2025-06-08", "stock_candidate": "True",
+             **LABEL_COLS}
+        b = {**a, "id": "631", "raw": "2025/2025-06-08/DSC_4297.nef"}
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4296.jpg")
+        self.render(tmp_path, "2025-06-08", "2025-06-08_DSC_4297.jpg")
+        out = self.publish(tmp_path, [a, b])
+        assert (out["linked"], out["skipped"], out["refused"]) == (2, [], [])
+
+    # ---- every candidate that is not published is a record, not only a log line
+    def test_failed_and_missing_candidates_are_written_with_their_reason(self, tmp_path):
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg", size=(840, 877))           # a 0.74 MP crop
+        out = self.publish(tmp_path, adobe_csv=tmp_path / "adobe" / "2026-07-31.csv")
+        assert out["not_published_csv"] == str(tmp_path / "adobe" / "not_published" / "2026-07-31.csv")
+        with open(out["not_published_csv"], newline="", encoding="utf-8") as f:
+            rows = [(r["raw"], r["name"], r["status"], r["reason"]) for r in csv.DictReader(f)]
+        assert rows == [("2026/d/DSC_1.NEF", "2026-07-31_DSC_1.jpg", "failed", "840x877 = 0.74 MP is below the 4 MP minimum"),
+                        ("2026/d/DSC_3.NEF", "2026-08-01_DSC_3.jpg", "missing",
+                         f"no retouched render at {tmp_path / 'render' / '2026' / '2026-08-01' / '2026-08-01_DSC_3.jpg'}")]
+
+    # ---- one gallery tree whatever drive the render is on
+    def test_a_render_on_the_gallery_drive_is_hardlinked(self, tmp_path):
+        src = self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        out = stock_select.publish_candidates(self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        link = tmp_path / "gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg"
+        assert (out["linked"], out["refused"], out["failed"]) == (1, [], [])
+        assert not link.is_symlink() and os.stat(src).st_nlink == 2
+
+    def test_link_into_gallery_hardlinks_on_one_drive_and_symlinks_across_drives(self, tmp_path):
+        src = tmp_path / "render.jpg"
+        src.write_bytes(b"jpeg")
+        assert stock_select.link_into_gallery(src, tmp_path / "same.jpg", same_drive=lambda a, b: True) == "hardlink"
+        assert not (tmp_path / "same.jpg").is_symlink() and os.stat(src).st_nlink == 2
+        assert stock_select.link_into_gallery(src, tmp_path / "other.jpg", same_drive=lambda a, b: False) == "symlink"
+        assert (tmp_path / "other.jpg").is_symlink() and os.path.realpath(tmp_path / "other.jpg") == os.path.realpath(src)
+        assert (tmp_path / "other.jpg").read_bytes() == b"jpeg"
+
+    def test_a_symlinked_render_counts_as_its_own_link_on_republish(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(stock_select, "_same_drive", lambda a, b: False)
+        monkeypatch.setattr(stock_select.link_into_gallery, "__defaults__", (stock_select._same_drive,))
+        self.render(tmp_path, "2026-07-31", "2026-07-31_DSC_1.jpg")
+        args = (self.csv_file(tmp_path, [self.ROWS[0]]), tmp_path / "raws", tmp_path / "render", tmp_path / "gallery")
+        assert stock_select.publish_candidates(*args)["linked"] == 1
+        again = stock_select.publish_candidates(*args)
+        assert (again["linked"], again["refused"]) == (0, [])
+        assert (tmp_path / "gallery" / "2026" / "2026-07" / "2026-07-31_DSC_1.jpg").is_symlink()
+
 
 class TestCli:
     def args(self, *extra):
@@ -786,7 +1115,7 @@ class TestCli:
         assert "--observations" in capsys.readouterr().err
 
     def test_tag_queue_without_a_floor_exits_with_the_fix(self, tmp_path, monkeypatch):
-        write_json(tmp_path / "q.json", [])
+        write_json(tmp_path / "q.json", [{"lc_id": 1, "raw": "a.nef", "day": "2026-07-31", "t": 1.0, "w": 10, "h": 10}])
         write_json(tmp_path / "obs.json", {"observations": []})
         monkeypatch.setattr(stock_select, "DEFAULT_FLOOR_PATH", tmp_path / "none.json")
         args = cli.build_parser().parse_args(["stock-tag-queue", str(tmp_path / "q.json"), "--raw-root", str(tmp_path), "--out", str(tmp_path / "o.csv"),
@@ -875,9 +1204,11 @@ class TestCli:
         assert cli.cmd_stock_publish(args) == 1
         result = {**result, "failed": [], "missing": ["m"]}
         assert cli.cmd_stock_publish(args) == 1                                           # a missing render is also not a clean run
-        result = {**result, "missing": []}
-        assert cli.cmd_stock_publish(args) == 0
-        assert len(seen) == 3
+        result = {**result, "missing": [], "refused": [{"raw": "y", "error": "the gallery already holds a different file under this name"}]}
+        assert cli.cmd_stock_publish(args) == 1                                           # a refused gallery collision is not a clean run
+        result = {**result, "refused": [], "skipped": [{"raw": "z", "error": "same frame as w"}]}
+        assert cli.cmd_stock_publish(args) == 0                                           # a skipped NEF/Enhanced-NR twin is
+        assert len(seen) == 4
         for k in seen:
             assert isinstance(k.pop("queue"), Queue)                                      # a real queue is built by default, on every call
             assert k == {"plain_decode": False, "floor_path": None, "adobe_csv": None}
@@ -908,3 +1239,101 @@ class TestCli:
         cli.cmd_stock_publish(cli.build_parser().parse_args(argv))
         assert seen[-1]["queue"].path == qdb
         assert qdb.is_file()
+
+
+class TestQueueItemContract:
+    """tag_queue's input contract is checked at the door: lc_id is a LightCraft photo id (int); a file-name id fails loudly, naming the item."""
+
+    def _item(self, lc_id):
+        return {"lc_id": lc_id, "raw": "2025/2025-04-23/a.nef", "day": "2025-04-23", "t": 1.0, "w": 8256, "h": 5504}
+
+    def test_int_ids_with_every_field_pass(self):
+        assert stock_select.validate_queue_items([self._item(16621), self._item(16622)]) is None
+
+    def test_a_file_name_id_is_rejected_with_its_index_and_value(self):
+        with pytest.raises(stock_select.QueueItemError,
+                           match=r"1 of 2 queue items are invalid: item 1: lc_id 'DSC_8236 \(x\)' is str, not a LightCraft photo id \(int\)"):
+            stock_select.validate_queue_items([self._item(16621), self._item("DSC_8236 (x)")])
+
+    def test_a_bool_is_not_accepted_as_an_id(self):
+        with pytest.raises(stock_select.QueueItemError, match=r"item 0: lc_id True is bool"):
+            stock_select.validate_queue_items([self._item(True)])
+
+    def test_the_cli_reports_a_bad_queue_as_an_exit_message(self, tmp_path):
+        write_json(tmp_path / "q.json", [self._item("DSC_1")])
+        write_json(tmp_path / "obs.json", {"observations": []})
+        args = cli.build_parser().parse_args(["stock-tag-queue", str(tmp_path / "q.json"), "--raw-root", str(tmp_path), "--out", str(tmp_path / "o.csv"),
+                                               "--observations", str(tmp_path / "obs.json")])
+        with pytest.raises(SystemExit, match=r"1 of 1 queue items are invalid: item 0: lc_id 'DSC_1' is str"):
+            cli.cmd_stock_tag_queue(args)
+
+    def test_an_empty_queue_is_refused_by_name(self):
+        with pytest.raises(stock_select.QueueItemError, match=r"^the queue is empty: nothing to tag$"):
+            stock_select.validate_queue_items([])
+
+    def test_a_missing_field_is_named(self):
+        item = self._item(5)
+        del item["w"]
+        with pytest.raises(stock_select.QueueItemError, match=r"item 0: missing w"):
+            stock_select.validate_queue_items([item])
+
+    def test_tag_queue_rejects_a_bad_queue_before_any_matching_or_floor_load(self, tmp_path):
+        q = tmp_path / "q.json"
+        q.write_text(json.dumps([self._item("DSC_1")]), encoding="utf-8")
+        with pytest.raises(stock_select.QueueItemError, match=r"item 0: lc_id 'DSC_1' is str"):
+            stock_select.tag_queue(q, tmp_path, tmp_path / "out.csv", observations=[], floor_path=tmp_path / "no-floor.json")
+        assert not (tmp_path / "out.csv.raw").exists()
+
+
+def test_publish_uses_the_shared_topic_name():
+    from bio_automation import topics
+    assert topics.GALLERY_REINDEX == "gallery.reindex"                        # the literal the deployed gallery worker consumes today
+    assert len(set(topics.ALL)) == len(topics.ALL)
+
+
+class TestImageSources:
+    """A day with no raw uses its exported JPEG/TIFF: it is scored and sized like a raw, at the same half-size scale."""
+
+    def jpeg(self, tmp_path, size=(400, 300), name="DSC_9.jpg"):
+        from PIL import Image
+
+        rng = np.random.default_rng(0)
+        p = tmp_path / name
+        Image.fromarray(rng.integers(0, 255, (size[1], size[0], 3), dtype=np.uint8)).save(p, "JPEG", quality=95)
+        return p
+
+    def test_a_jpeg_is_scored_on_its_half_size_image(self, tmp_path, monkeypatch):
+        from PIL import Image
+
+        p = self.jpeg(tmp_path)
+        seen = []
+        monkeypatch.setattr(stock_select, "tile_sharpness", lambda rgb: seen.append(rgb.shape) or FrameScore(1.0, 0.0))
+        assert stock_select.score_raw(p) == FrameScore(1.0, 0.0)
+        assert seen == [(150, 200, 3)]
+
+    def test_a_jpeg_has_its_pixel_size_in_megapixels(self, tmp_path):
+        assert stock_select.raw_megapixels(self.jpeg(tmp_path, size=(4000, 3000))) == 12.0
+
+    def test_a_raw_still_goes_through_rawpy(self, tmp_path, monkeypatch):
+        import rawpy
+
+        calls = []
+        monkeypatch.setattr(rawpy, "imread", lambda p: calls.append(p) or (_ for _ in ()).throw(RuntimeError("no raw here")))
+        with pytest.raises(RuntimeError, match="no raw here"):
+            stock_select.score_raw(tmp_path / "DSC_1.NEF")
+        assert calls == [str(tmp_path / "DSC_1.NEF")]
+
+
+class TestScoreItemTimings:
+    def test_a_frame_reports_its_file_size_and_scoring_time(self, tmp_path, monkeypatch):
+        raw = tmp_path / "DSC_1.NEF"
+        raw.write_bytes(b"x" * 1234)
+        monkeypatch.setattr(stock_select, "score_raw", lambda p: FrameScore(12.345, 0.5))
+        r = stock_select._score_item({"lc_id": 7, "raw_abs": str(raw), "iso": 200})
+        assert {k: r[k] for k in ("lc_id", "sharp", "clip", "iso", "error", "bytes")} == {
+            "lc_id": 7, "sharp": 12.35, "clip": 0.5, "iso": 200, "error": "", "bytes": 1234}
+        assert isinstance(r["score_s"], float) and r["score_s"] >= 0
+
+    def test_a_missing_raw_is_an_error_row_of_zero_bytes(self, tmp_path):
+        r = stock_select._score_item({"lc_id": 7, "raw_abs": str(tmp_path / "gone.NEF")})
+        assert (r["bytes"], r["sharp"], r["clip"]) == (0, "", "") and r["error"].split(":")[0] in ("LibRawIOError", "FileNotFoundError")

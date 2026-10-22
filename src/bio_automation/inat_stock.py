@@ -23,10 +23,12 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from . import settings
+
 import numpy as np
 
 from .exif import _exiftool_binary
-from .inat import fetch_inat_observation
+from .inat import InatNotFoundError, fetch_inat_observation
 from .models import Observation
 from .pipeline import merge_inat_fields
 from .stock import MIN_KEYWORDS, build_metadata
@@ -41,9 +43,9 @@ ADOBE_CSV_FIELDS = ("Filename", "Title", "Keywords", "Category", "Releases")
 # within PHOTO_MATCH_WINDOW_S of the observation's time, whose DA-CLIP content vector is closest (argmax); the match counts at >= 0.97. Measured on
 # observation 409468156 (13 photos): every photo had one frame at 0.993-1.000 and the nearest sibling shot at <= 0.987, whereas time matching (90 s) used two
 # frames that were never uploaded and missed three that were. Time-only matching also put a species on frames shot near an unrelated observation.
-PHOTO_MATCH_MIN_SIMILARITY = 0.97
-PHOTO_MATCH_WINDOW_S = 900.0
-PHOTO_CACHE_DEFAULT = Path(os.environ.get("BIO_INAT_PHOTO_CACHE", r"D:\bio-cache\photos\inat_photos"))
+PHOTO_MATCH_MIN_SIMILARITY = settings.EXACT_FRAME_SIMILARITY
+PHOTO_MATCH_WINDOW_S = settings.PHOTO_MATCH_WINDOW_S
+PHOTO_CACHE_DEFAULT = settings.INAT_PHOTO_CACHE
 PHOTO_USER_AGENT = "bio-automation-owner-sync/1.0 (own account rjmendez; read-only)"
 
 
@@ -52,7 +54,8 @@ class SnapshotStale(Exception):
 
 
 class LabelError(Exception):
-    """An observation could not be labelled for Stock (fetch failed, no taxon, ...)."""
+    """An observation could not be labelled for Stock: it no longer exists on iNat, has no taxon, or the label policy refuses it. A refusal
+    of the observation itself -- never a transient fetch problem (rate limit, server or network error), which propagates instead."""
 
 
 def load_snapshot(path: Path, *, max_age_days: float = MAX_SNAPSHOT_AGE_DAYS, now: float | None = None) -> list[dict]:
@@ -82,10 +85,12 @@ def label_policy(quality_grade: str | None, rank: str | None) -> str | None:
 
 def label_observation(obs_id: int, observed_on: str | None, *, fetch: Callable[[int], dict] = fetch_inat_observation) -> dict:
     """Fetch one observation live and build its Stock label {title, keywords, caption, category, category_id, taxon, grade, rank}.
-    Raises LabelError when it cannot be labelled (the reason is the message)."""
+    Raises LabelError when it cannot be labelled (the reason is the message). Only a missing observation (InatNotFoundError) is such a
+    refusal; every other fetch error (InatTransientError after its retries, any other API or network error) propagates unchanged, so the
+    caller fails or retries its work instead of recording a throttle as a permanent exclusion."""
     try:
         fetched = fetch(obs_id)
-    except Exception as e:                       # network / 404: report which observation, never label from nothing
+    except InatNotFoundError as e:               # the observation is gone: a real refusal, reported with its id
         raise LabelError(f"observation {obs_id}: fetch failed: {type(e).__name__}: {e}") from e
     return label_from_observation(merge_inat_fields(Observation(obsdate=observed_on), fetched), obs_id)
 

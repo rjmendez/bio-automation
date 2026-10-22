@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from bio_automation.queue import MIGRATIONS, Message, Queue, QueueError
+from bio_automation.queue import MIGRATIONS, Message, Queue, QueueError, QueueLeaseLost
 
 
 class Clock:
@@ -44,9 +44,9 @@ class TestPublishAndClaim:
         assert q.claim(worker_id="w1") is None
 
     def test_published_message_is_claimable_with_its_exact_fields(self, q):
-        mid = q.publish("gallery.reindex", {"folders": ["2026/2026-07"]})
+        mid = q.publish("gallery.reindex", {"gallery_dir": "g", "folders": ["2026/2026-07"]})
         m = q.claim(worker_id="w1")
-        assert m == Message(id=mid, topic="gallery.reindex", payload={"folders": ["2026/2026-07"]}, attempts=1, created=1000.0)
+        assert m == Message(id=mid, topic="gallery.reindex", payload={"gallery_dir": "g", "folders": ["2026/2026-07"]}, attempts=1, created=1000.0)
 
     def test_claimed_message_is_not_claimed_again_while_its_lease_holds(self, q):
         q.publish("t", {})
@@ -103,20 +103,23 @@ class TestAckAndFail:
     def test_acked_message_is_never_claimed_again(self, q):
         q.publish("t", {})
         m = q.claim(worker_id="w1")
-        q.ack(m.id)
+        q.ack(m.id, worker_id="w1")
         assert q.claim(worker_id="w2") is None
 
     def test_acking_an_unclaimed_or_unknown_message_is_refused(self, q):
         mid = q.publish("t", {})
-        with pytest.raises(QueueError, match=f"message {mid} does not exist or is not claimed"):
-            q.ack(mid)                                        # never claimed
-        with pytest.raises(QueueError, match="message 999999 does not exist or is not claimed"):
-            q.ack(999999)
+        with pytest.raises(QueueLeaseLost, match=rf"message {mid} is not claimed \(status 'pending', last claimed by None\): 'w1' no longer holds it"):
+            q.ack(mid, worker_id="w1")                        # never claimed
+        with pytest.raises(QueueError, match="message 999999 does not exist"):
+            q.ack(999999, worker_id="w1")
+        m = q.claim(worker_id="w1")                           # positive twin: the claim holder's ack goes through
+        q.ack(m.id, worker_id="w1")
+        assert q.counts() == {"done": 1}
 
     def test_failed_message_is_not_reclaimed_but_is_visible_with_its_reason(self, q):
         mid = q.publish("t", {"x": 1})
         m = q.claim(worker_id="w1")
-        q.fail(m.id, "disk full")
+        q.fail(m.id, "disk full", worker_id="w1")
         assert q.claim(worker_id="w2") is None
         [row] = q.peek_failed()
         assert (row["id"], row["error"], row["payload"]) == (mid, "disk full", {"x": 1})
@@ -124,18 +127,18 @@ class TestAckAndFail:
     def test_requeue_failed_makes_it_claimable_again_and_clears_the_error(self, q):
         q.publish("t", {})
         m = q.claim(worker_id="w1")
-        q.fail(m.id, "transient")
+        q.fail(m.id, "transient", worker_id="w1")
         assert q.requeue_failed() == 1
         again = q.claim(worker_id="w2")
         assert again is not None and again.attempts == 2
-        q.ack(again.id)
+        q.ack(again.id, worker_id="w2")
         assert q.peek_failed() == []
 
     def test_requeue_failed_is_scoped_to_one_topic_when_given(self, q):
         q.publish("a", {})
         q.publish("b", {})
-        q.fail(q.claim(topics=["a"], worker_id="w1").id, "e")
-        q.fail(q.claim(topics=["b"], worker_id="w1").id, "e")
+        q.fail(q.claim(topics=["a"], worker_id="w1").id, "e", worker_id="w1")
+        q.fail(q.claim(topics=["b"], worker_id="w1").id, "e", worker_id="w1")
         assert q.requeue_failed(topic="a") == 1
         assert {r["topic"] for r in q.peek_failed()} == {"b"}
 
@@ -147,9 +150,9 @@ class TestCounts:
         c = q.publish("t", {})
         q.claim(worker_id="w1")                               # a -> claimed
         m = q.claim(worker_id="w1")
-        q.ack(m.id)                                           # b -> done
+        q.ack(m.id, worker_id="w1")                           # b -> done
         m2 = q.claim(worker_id="w1")
-        q.fail(m2.id, "e")                                    # c -> failed
+        q.fail(m2.id, "e", worker_id="w1")                    # c -> failed
         assert q.counts() == {"claimed": 1, "done": 1, "failed": 1}
 
     def test_counts_can_be_scoped_to_one_topic(self, q):
@@ -157,6 +160,23 @@ class TestCounts:
         q.publish("b", {})
         assert q.counts(topic="a") == {"pending": 1}
         assert q.counts(topic="b") == {"pending": 1}
+
+
+class TestOpenPayloads:
+    def test_pending_and_claimed_are_open_done_and_failed_are_not(self, q):
+        for day in ("d1", "d2", "d3", "d4"):
+            q.publish("t", {"day": day})
+        q.publish("other", {"day": "x"})
+        m1 = q.claim(["t"], worker_id="w")
+        q.ack(m1.id, worker_id="w")                       # d1 done
+        m2 = q.claim(["t"], worker_id="w")
+        q.fail(m2.id, "boom", worker_id="w")              # d2 failed
+        q.claim(["t"], worker_id="w")                     # d3 claimed
+        assert q.open_payloads("t") == [{"day": "d3"}, {"day": "d4"}]
+
+    def test_an_unknown_topic_has_none(self, q):
+        q.publish("t", {"day": "d1"})
+        assert q.open_payloads("nope") == []
 
 
 class TestConcurrency:
@@ -175,7 +195,7 @@ class TestConcurrency:
                             return
                         with lock:
                             got.append(m.id)
-                        wq.ack(m.id)
+                        wq.ack(m.id, worker_id=name)
 
             threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(6)]
             for t in threads:
@@ -183,3 +203,254 @@ class TestConcurrency:
             for t in threads:
                 t.join()
             assert sorted(got) == list(range(1, 21))          # every message delivered exactly once, none lost or doubled
+
+
+class TestLeaseLost:
+    """ack/fail only count from the worker that holds the claim: an expired lease that another worker reclaimed is not the old worker's."""
+
+    def reclaimed(self, tmp_path):
+        clock = Clock()
+        q = Queue(tmp_path / "q.sqlite3", clock=clock)
+        mid = q.publish("t", {"day": "d"})
+        q.claim(worker_id="A", lease_s=10)
+        clock.now += 11                                          # A overran its lease
+        m = q.claim(worker_id="B", lease_s=10)
+        assert (m.id, m.attempts) == (mid, 2)
+        return q, mid
+
+    def test_the_old_claimant_cannot_ack_a_reclaimed_message(self, tmp_path):
+        q, mid = self.reclaimed(tmp_path)
+        with pytest.raises(QueueLeaseLost, match=f"message {mid} is claimed by 'B', not by 'A': its lease expired"):
+            q.ack(mid, worker_id="A")
+        assert q.counts() == {"claimed": 1}                     # nothing changed: B still works on it
+        q.ack(mid, worker_id="B")                               # positive twin: the holder's ack is recorded
+        assert q.counts() == {"done": 1}
+
+    def test_the_old_claimant_cannot_fail_a_reclaimed_message(self, tmp_path):
+        q, mid = self.reclaimed(tmp_path)
+        with pytest.raises(QueueLeaseLost, match=f"message {mid} is claimed by 'B', not by 'A'"):
+            q.fail(mid, "slow", worker_id="A")
+        assert q.peek_failed() == []
+        q.fail(mid, "really broken", worker_id="B")             # positive twin
+        assert [(r["id"], r["error"]) for r in q.peek_failed()] == [(mid, "really broken")]
+
+    def test_a_second_ack_by_the_holder_after_done_is_refused(self, tmp_path):
+        q, mid = self.reclaimed(tmp_path)
+        q.ack(mid, worker_id="B")
+        with pytest.raises(QueueLeaseLost, match=rf"message {mid} is not claimed \(status 'done', last claimed by 'B'\)"):
+            q.fail(mid, "late", worker_id="B")
+        assert q.counts() == {"done": 1}
+
+    def test_an_expired_lease_nobody_reclaimed_is_still_the_holders(self, tmp_path):
+        clock = Clock()
+        q = Queue(tmp_path / "q.sqlite3", clock=clock)
+        mid = q.publish("t", {})
+        q.claim(worker_id="A", lease_s=10)
+        clock.now += 11
+        q.ack(mid, worker_id="A")
+        assert q.counts() == {"done": 1}
+
+
+class TestPayloadContract:
+    """Queue.publish checks a known topic's payload keys against topics.PAYLOAD_KEYS -- the contract the producers in nas_pipeline.py send."""
+
+    def test_the_producers_payload_shapes_are_accepted(self, q):
+        from bio_automation import topics
+
+        ids = [q.publish(topics.NAS_DAY_MATCHED, {"day": "2024-07-09"}),
+               q.publish(topics.NAS_DAY_IMPORTED, {"day": "2024-07-09", "frames": "imported/2024-07-09.json"}),
+               q.publish(topics.STOCK_RENDER_REQUESTED, {"day": "2024-07-09", "csv": "c.csv", "render_dir": "r"}),
+               q.publish(topics.STOCK_RENDER_IN_LIBRARY, {"day": "2024-07-09", "csv": "c.csv", "render_dir": "r"}),
+               q.publish(topics.STOCK_RENDERED, {"day": "2024-07-09", "csv": "c.csv", "render_dir": "r"}),
+               q.publish(topics.GALLERY_REINDEX, {"gallery_dir": "g", "folders": ["2024/2024-07"]})]
+        assert ids == [1, 2, 3, 4, 5, 6]
+        assert q.counts() == {"pending": 6}
+
+    def test_a_render_request_without_render_dir_is_refused(self, q):
+        from bio_automation import topics
+
+        with pytest.raises(topics.TopicPayloadError, match=r"stock.render_requested"):
+            q.publish(topics.STOCK_RENDER_REQUESTED, {"day": "2024-07-09", "csv": "c.csv"})
+        assert q.counts() == {}
+
+    def test_the_documented_but_never_sent_ids_json_key_is_refused(self, q):
+        from bio_automation import topics
+
+        with pytest.raises(topics.TopicPayloadError,
+                           match=r"nas\.day_imported payload must carry exactly \['day', 'frames'\]: missing \['frames'\], unexpected \['ids_json'\]"):
+            q.publish(topics.NAS_DAY_IMPORTED, {"day": "2024-07-09", "ids_json": "[1, 2]"})
+        assert q.counts() == {}
+
+    def test_an_extra_key_is_refused(self, q):
+        from bio_automation import topics
+
+        with pytest.raises(topics.TopicPayloadError, match=r"missing \[\], unexpected \['extra'\]"):
+            q.publish(topics.NAS_DAY_MATCHED, {"day": "d", "extra": 1})
+
+    def test_a_topic_without_a_contract_is_not_checked(self, q):
+        assert q.publish("scratch.topic", {"anything": 1}) == 1
+
+    def test_every_topic_has_a_payload_contract(self):
+        from bio_automation import topics
+
+        assert set(topics.PAYLOAD_KEYS) == set(topics.ALL)
+
+
+class TestTimings:
+    def run_one(self, q, clock, topic, queued_s, run_s, *, fail=False):
+        clock.now += 1.0
+        mid = q.publish(topic, {})
+        clock.now += queued_s
+        q.claim([topic], worker_id="w")
+        clock.now += run_s
+        if fail:
+            q.fail(mid, "boom", worker_id="w")
+        else:
+            q.ack(mid, worker_id="w")
+        return mid
+
+    def test_ack_and_fail_record_when_the_message_finished(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            done = self.run_one(q, clock, "t", 5.0, 7.0)
+            failed = self.run_one(q, clock, "t", 1.0, 2.0, fail=True)
+            rows = {r["id"]: r["finished_at"] for r in q._db.execute("SELECT id, finished_at FROM messages")}
+        assert rows == {done: 1013.0, failed: 1017.0}
+
+    def test_timings_give_the_median_and_p90_wait_and_run_per_topic(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            for queued, run in ((10.0, 1.0), (20.0, 2.0), (30.0, 3.0)):
+                self.run_one(q, clock, "a", queued, run)
+            self.run_one(q, clock, "b", 4.0, 8.0)
+            self.run_one(q, clock, "b", 99.0, 99.0, fail=True)          # failed: not part of the done timings
+            assert q.timings() == {
+                "a": {"done": 3, "wait_median_s": 20.0, "wait_p90_s": 28.0, "run_median_s": 2.0, "run_p90_s": 2.8},
+                "b": {"done": 1, "wait_median_s": 4.0, "wait_p90_s": 4.0, "run_median_s": 8.0, "run_p90_s": 8.0}}
+
+    def test_timings_since_only_count_messages_finished_from_then_on(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            self.run_one(q, clock, "a", 10.0, 1.0)
+            cut = clock.now + 0.5
+            self.run_one(q, clock, "a", 20.0, 2.0)
+            assert q.timings(since=cut) == {"a": {"done": 1, "wait_median_s": 20.0, "wait_p90_s": 20.0, "run_median_s": 2.0, "run_p90_s": 2.0}}
+            assert q.timings(since=clock.now + 1) == {}
+
+    def test_requeue_failed_clears_the_finish_time(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = self.run_one(q, clock, "t", 1.0, 1.0, fail=True)
+            assert q.requeue_failed("t") == 1
+            assert q._db.execute("SELECT finished_at FROM messages WHERE id=?", (mid,)).fetchone()[0] is None
+
+    def test_a_version_1_queue_is_migrated_with_its_messages_kept(self, tmp_path):
+        path = tmp_path / "old.sqlite3"
+        conn = sqlite3.connect(str(path))
+        conn.executescript(MIGRATIONS[0])
+        conn.execute("INSERT INTO messages (topic, payload, status, created, claimed_at, attempts) VALUES ('t', '{}', 'done', 1.0, 2.0, 1)")
+        conn.execute("PRAGMA user_version=1")
+        conn.commit()
+        conn.close()
+        with Queue(path) as q:
+            assert q.schema_version() == len(MIGRATIONS) == 3
+            assert q.counts() == {"done": 1}
+            assert q.timings() == {}                                   # finished before finish times were recorded: no made-up duration
+
+
+class TestExtendLease:
+    def test_a_renewed_lease_keeps_the_message_from_being_reclaimed(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = q.publish("t", {})
+            q.claim(["t"], worker_id="w1", lease_s=60.0)
+            clock.now += 50.0
+            assert q.extend_lease(mid, worker_id="w1", lease_s=60.0) == 1110.0
+            clock.now += 50.0                                       # past the first lease, inside the renewed one
+            assert q.claim(["t"], worker_id="w2") is None
+            q.ack(mid, worker_id="w1")
+            assert q.counts("t") == {"done": 1}
+
+    def test_without_renewal_the_same_message_is_reclaimed(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = q.publish("t", {})
+            q.claim(["t"], worker_id="w1", lease_s=60.0)
+            clock.now += 100.0
+            assert q.claim(["t"], worker_id="w2").id == mid
+
+    def test_a_worker_that_lost_its_claim_cannot_renew_it(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = q.publish("t", {})
+            q.claim(["t"], worker_id="w1", lease_s=60.0)
+            clock.now += 100.0
+            q.claim(["t"], worker_id="w2", lease_s=60.0)
+            with pytest.raises(QueueLeaseLost, match=r"is claimed by 'w2', not by 'w1'"):
+                q.extend_lease(mid, worker_id="w1")
+            assert q._db.execute("SELECT lease_until FROM messages WHERE id=?", (mid,)).fetchone()[0] == 1160.0
+
+    def test_a_finished_message_cannot_be_renewed(self, q):
+        mid = q.publish("t", {})
+        q.claim(["t"], worker_id="w1")
+        q.ack(mid, worker_id="w1")
+        with pytest.raises(QueueLeaseLost, match=r"is not claimed \(status 'done'"):
+            q.extend_lease(mid, worker_id="w1")
+
+
+class TestRetireSuperseded:
+    def fail_then(self, q, payload, later_status, topic="t"):
+        """A failed message, then a later one with the same payload left in later_status (None = no later message)."""
+        first = q.publish(topic, payload)
+        q.claim([topic], worker_id="w")
+        q.fail(first, "boom", worker_id="w")
+        later = None
+        if later_status:
+            later = q.publish(topic, payload)
+            if later_status != "pending":
+                q.claim([topic], worker_id="w")
+                if later_status == "done":
+                    q.ack(later, worker_id="w")
+                elif later_status == "failed":
+                    q.fail(later, "again", worker_id="w")
+        return first, later
+
+    def test_a_failure_redone_successfully_moves_to_retired_with_its_successor(self, q):
+        first, later = self.fail_then(q, {"day": "a"}, "done")
+        assert q.retire_superseded() == [(first, later)]
+        assert q.counts("t") == {"done": 1}
+        row = q._db.execute("SELECT id, topic, payload, error, superseded_by, retired_at FROM retired").fetchone()
+        assert tuple(row) == (first, "t", '{"day": "a"}', "boom", later, 1000.0)
+
+    def test_a_failure_without_a_later_success_stays_failed(self, q):
+        cases = (("a", None), ("b", "pending"), ("c", "claimed"), ("d", "failed"))
+        kept = [self.fail_then(q, {"day": d}, status, topic=f"t{d}")[0] for d, status in cases]
+        assert q.retire_superseded() == []
+        assert q._db.execute("SELECT COUNT(*) FROM retired").fetchone()[0] == 0
+        assert [q.peek_failed(f"t{d}")[-1]["id"] for d, _ in cases] == kept
+
+    def test_a_success_for_another_payload_or_topic_does_not_supersede(self, q):
+        first, _ = self.fail_then(q, {"day": "a"}, None)
+        for topic, payload in (("t", {"day": "b"}), ("u", {"day": "a"})):
+            mid = q.publish(topic, payload)
+            q.claim([topic], worker_id="w")
+            q.ack(mid, worker_id="w")
+        assert q.retire_superseded() == []
+        assert q.counts("t")["failed"] == 1
+
+    def test_an_earlier_success_does_not_supersede_a_later_failure(self, q):
+        mid = q.publish("t", {"day": "a"})
+        q.claim(["t"], worker_id="w")
+        q.ack(mid, worker_id="w")
+        self.fail_then(q, {"day": "a"}, None)
+        assert q.retire_superseded() == []
+
+
+class TestPendingPayloads:
+    def test_only_unclaimed_messages_are_pending(self, q):
+        q.publish("t", {"day": "a"})
+        q.publish("t", {"day": "b"})
+        q.publish("u", {"day": "c"})
+        q.claim(["t"], worker_id="w")
+        assert q.pending_payloads("t") == [{"day": "b"}]
+        assert q.open_payloads("t") == [{"day": "a"}, {"day": "b"}]

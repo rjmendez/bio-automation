@@ -23,13 +23,15 @@ import json
 import shutil
 from pathlib import Path
 
+from . import settings
+
 from .models import Asset, Observation
 from .paths import make_observation_path, metadata_dir, source_raw_dir
 from .pipeline import ensure_layout, process_observation
 from .auto_ingest import upsert_assets, upsert_observation
 
-SYNC_DIR = Path(r"D:\nikon_stack_sync")
-BASE_DIR = Path(r"F:\Bio")
+SYNC_DIR = settings.SYNC_DIR
+BASE_DIR = settings.LIBRARY
 
 
 class ManifestError(RuntimeError):
