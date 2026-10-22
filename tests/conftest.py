@@ -18,3 +18,13 @@ def private_nas_io_gate(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "NAS_IO_DB", tmp_path / "state" / "nas_io.sqlite3")
     monkeypatch.setattr(nas_io, "_defaults", {})
+
+
+@pytest.fixture(autouse=True)
+def private_prints_files(tmp_path, monkeypatch):
+    """No test reads or writes the owner's real prints.csv, prints_manual.csv or Darkroom work folder (D:\\bio-results\\social, D:\\bio-cache)."""
+    from bio_automation import settings
+
+    monkeypatch.setattr(settings, "SOCIAL_PRINTS_FILE", tmp_path / "no-prints" / "prints.csv")
+    monkeypatch.setattr(settings, "SOCIAL_PRINTS_MANUAL_FILE", tmp_path / "no-prints" / "prints_manual.csv")
+    monkeypatch.setattr(settings, "DARKROOM_DIR", tmp_path / "no-darkroom")
