@@ -5,6 +5,7 @@ the cache's own logic (keys, sidecars, locks, eviction, the byte check) runs for
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -381,6 +382,47 @@ class TestLocks:
         assert c.local(src, stage="tag") == root / "2024" / "d" / "x.NEF"
         assert (slept, len(rec.calls), [e["outcome"] for e in events]) == ([], 1, ["fill"])
         assert files(root) == ["2024/d/x.NEF", "2024/d/x.NEF.src.json"]
+
+
+class WaitingGate:
+    """A gate stand-in that grants every slot after a fixed wait, recording the stages asked for."""
+
+    def __init__(self, waited):
+        self.waited, self.stages = waited, []
+
+    @contextlib.contextmanager
+    def acquire(self, stage):
+        self.stages.append(stage)
+        yield self.waited
+
+
+class TestWaitReport:
+    def test_a_fill_reports_the_seconds_it_queued_for_its_slot_and_a_hit_reports_none(self, env):
+        nas, _ = env
+        src = put(nas, "2024/d/x.NEF", b"abc")
+        gate = WaitingGate(7.5)
+        c, events = cache_for(env, gate=gate)
+        c.local(src, stage="tag")
+        c.local(src, stage="tag")
+        assert [(e["outcome"], e["wait_s"]) for e in events] == [("fill", 7.5), ("hit", 0.0)]
+        assert gate.stages == ["tag"]
+
+    def test_a_fill_without_a_gate_reports_no_wait(self, env):
+        nas, _ = env
+        src = put(nas, "2024/d/x.NEF", b"abc")
+        c, events = cache_for(env)
+        c.local(src, stage="tag")
+        assert [(e["outcome"], e["wait_s"]) for e in events] == [("fill", 0.0)]
+
+    def test_a_copy_that_fails_after_the_wait_still_reports_the_wait(self, env):
+        nas, _ = env
+        src = put(nas, "2024/d/x.NEF", b"abc")
+
+        def broken(s, d):
+            raise OSError("link down")
+        c, events = cache_for(env, copy=Recorder(broken), gate=WaitingGate(4.0))
+        c.local(src, stage="tag")
+        assert [(e["outcome"], e["wait_s"]) for e in events] == [("fallback:OSError", 4.0)]
 
 
 class TestScoreIdentity:
