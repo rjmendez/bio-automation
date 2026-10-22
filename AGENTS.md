@@ -136,6 +136,13 @@ excluded; deterministic statistics + rules + nearest examples, nothing model-wri
 mirrored in Loci investigation `bsky-alt-text-style`). Daily task `Bio-Social-Daily` runs
 `F:/services/bio-social/run-social.ps1` (index -> draft -> post).
 
+**Removing the old inat_skeet posts (owner, 2026-10-22: "all without replies", "dry-run list, then one go").**
+`bio social-cleanup-plan` lists, from live public data, every post in inat_skeet's template that has no replies (posts with
+replies are kept so no conversation is orphaned) and saves the plan with an id; `bio social-cleanup-run <plan> --confirm <id>`
+deletes exactly that list through the separate delete-only "cleanup" profile (its own client, key, session and sign-in;
+scope `repo:app.bsky.feed.post?action=delete`), resumable via a ledger next to the plan. The full account export is archived in
+`settings.BSKY_ARCHIVE_DIR` first. Never delete anything outside an owner-confirmed plan.
+
 **Sign-in is atproto OAuth through Bluesky's own client library (owner, 2026-10-22): use a mature, maintained
 implementation and never roll your own OAuth, DPoP, JWT or other crypto step.** Posting goes through the `bsky-oauth` library
 (private repo `rjmendez/bsky-oauth`, extra `[social]`, then `bsky-oauth install`), which is glue around

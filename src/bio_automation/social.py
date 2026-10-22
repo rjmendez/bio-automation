@@ -42,8 +42,9 @@ from . import settings
 MAX_IMAGES = 4                     # app.bsky.embed.images: images maxLength 4
 TEXT_MAX_GRAPHEMES = 300           # app.bsky.feed.post text: maxGraphemes 300, maxLength 3000 (UTF-8 bytes)
 TEXT_MAX_BYTES = 3000
-MIN_ALT_CHARS = 15                 # shorter than the owner's shortest real alt texts (p10 49): not a description
-_TRAILING_LINK = re.compile(r"[\s,;:-]*(?:\b(?:photographed|taken|captured|shot|seen|observed|found)\b)?[\s,]*(?:\b(?:on|in|at)\b)?[\s,;:-]*$",
+MAX_CORRECTIONS = 2                # follow-up requests when an answer misses the owner's length band or uses mood words
+MIN_ALT_CHARS = 15                # shorter than the owner's shortest real alt texts (p10 49): not a description
+_TRAILING_LINK = re.compile(r"[\s,;:-]*(?:\b(?:photographed|taken|captured|shot|seen|observed|found)\b)?[\s,]*(?:\b(?:on|in|at|near|around|by|from)\b)?[\s,;:-]*$",
                             re.IGNORECASE)
 EMBED_BATCH = 64                  # texts per Ollama /api/embed request
 ALT_MAX_CHARS = 2000              # the Bluesky app's alt-text limit (the lexicon sets none)
@@ -404,10 +405,12 @@ def clean_alt(text: str, context: dict) -> str:
     text = " ".join(text.split())
     sentences = [_OPENER.sub("", x) for x in _SENTENCE.split(text)] if text else []
     sentences = [x[:1].upper() + x[1:] for x in sentences if x]
-    facts = [f for f in (context.get("observed_on"), context.get("place")) if f]
+    facts = place_and_date_forms(context)
     kept = []
     for x in sentences:
-        hits = [x.find(f) for f in facts if f in x]
+        x = _SPACE_COMMA.sub(",", x)
+        low = x.lower()
+        hits = [low.find(f) for f in facts if f in low]
         if not hits:
             kept.append(x)
             continue
@@ -415,6 +418,25 @@ def clean_alt(text: str, context: dict) -> str:
         if len(head) >= MIN_ALT_CHARS:
             kept.append(head + ".")
     return " ".join(kept or sentences)
+
+
+_SPACE_COMMA = re.compile(r"\s+,")
+
+
+def place_and_date_forms(context: dict) -> list[str]:
+    """Lower-case forms of the date and place a sentence must not repeat: the date, the place with "X , Y" spacing normalised (the
+    Stock captions carry "SGL220 , PA, USA", the model writes "SGL220, PA, USA"), and the place's first part when it is specific
+    (4+ characters)."""
+    out = []
+    if context.get("observed_on"):
+        out.append(context["observed_on"].lower())
+    place = _SPACE_COMMA.sub(",", (context.get("place") or "").strip())
+    if place:
+        out.append(place.lower())
+        first = place.split(",")[0].strip()
+        if len(first) >= 4 and first.lower() != place.lower():
+            out.append(first.lower())
+    return out
 
 
 def describe(image: Path, context: dict, *, model: str, api: Callable = _ollama) -> str:
@@ -425,16 +447,80 @@ def describe(image: Path, context: dict, *, model: str, api: Callable = _ollama)
         im.thumbnail((settings.VISION_IMAGE_EDGE, settings.VISION_IMAGE_EDGE), Image.LANCZOS)
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=90)
-    r = api("/api/chat", {"model": model, "stream": False, "think": False, "keep_alive": "10m", "options": {"temperature": 0},
-                          "messages": [{"role": "user", "content": alt_text_prompt(context),
-                                        "images": [base64.b64encode(buf.getvalue()).decode()]}]})
-    _require_gpu(model, api)
-    text = clean_alt(r.get("message", {}).get("content") or "", context)
+    messages = [{"role": "user", "content": alt_text_prompt(context), "images": [base64.b64encode(buf.getvalue()).decode()]}]
+
+    def ask() -> str:
+        r = api("/api/chat", {"model": model, "stream": False, "think": False, "keep_alive": "10m", "options": {"temperature": 0},
+                              "messages": messages})
+        _require_gpu(model, api)
+        return r.get("message", {}).get("content") or ""
+
+    raw = ask()
+    text = clean_alt(raw, context)
+    attempts = context.get("attempts")          # a list the caller passes in to see every answer
+    if attempts is not None:
+        attempts.append(text)
     if not text:
         raise VisionError(f"{model} returned no alt text for {image}")
-    if len(text) < MIN_ALT_CHARS or text.lstrip().startswith(("{", "[")):
+    if not usable(text):
         raise UnusableAnswer(f"{model} gave no usable alt text for {image.name}: {text[:60]!r}")
-    return text[:ALT_MAX_CHARS]
+    band = (context.get("style") or {}).get("band")
+    if not band:
+        return text[:ALT_MAX_CHARS]
+    best = current = text
+    for _ in range(MAX_CORRECTIONS):
+        problems = style_problems(current, band)
+        if not problems:
+            break
+        # a correction in the same conversation (the model still sees the photo), naming exactly what is off
+        messages += [{"role": "assistant", "content": raw},
+                     {"role": "user", "content": " ".join(problems) + " Write it again. Answer with the alt text only."}]
+        raw = ask()
+        current = clean_alt(raw, context)
+        if attempts is not None:
+            attempts.append(current)
+        if not usable(current):
+            break                                    # an unusable follow-up ends the corrections; the best answer so far stands
+        if style_cost(current, band) < style_cost(best, band):
+            best = current
+    return best[:ALT_MAX_CHARS]
+
+
+def style_problems(text: str, band: list[int]) -> list[str]:
+    """What is off about an answer against the owner's style: length outside the band, mood words."""
+    from .social_style import _MOOD_WORD
+
+    lo, hi = band
+    out = []
+    if len(text) < lo:
+        out.append(f"That is {len(text)} characters; the photographer's alt texts are usually {lo}-{hi}. Make it longer: add what else is "
+                   "visible (colours, textures, the parts of the organism you can see, what it is on, the background), still plain, nothing "
+                   "that is not visible.")
+    elif len(text) > hi:
+        out.append(f"That is {len(text)} characters; the photographer's alt texts are usually {lo}-{hi}. Make it shorter: keep the subject "
+                   "and the most visible details.")
+    words = sorted({m.group(0).lower() for m in _MOOD_WORD.finditer(text)})
+    if words:
+        out.append(f"Drop {', '.join(repr(w) for w in words)}: the photographer does not use words like that.")
+    return out
+
+
+def style_cost(text: str, band: list[int]) -> int:
+    """Lower is closer to the owner's style: characters outside the band, plus a large cost per mood word."""
+    from .social_style import _MOOD_WORD
+
+    return band_distance(len(text), band) + 100 * len(_MOOD_WORD.findall(text))
+
+
+def usable(text: str) -> bool:
+    """Alt text, not a fragment or a JSON object the model failed to fill."""
+    return len(text) >= MIN_ALT_CHARS and not text.lstrip().startswith(("{", "["))
+
+
+def band_distance(n: int, band: list[int]) -> int:
+    """How far a length is outside [lo, hi]; 0 inside."""
+    lo, hi = band
+    return lo - n if n < lo else n - hi if n > hi else 0
 
 
 # --------------------------------------------------------------------------------------------------- post text
@@ -539,11 +625,12 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
                                            ", ".join((label.get("keywords") or [])[:10])) if x)
             context["style"] = style(subject)
         try:
+            context["attempts"] = []
             alt = describe_fn(out / name, context, model=model)
         except SkipObservation:
             shutil.rmtree(out)           # no half-written draft folder is left behind
             raise
-        images.append({"file": name, "source": rel, "alt": alt, **info,
+        images.append({"file": name, "source": rel, "alt": alt, **info, "alt_attempts": context["attempts"],
                        **({"style_examples": context["style"]["examples"]} if style is not None else {})})
     draft = {"draft_id": draft_id, "month": month, "obs_id": obs_id, "url": INAT_OBS_URL.format(obs_id), "text": text_segments(obs),
              "images": images, "vision_model": model, "observation": obs,

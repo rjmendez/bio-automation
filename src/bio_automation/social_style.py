@@ -22,7 +22,7 @@ from typing import Callable
 
 from . import settings
 
-PROFILE_VERSION = 1
+PROFILE_VERSION = 2              # 2: chars_p25/p75 and the length band
 BOT_MARKERS = ("Quality grade:", "AI generated alt text")     # inat_skeet's fixed post template
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _FIRST_PERSON = re.compile(r"\b(I|my|me|we|our)\b")
@@ -102,7 +102,7 @@ def measure(alts: list[str]) -> dict:
     sentences = [len([s for s in _SENTENCE.split(a) if s]) for a in alts]
     first = [a.split()[0].lower().strip(".,") for a in alts]
     return {"alt_texts": len(alts), "chars_median": int(statistics.median(chars)), "chars_p10": _pct(chars, 0.10),
-            "chars_p90": _pct(chars, 0.90), "words_median": int(statistics.median(len(a.split()) for a in alts)),
+            "chars_p25": _pct(chars, 0.25), "chars_p75": _pct(chars, 0.75), "chars_p90": _pct(chars, 0.90), "words_median": int(statistics.median(len(a.split()) for a in alts)),
             "sentences_median": int(statistics.median(sentences)), "sentences_p90": _pct(sentences, 0.90),
             "one_sentence_share": _share(sentences, lambda n: n == 1), "opens_with_article_share": _share(first, lambda w: w in ("a", "an")),
             "opens_with_count_share": _share(first, lambda w: w in NUMBER_WORDS), "ends_with_period_share": _share(alts, lambda a: a.endswith(".")),
@@ -113,8 +113,9 @@ def measure(alts: list[str]) -> dict:
 
 def rules_from(stats: dict) -> list[str]:
     """Writing rules, each tied to the measurement it comes from."""
-    r = [f"Length: about {stats['chars_median']} characters ({stats['words_median']} words); rarely over {stats['chars_p90']} "
-         f"(median and 90th percentile of {stats['alt_texts']} of the photographer's own alt texts)."]
+    r = [f"Length: {stats['chars_p25']}-{stats['chars_p75']} characters, typically about {stats['chars_median']} ({stats['words_median']} "
+         f"words); never under {stats['chars_p10']} or over {stats['chars_p90']} (middle half, median, 10th and 90th percentile of "
+         f"{stats['alt_texts']} of the photographer's own alt texts)."]
     if stats["one_sentence_share"] >= 0.5:
         r.append(f"Usually one sentence ({round(stats['one_sentence_share'] * 100)}% are), at most {max(2, stats['sentences_p90'])}.")
     if stats["opens_with_article_share"] >= 0.5:
@@ -181,8 +182,10 @@ def nearest_examples(profile: dict, query_vector: list[float], k: int = 5) -> li
 
 
 def style_for(profile: dict, subject: str, *, embed: Callable[[list[str]], list[list[float]]], k: int = 5) -> dict:
-    """{"rules", "examples", "max_chars"} for one photo: the profile's rules and the owner's k alt texts nearest to `subject`."""
-    return {"rules": profile["rules"], "examples": nearest_examples(profile, embed([subject])[0], k), "max_chars": profile["stats"]["chars_p90"]}
+    """{"rules", "examples", "band"} for one photo: the profile's rules, the owner's k alt texts nearest to `subject`, and the target
+    length band (25th-75th percentile of the owner's alt texts)."""
+    st = profile["stats"]
+    return {"rules": profile["rules"], "examples": nearest_examples(profile, embed([subject])[0], k), "band": [st["chars_p25"], st["chars_p75"]]}
 
 
 def loci_record(profile: dict, examples: int = 12) -> dict:

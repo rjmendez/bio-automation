@@ -806,3 +806,113 @@ class TestAnswerChecks:
         assert report["drafted"] == ["2026-10-obs2"]
         assert report["skipped"] == {1: "vis:1 gave no usable alt text for 1.jpg: '{'"}
         assert sorted(p.name for p in (tmp_path / "drafts").iterdir()) == ["2026-10-obs2"]
+
+
+class SequencedOllama(FakeOllama):
+    """FakeOllama whose /api/chat answers come from a list, one per call; records every chat body."""
+
+    def __init__(self, answers, **kw):
+        super().__init__(**kw)
+        self.answers, self.chats = list(answers), []
+
+    def __call__(self, path, body=None, **kw):
+        if path == "/api/chat":
+            self.calls.append((path, body))
+            self.chats.append(json.loads(json.dumps(body)))
+            return {"message": {"role": "assistant", "content": self.answers.pop(0)}}
+        return super().__call__(path, body, **kw)
+
+
+BANDED = {**CONTEXT, "style": {"rules": ["No emoji."], "examples": ["A spider on a web."], "band": [73, 164]}}
+SHORT = "A spider on its web."                                                                       # 20 characters
+GOOD = "A lattice orbweaver at the hub of its web, orange abdomen with a pale lattice, dark green leaves behind."   # 104
+LONG = GOOD + " " + GOOD
+
+
+class TestLengthBand:
+    def test_a_short_answer_is_corrected_in_the_same_conversation(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        api = SequencedOllama([SHORT, GOOD])
+        assert social.describe(img, BANDED, model="vis:1", api=api) == GOOD
+        assert len(api.chats) == 2
+        second = api.chats[1]["messages"]
+        assert [m["role"] for m in second] == ["user", "assistant", "user"]
+        assert second[1]["content"] == SHORT
+        assert second[2]["content"].startswith("That is 20 characters; the photographer's alt texts are usually 73-164. Make it longer:")
+        assert second[2]["content"].endswith("Write it again. Answer with the alt text only.")
+        assert second[0]["images"] == api.chats[0]["messages"][0]["images"]
+
+    def test_a_long_answer_is_asked_to_be_shorter(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        api = SequencedOllama([LONG, GOOD])
+        assert social.describe(img, BANDED, model="vis:1", api=api) == GOOD
+        assert api.chats[1]["messages"][2]["content"].startswith(f"That is {len(LONG)} characters; the photographer's alt texts are usually "
+                                                                 "73-164. Make it shorter:")
+
+    def test_a_mood_word_is_named_and_corrected(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        moody = GOOD.replace("orange abdomen", "vibrant orange abdomen")
+        api = SequencedOllama([moody, GOOD])
+        assert social.describe(img, BANDED, model="vis:1", api=api) == GOOD
+        assert api.chats[1]["messages"][2]["content"] == ("Drop 'vibrant': the photographer does not use words like that. "
+                                                          "Write it again. Answer with the alt text only.")
+
+    def test_an_answer_inside_the_band_is_kept_without_a_second_call(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        api = SequencedOllama([GOOD])
+        assert social.describe(img, BANDED, model="vis:1", api=api) == GOOD
+        assert len(api.chats) == 1
+
+    def test_at_most_two_corrections_and_the_closest_answer_wins(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        mid = "A lattice orbweaver on its web, orange."                                                 # 39: closer than 20
+        api = SequencedOllama([SHORT, mid, SHORT])
+        assert social.describe(img, BANDED, model="vis:1", api=api) == mid
+        assert len(api.chats) == 3
+        api = SequencedOllama([SHORT, mid, GOOD])
+        assert social.describe(img, BANDED, model="vis:1", api=api) == GOOD
+        assert len(api.chats) == 3
+
+    def test_an_unusable_follow_up_ends_the_corrections_and_keeps_the_best(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        mid = "A lattice orbweaver on its web, orange."
+        api = SequencedOllama([mid, "{"])
+        assert social.describe(img, BANDED, model="vis:1", api=api) == mid
+        assert len(api.chats) == 2
+
+    def test_every_answer_is_recorded_for_the_draft(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        mid = "A lattice orbweaver on its web, orange."
+        ctx = {**BANDED, "attempts": []}
+        assert social.describe(img, ctx, model="vis:1", api=SequencedOllama([SHORT, mid, GOOD])) == GOOD
+        assert ctx["attempts"] == [SHORT, mid, GOOD]
+
+    def test_without_a_style_band_there_is_no_correction(self, tmp_path):
+        img = jpeg(tmp_path / "1.jpg")
+        api = SequencedOllama([SHORT])
+        assert social.describe(img, CONTEXT, model="vis:1", api=api) == SHORT
+        assert len(api.chats) == 1
+
+    def test_band_distance_and_style_cost(self):
+        assert [social.band_distance(n, [73, 164]) for n in (20, 72, 73, 164, 165, 200)] == [53, 1, 0, 0, 1, 36]
+        assert social.style_cost(GOOD, [73, 164]) == 0
+        assert social.style_cost(SHORT, [73, 164]) == 53
+        assert social.style_cost(GOOD.replace("orange", "vibrant orange"), [73, 164]) == 100
+
+
+class TestPlaceForms:
+    def test_forms_normalise_spacing_and_add_a_specific_first_part(self):
+        assert social.place_and_date_forms({"observed_on": "October 3, 2025", "place": "SGL220 , PA, USA"}) == [
+            "october 3, 2025", "sgl220, pa, usa", "sgl220"]
+        assert social.place_and_date_forms({"place": "PA, USA"}) == ["pa, usa"]
+        assert social.place_and_date_forms({"place": "Reinholds"}) == ["reinholds"]
+        assert social.place_and_date_forms({}) == []
+
+    def test_the_place_is_caught_however_the_model_spaces_it(self):
+        ctx = {"observed_on": "October 3, 2025", "place": "SGL220 , PA, USA"}
+        assert social.clean_alt("A white bramble flower with yellow stamens and green leaves, photographed in autumn in SGL220, PA, USA.", ctx) == (
+            "A white bramble flower with yellow stamens and green leaves, photographed in autumn.")
+        assert social.clean_alt("A white bramble flower with yellow stamens, growing at sgl220 beside a trail.", ctx) == (
+            "A white bramble flower with yellow stamens, growing.")
+        assert social.clean_alt("A white bramble flower with yellow stamens beside a trail.", ctx) == (
+            "A white bramble flower with yellow stamens beside a trail.")
