@@ -384,6 +384,62 @@ class TestRenewal:
         g._drop("X")
 
 
+class TestLateRenewal:
+    """A holder whose row expired before it renewed (a suspended machine, a starved timer) must not carry on as if it still held the slot."""
+
+    def late_holder(self, tmp_path, between):
+        clock = Clock(1000.0)
+        calls = []
+
+        def renew_wait(stop, seconds):
+            calls.append(seconds)
+            if len(calls) == 1:                                           # the first renewal comes 40 s late: the 30 s ttl ran out
+                clock.advance(HOLD_TTL + 10)
+                between()
+                return False
+            return True
+        g = NasIoGate(tmp_path / "gate.sqlite3", 1, hold_ttl_s=HOLD_TTL, time_fn=clock, sleep_fn=Sleeper(clock), pid_fn=lambda: 4242,
+                      poll_s=POLL, renew_wait_fn=renew_wait)
+        assert g._attempt("late", "tag", PRIO["tag"], 1000.0) is True
+        return g, clock
+
+    def test_a_late_holder_whose_slot_is_free_takes_it_back(self, tmp_path, caplog):
+        g, _ = self.late_holder(tmp_path, lambda: None)
+        with caplog.at_level(logging.WARNING, logger="bio_automation.nas_io"):
+            g._renew_loop("late", "tag", threading.Event())
+        assert [r.getMessage() for r in caplog.records] == [
+            "NAS I/O gate: a tag read's row expired before its renewal at 1040 s: the slot was free and is held again"]
+        assert holders(g) == [("tag", 4242, PRIO["tag"])]
+        assert rows(g.path, "SELECT token, expires FROM holders") == [("late", 1040.0 + HOLD_TTL)]
+
+    def test_a_late_holder_whose_slot_went_to_another_reader_says_so_and_does_not_take_a_second_slot(self, tmp_path, caplog):
+        other = contextlib.ExitStack()
+        g, clock = self.late_holder(tmp_path, lambda: other.enter_context(rival.acquire("render")))
+        rival = NasIoGate(tmp_path / "gate.sqlite3", 1, hold_ttl_s=HOLD_TTL, time_fn=clock, sleep_fn=Sleeper(clock), pid_fn=lambda: 4343,
+                          poll_s=POLL, renew_wait_fn=no_renewal)
+        with caplog.at_level(logging.WARNING, logger="bio_automation.nas_io"), other:
+            g._renew_loop("late", "tag", threading.Event())
+            assert holders(g) == [("render", 4343, PRIO["render"])]
+        assert [r.getMessage() for r in caplog.records] == [
+            "NAS I/O gate: a tag read lost its slot (its row expired before the renewal at 1040 s) and another reader took it: "
+            "this read now runs beyond the gate"]
+
+    def test_a_holder_renewed_in_time_logs_nothing_and_keeps_its_one_row(self, tmp_path, caplog):
+        clock = Clock(1000.0)
+        calls = []
+
+        def renew_wait(stop, seconds):
+            calls.append(seconds)
+            clock.advance(seconds)
+            return len(calls) > 2
+        g = NasIoGate(tmp_path / "gate.sqlite3", 1, hold_ttl_s=HOLD_TTL, time_fn=clock, sleep_fn=Sleeper(clock), pid_fn=lambda: 4242,
+                      poll_s=POLL, renew_wait_fn=renew_wait)
+        assert g._attempt("ok", "tag", PRIO["tag"], 1000.0) is True
+        with caplog.at_level(logging.WARNING, logger="bio_automation.nas_io"):
+            g._renew_loop("ok", "tag", threading.Event())
+        assert (caplog.records, holders(g)) == ([], [("tag", 4242, PRIO["tag"])])
+
+
 class TestErrors:
     def test_zero_slots_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match=r"slots must be >= 1, got 0"):
