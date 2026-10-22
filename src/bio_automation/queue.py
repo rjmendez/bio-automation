@@ -43,6 +43,20 @@ MIGRATIONS = (
     ALTER TABLE messages ADD COLUMN finished_at REAL;
     CREATE INDEX messages_finished ON messages (topic, finished_at);
     """,
+    # failed messages a later identical message has since completed (retire_superseded): kept here, out of the live counts
+    """
+    CREATE TABLE retired (
+        id INTEGER PRIMARY KEY,
+        topic TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created REAL NOT NULL,
+        attempts INTEGER NOT NULL,
+        error TEXT,
+        finished_at REAL,
+        superseded_by INTEGER NOT NULL,
+        retired_at REAL NOT NULL
+    );
+    """,
 )
 
 DEFAULT_LEASE_S = 60.0
@@ -202,6 +216,28 @@ class Queue:
             return self._db.execute("UPDATE messages SET status='pending', error=NULL, finished_at=NULL WHERE status='failed' AND topic=?",
                                     (topic,)).rowcount
 
+    def retire_superseded(self) -> list[tuple[int, int]]:
+        """Move every `failed` message that a later message with the same topic and payload has since completed (status done) out of
+        `messages` into `retired`, with the id of the message that superseded it. Returns [(failed id, superseding id)]. A failure with no
+        later success stays failed: only a done message proves the work was redone."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                pairs = [(r[0], r[1]) for r in self._db.execute(
+                    "SELECT f.id, MIN(d.id) FROM messages f JOIN messages d ON d.topic = f.topic AND d.payload = f.payload AND d.id > f.id "
+                    "WHERE f.status = 'failed' AND d.status = 'done' GROUP BY f.id ORDER BY f.id")]
+                now = self._clock()
+                for failed_id, by in pairs:
+                    self._db.execute("INSERT INTO retired (id, topic, payload, created, attempts, error, finished_at, superseded_by, retired_at) "
+                                     "SELECT id, topic, payload, created, attempts, error, finished_at, ?, ? FROM messages WHERE id = ?",
+                                     (by, now, failed_id))
+                    self._db.execute("DELETE FROM messages WHERE id = ?", (failed_id,))
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+        return pairs
+
     # -- introspection
     def counts(self, topic: str | None = None) -> dict[str, int]:
         sql, args = "SELECT status, COUNT(*) n FROM messages", []
@@ -237,6 +273,12 @@ class Queue:
         with self._lock:
             rows = self._db.execute("SELECT payload FROM messages WHERE topic=? AND status IN ('pending', 'claimed') ORDER BY id",
                                     (topic,)).fetchall()
+        return [json.loads(r["payload"]) for r in rows]
+
+    def pending_payloads(self, topic: str) -> list[dict]:
+        """Payloads of every `topic` message not yet claimed, oldest first: work that will still read the latest inputs when it starts."""
+        with self._lock:
+            rows = self._db.execute("SELECT payload FROM messages WHERE topic=? AND status='pending' ORDER BY id", (topic,)).fetchall()
         return [json.loads(r["payload"]) for r in rows]
 
     def peek_failed(self, topic: str | None = None, limit: int = 50) -> list[dict[str, Any]]:

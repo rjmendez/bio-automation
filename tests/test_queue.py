@@ -353,7 +353,7 @@ class TestTimings:
         conn.commit()
         conn.close()
         with Queue(path) as q:
-            assert q.schema_version() == len(MIGRATIONS) == 2
+            assert q.schema_version() == len(MIGRATIONS) == 3
             assert q.counts() == {"done": 1}
             assert q.timings() == {}                                   # finished before finish times were recorded: no made-up duration
 
@@ -396,3 +396,61 @@ class TestExtendLease:
         q.ack(mid, worker_id="w1")
         with pytest.raises(QueueLeaseLost, match=r"is not claimed \(status 'done'"):
             q.extend_lease(mid, worker_id="w1")
+
+
+class TestRetireSuperseded:
+    def fail_then(self, q, payload, later_status, topic="t"):
+        """A failed message, then a later one with the same payload left in later_status (None = no later message)."""
+        first = q.publish(topic, payload)
+        q.claim([topic], worker_id="w")
+        q.fail(first, "boom", worker_id="w")
+        later = None
+        if later_status:
+            later = q.publish(topic, payload)
+            if later_status != "pending":
+                q.claim([topic], worker_id="w")
+                if later_status == "done":
+                    q.ack(later, worker_id="w")
+                elif later_status == "failed":
+                    q.fail(later, "again", worker_id="w")
+        return first, later
+
+    def test_a_failure_redone_successfully_moves_to_retired_with_its_successor(self, q):
+        first, later = self.fail_then(q, {"day": "a"}, "done")
+        assert q.retire_superseded() == [(first, later)]
+        assert q.counts("t") == {"done": 1}
+        row = q._db.execute("SELECT id, topic, payload, error, superseded_by, retired_at FROM retired").fetchone()
+        assert tuple(row) == (first, "t", '{"day": "a"}', "boom", later, 1000.0)
+
+    def test_a_failure_without_a_later_success_stays_failed(self, q):
+        cases = (("a", None), ("b", "pending"), ("c", "claimed"), ("d", "failed"))
+        kept = [self.fail_then(q, {"day": d}, status, topic=f"t{d}")[0] for d, status in cases]
+        assert q.retire_superseded() == []
+        assert q._db.execute("SELECT COUNT(*) FROM retired").fetchone()[0] == 0
+        assert [q.peek_failed(f"t{d}")[-1]["id"] for d, _ in cases] == kept
+
+    def test_a_success_for_another_payload_or_topic_does_not_supersede(self, q):
+        first, _ = self.fail_then(q, {"day": "a"}, None)
+        for topic, payload in (("t", {"day": "b"}), ("u", {"day": "a"})):
+            mid = q.publish(topic, payload)
+            q.claim([topic], worker_id="w")
+            q.ack(mid, worker_id="w")
+        assert q.retire_superseded() == []
+        assert q.counts("t")["failed"] == 1
+
+    def test_an_earlier_success_does_not_supersede_a_later_failure(self, q):
+        mid = q.publish("t", {"day": "a"})
+        q.claim(["t"], worker_id="w")
+        q.ack(mid, worker_id="w")
+        self.fail_then(q, {"day": "a"}, None)
+        assert q.retire_superseded() == []
+
+
+class TestPendingPayloads:
+    def test_only_unclaimed_messages_are_pending(self, q):
+        q.publish("t", {"day": "a"})
+        q.publish("t", {"day": "b"})
+        q.publish("u", {"day": "c"})
+        q.claim(["t"], worker_id="w")
+        assert q.pending_payloads("t") == [{"day": "b"}]
+        assert q.open_payloads("t") == [{"day": "a"}, {"day": "b"}]
