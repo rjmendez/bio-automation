@@ -81,11 +81,12 @@ class RawCache:
     def _lock(key: Path) -> Path:
         return key.with_name(key.name + LOCK)
 
-    def _report(self, stage: str, rel: str, size: int, t0: float, outcome: str) -> None:
+    def _report(self, stage: str, rel: str, size: int, t0: float, outcome: str, wait_s: float = 0.0) -> None:
         if self.on_read is None:
             return
         try:
-            self.on_read({"stage": stage, "rel": rel, "bytes": size, "seconds": time.perf_counter() - t0, "outcome": outcome})
+            self.on_read({"stage": stage, "rel": rel, "bytes": size, "seconds": time.perf_counter() - t0, "outcome": outcome,
+                          "wait_s": wait_s})
         except Exception:               # a failing report must never fail the read it describes
             pass
 
@@ -109,12 +110,13 @@ class RawCache:
             self._touch(key)
             self._report(stage, rel, size, t0, "hit")
             return key
+        waited = [0.0]                                            # the seconds the fill queued for its NAS slot (0 for a hit or a fallback)
         try:
-            outcome = self._fill(src, key, size, mtime_ns, stage)
+            outcome = self._fill(src, key, size, mtime_ns, stage, waited)
         except OSError as e:
-            self._report(stage, rel, size, t0, f"fallback:{type(e).__name__}")
+            self._report(stage, rel, size, t0, f"fallback:{type(e).__name__}", waited[0])
             return src
-        self._report(stage, rel, size, t0, outcome)
+        self._report(stage, rel, size, t0, outcome, waited[0])
         return src if outcome.startswith("fallback") else key
 
     def _fresh(self, key: Path, size: int, mtime_ns: int) -> bool:
@@ -130,8 +132,9 @@ class RawCache:
             now = self._time()
             os.utime(key, (now, now))
 
-    def _fill(self, src: Path, key: Path, size: int, mtime_ns: int, stage: str) -> str:
-        """'fill' (copied now), 'hit' (another process copied it while this one waited) or 'fallback:disk'. OSError: nothing usable was made."""
+    def _fill(self, src: Path, key: Path, size: int, mtime_ns: int, stage: str, waited: list[float]) -> str:
+        """'fill' (copied now), 'hit' (another process copied it while this one waited) or 'fallback:disk'. OSError: nothing usable was made.
+        waited[0] is set to the seconds the copy queued for its gate slot."""
         self.root.mkdir(parents=True, exist_ok=True)
         if self._disk_usage(self.root).free - size < self.min_free_gb * 1e9:
             return "fallback:disk"
@@ -144,7 +147,8 @@ class RawCache:
             return "hit"
         part = key.with_name(f"{key.name}.part.{os.getpid()}")
         try:
-            with self._gated(stage):
+            with self._gated(stage) as slot_wait:
+                waited[0] = slot_wait
                 written = self._copy(src, part)
             on_disk = part.stat().st_size
             if written != size or on_disk != size:
@@ -162,8 +166,8 @@ class RawCache:
         return "fill"
 
     def _gated(self, stage: str):
-        """The NAS read slot of this stage (nothing to wait for when the cache has no gate)."""
-        return self.gate.acquire(stage) if self.gate is not None else contextlib.nullcontext()
+        """The NAS read slot of this stage, yielding the seconds waited for it (0.0 when the cache has no gate)."""
+        return self.gate.acquire(stage) if self.gate is not None else contextlib.nullcontext(0.0)
 
     def _acquire(self, lock: Path) -> None:
         """Create the lock exclusively. While another process holds it, poll until it goes; a lock older than lock_stale_s is a dead
