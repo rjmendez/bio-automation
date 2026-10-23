@@ -783,6 +783,38 @@ class TestMaintenanceAfterDraft:
         assert seen == [dt.date(2026, 10, 21)]
 
 
+class TestMaintenanceWhenLoadingFails:
+    def world(self, tmp_path, monkeypatch):
+        from bio_automation import settings
+
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "social")
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "ledger.jsonl")
+        monkeypatch.setattr(settings, "INAT_SNAPSHOT", tmp_path / "none.json")
+        monkeypatch.setattr(settings, "SOCIAL_AUDIT_LOG", tmp_path / "audit.jsonl")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ())
+        seen = []
+        social_hooks.register("m", "maintenance", lambda ctx: seen.append(ctx["today"]))
+        return seen
+
+    def test_a_missing_gallery_index_still_runs_maintenance(self, tmp_path, monkeypatch, capsys):
+        seen = self.world(tmp_path, monkeypatch)
+        monkeypatch.setattr("sys.argv", ["bio", "social-draft", "--index", str(tmp_path / "missing.json"), "--date", "2026-10-21", "--no-themes"])
+        assert cli.main() == 1
+        assert capsys.readouterr().err == f"bio social-draft: no gallery index at {tmp_path / 'missing.json'}: run `bio social-index` first\n"
+        assert seen == [dt.date(2026, 10, 21)]
+
+    def test_rules_that_fail_to_load_skip_maintenance_with_an_audit_trace_and_the_command_reports_the_rules_error(self, tmp_path, monkeypatch, capsys):
+        seen = self.world(tmp_path, monkeypatch)
+        monkeypatch.setenv("BIO_SOCIAL_RULE_DAILY_CAP", "banana")
+        index = tmp_path / "index.json"
+        index.write_text(json.dumps({"files": {}}), encoding="utf-8")
+        monkeypatch.setattr("sys.argv", ["bio", "social-draft", "--index", str(index), "--date", "2026-10-21", "--no-themes"])
+        assert cli.main() == 1
+        assert seen == []
+        [rec] = [r for r in Audit(tmp_path / "audit.jsonl").records() if r["event"] == "hook_error"]
+        assert (rec["name"], rec["stage"], rec["outcome"]) == ("maintenance", "maintenance", "pass") and rec["error"].startswith("RulesError: ")
+
+
 class _Late:
     """`in` answers False for the first `after` questions and True afterwards: a gate that rejects the first N observations it sees."""
 

@@ -13,7 +13,7 @@ All three run the package in `$env:BIO_PACKAGE_DEPLOY`, else `D:\apps\bio-automa
 
 **Mutual exclusion.** Prep and post hold the named Windows mutex `Global\bio-social-run`. Prep holds it for the whole run and waits up to 30 minutes for it (a prep that missed 03:00 and starts at wake-up waits for a post run that is in progress; if it still cannot get it, it logs that and exits 1). A post run waits up to 10 minutes for a running prep, then posts anyway and logs `OVERLAP` (a missed post is worse than an overlap). A holder that died abandons the mutex; the next script logs that and takes it.
 
-Nothing here is applied automatically. Copy the four scripts to `F:\services\bio-social\` (next to `run-social.ps1`), then run the commands below in an elevated Windows PowerShell 5.1.
+Nothing here is applied automatically. `scripts\deploy_prod.ps1` copies every `scripts\windows\*.ps1` to `F:\services\bio-social\` after a deploy whose selfcheck passed (never `run-social.ps1`, the old single script, which stays as the rollback). `register-social-tasks.ps1` registers `Bio-Social-Prep`, `Bio-Social-Post` and `Bio-Social-Watch` with the principal and settings of `Bio-Social-Daily`, DISABLED by default so nothing double-posts; `-Cutover` disables `Bio-Social-Daily` (it is not deleted) and enables the three (`-WhatIf` shows the plan). The commands below do the same by hand, in an elevated Windows PowerShell 5.1.
 
 ## Register
 

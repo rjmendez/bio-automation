@@ -738,9 +738,11 @@ def run_maintenance(drafts_dir, ledger, rules, today) -> None:
     """The "maintenance" hooks (backup, alerts scan, cache cap; each has its own once-a-day guard). A failure here is audited and never changes
     the exit code of the command it follows."""
     from . import social_hooks
-    from .social_rules import Audit
+    from .social_rules import Audit, load_rules
 
     try:
+        if rules is None:                                         # the command failed before its rules were loaded: try once more, else skip with a trace
+            rules = load_rules()
         social_hooks.run("maintenance", {"drafts_dir": drafts_dir, "ledger": ledger, "rules": rules, "today": today}, rules=rules, audit=Audit())
     except Exception as e:  # noqa: BLE001 -- maintenance must not turn a finished draft or post run into a failure
         try:
@@ -757,9 +759,11 @@ def cmd_social_draft(args: argparse.Namespace) -> int:
     from .social_rules import Audit, load_rules
 
     today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
-    index, ledger, rules = load_index(Path(args.index)), Ledger(), load_rules()
     drafts_dir = settings.SOCIAL_DIR / "drafts"
-    try:                                                              # the maintenance hooks run even when a drafting step fails
+    ledger, rules = Ledger(), None
+    try:                                                              # the maintenance hooks run even when loading the index or the rules, or a drafting step, fails
+        rules = load_rules()
+        index = load_index(Path(args.index))
         gallery_obs = {int(o) for o in index["files"].values()}
         min_edge = rules.value("lower_quality_photos") or 1000
         local = inat_photo_candidates(min_edge=min_edge, exclude=gallery_obs) if rules.on("lower_quality_photos") else {}

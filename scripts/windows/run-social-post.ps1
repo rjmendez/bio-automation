@@ -1,6 +1,6 @@
 # One Bluesky post run (bio social-post --live), scheduled task Bio-Social-Post at 08:00, 12:00 and 20:00. It does no prep: drafts are
 # made by run-social-prep.ps1 at 03:00, so a slow index can no longer delay a post. When the social-selfcheck command exists it runs first;
-# its result is logged and never blocks the post (the post's own gates decide what goes out).
+# its result is logged (exit 1 as a warning, only exit 2 as an error) and never blocks the post (the post's own gates decide what goes out).
 # Exit code: the exit code of `bio social-post --live` (0 = the run finished; a blocked or withdrawn status is for social-alerts to report),
 # 1 when the script could not start the run at all (no package, no session, an unexpected error). Every failure lands in social.log.
 # Mutual exclusion with prep: the named Windows mutex Global\bio-social-run. Prep holds it while it drafts; this script waits up to 10 minutes
@@ -41,7 +41,7 @@ try {
         $ErrorActionPreference = 'Continue'         # python writing to stderr is not a PowerShell error; the exit code decides
         & $py -m bio_automation.cli @cmd 2>&1 | ForEach-Object { [IO.File]::AppendAllText($log, "$_`n", $utf8) }
         $c = $LASTEXITCODE
-        if ($c -ne 0) { Log "bio $($cmd[0]) exited $c" }
+        if ($c -ne 0 -and $cmd[0] -ne 'social-selfcheck') { Log "bio $($cmd[0]) exited $c" }      # selfcheck reports its own level below
         return $c
     }
 
@@ -49,7 +49,12 @@ try {
     $ErrorActionPreference = 'Continue'
     $help = & $py -m bio_automation.cli --help 2>&1 | Out-String
     $ErrorActionPreference = 'Stop'
-    if ($help -match 'social-selfcheck') { Bio @('social-selfcheck') | Out-Null }
+    if ($help -match 'social-selfcheck') {
+        # social-selfcheck: 0 ok, 1 warnings (logged as a warning, not an error), 2 a failure. Neither blocks the post: the post's own gates decide.
+        $sc = Bio @('social-selfcheck')
+        if ($sc -eq 1) { Log 'selfcheck: warn (exit 1): warnings only, see the lines above; the post goes on' }
+        elseif ($sc -ne 0) { Log "ERROR: social-selfcheck failed (exit $sc): see the lines above; the post goes on and its gates decide" }
+    }
 
     if (-not (Test-Path $session)) {
         Log "no Bluesky session (${session}): run ``bio social-login`` once; nothing posted"

@@ -13,6 +13,9 @@
     5. run `bio social-selfcheck` from the prod tree (PYTHONPATH=<prod>\src, the editable install may point elsewhere);
        `social-selfcheck --deploy` is accepted only with exit code 0 or 1 AND its final summary line `selfcheck: ok` / `selfcheck: warn`;
        exit code >= 2, a crash (a traceback has no summary line) or a missing line -> git reset --hard to the previous head and exit 1
+    6. after an accepted selfcheck, copy scripts\windows\*.ps1 of the prod tree to -ScriptsDest (default F:\services\bio-social); the old single
+       script run-social.ps1 is never overwritten (it is the rollback). register-social-tasks.ps1 is copied but NOT run: registering or switching the
+       scheduled tasks stays a manual step.
   -WhatIf prints the plan (it still fetches, which only updates origin/* refs) and changes nothing else.
 
   Windows PowerShell 5.1 and PowerShell 7 both run it.
@@ -20,7 +23,7 @@
 .EXAMPLE
   powershell -File scripts\deploy_prod.ps1 -WhatIf
   powershell -File scripts\deploy_prod.ps1
-  powershell -File scripts\deploy_prod.ps1 -ProdDir D:\bio-cache\tmp\scratch-clone -LogFile D:\bio-cache\tmp\deploy-test.log   # a rehearsal
+  powershell -File scripts\deploy_prod.ps1 -ProdDir D:\bio-cache\tmp\scratch-clone -LogFile D:\bio-cache\tmp\deploy-test.log -ScriptsDest ''   # a rehearsal: copies no scripts
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -29,6 +32,7 @@ param(
     [string]$Remote = 'origin',
     [string]$Python = 'C:\Python314\python.exe',
     [string]$TmpRoot = 'D:\bio-cache\tmp',
+    [string]$ScriptsDest = 'F:\services\bio-social',      # where scripts\windows\*.ps1 are copied after a good deploy; '' copies nothing (use it for a rehearsal)
     [string]$LogFile = 'D:\bio-cache\logs\deploy.log',
     [double]$MinFreeGbC = 15,
     [switch]$AllowOtherBranch,
@@ -59,6 +63,21 @@ function Cleanup {
         if ($p -and (Test-Path -LiteralPath $p) -and $p.StartsWith($TmpRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+# Copy scripts\windows\*.ps1 of $From to $To. run-social.ps1 (the old single script, the rollback of the task split) is never overwritten. A copy problem is
+# logged as a warning: the deploy itself already passed its selfcheck.
+function Copy-SocialScripts([string]$From, [string]$To) {
+    if (-not $To) { Log 'scheduled-task scripts: not copied (-ScriptsDest is empty)'; return }
+    $srcDir = Join-Path $From 'scripts\windows'
+    if (-not (Test-Path -LiteralPath $srcDir)) { Log "scheduled-task scripts: $srcDir does not exist; nothing to copy"; return }
+    if (-not (Test-Path -LiteralPath $To)) { Log "WARNING: $To does not exist; the scheduled-task scripts were not copied"; return }
+    Log "scheduled-task scripts: $srcDir -> $To"
+    foreach ($f in @(Get-ChildItem -LiteralPath $srcDir -Filter '*.ps1' -File)) {
+        if ($f.Name -ieq 'run-social.ps1') { Log "  kept $($f.Name): the old single script is the rollback, never overwritten"; continue }
+        try { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $To $f.Name) -Force -ErrorAction Stop; Log "  copied $($f.Name)" }
+        catch { Log "WARNING: could not copy $($f.Name): $($_.Exception.Message)" }
     }
 }
 
@@ -109,6 +128,7 @@ if ($plan) {
         }
         Log "  2. git -C $ProdDir merge --ff-only $Remote/$Branch   (prod live-reloads from here)"
         Log "  3. PYTHONPATH=$ProdDir\src $Python -m bio_automation.cli social-selfcheck --deploy   (exit >= 2, a crash or no summary line -> git reset --hard $prev, exit 1)"
+        Log "  4. copy $ProdDir\scripts\windows\*.ps1 to '$ScriptsDest' (never run-social.ps1)"
     }
     Log "log file: $LogFile"
     exit 0
@@ -193,6 +213,7 @@ if (-not $accepted) {
     Fail ('selfcheck failed after the deploy' + $(if ($rolledBack) { '; rolled back' } else { '; nothing was merged' }))
 }
 if ($rc -eq 1) { Log 'selfcheck passed with warnings (see above)' }
+Copy-SocialScripts $ProdDir $ScriptsDest
 Log "DEPLOY OK: prod is at $(Invoke-Git rev-parse HEAD | Select-Object -First 1)"
 Cleanup
 exit 0
