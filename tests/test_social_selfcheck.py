@@ -682,7 +682,7 @@ class TestScriptDrift:
             c = world.run()["script-drift"]
         finally:
             ctypes.windll.kernel32.CloseHandle(handle)
-        assert (c.level, c.message) == (WARN, "scheduled-task scripts drifted (unreadable (locked or access denied): run-social-post.ps1); run scripts\deploy_prod.ps1 or copy them")
+        assert (c.level, c.message) == (WARN, "scheduled-task scripts drifted (unreadable (locked or access denied): run-social-post.ps1); run scripts\\deploy_prod.ps1 or copy them")
         assert world.run()["script-drift"].level == OK
 
     def test_the_rollback_script_and_unknown_files_are_ignored(self, world):
