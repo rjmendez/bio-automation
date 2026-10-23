@@ -40,6 +40,8 @@ SYNC_DIR = env_path("BIO_SYNC_DIR", r"D:\nikon_stack_sync")             # where 
 
 # --- state
 QUEUE_DB = env_path("BIO_QUEUE_DB", CACHE_DIR / "state" / "queue.sqlite3")
+# networked queue (queue_postgres.py): any host can publish/claim against this one server; unset = no default, callers must pass a DSN
+QUEUE_PG_DSN = env("BIO_QUEUE_PG_DSN", "")
 STOCK_FLOOR = env_path("BIO_STOCK_FLOOR", PHOTOS_CACHE / "stock_floor.json")
 INAT_PHOTO_CACHE = env_path("BIO_INAT_PHOTO_CACHE", PHOTOS_CACHE / "inat_photos")
 
@@ -55,6 +57,8 @@ NAS_IO_DB = env_path("BIO_NAS_IO_DB", CACHE_DIR / "state" / "nas_io.sqlite3")
 NAS_IO_SLOTS = int(env("BIO_NAS_IO_SLOTS", 2))
 NAS_IO_HOLD_TTL_S = env_float("BIO_NAS_IO_HOLD_TTL_S", 120)               # a slot whose holder stops renewing (it died) is free after this
 NAS_IO_HOLD_MAX_S = env_float("BIO_NAS_IO_HOLD_MAX_S", 1800)              # a holder renews for at most this long: a hung read gives its slot back
+# networked NAS gate (nas_io_postgres.py): any host can hold a slot against this one server; unset = no default, callers must pass a DSN
+NAS_IO_PG_DSN = env("BIO_NAS_IO_PG_DSN", "")
 NAS_IMPORT_CHUNK = int(env("BIO_NAS_IMPORT_CHUNK", 8))                     # raws per LightCraft import call, each call inside one slot (~14 s at 1.7 s a new raw)
 
 # --- external tools: <NAME>_ENV is read at call time by the module that runs the tool (then PATH, then <NAME>_DEFAULT)
