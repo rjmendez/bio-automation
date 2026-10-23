@@ -241,7 +241,7 @@ class TestHook:
 
         assert (hook.name, hook.rule, hook.priority) == ("verify_posts", "verify_posts", 10)
 
-    def test_a_live_post_through_post_next_is_verified_after_it_is_sent(self, tmp_path):
+    def test_a_live_post_through_post_next_is_verified_after_it_is_sent_and_recorded(self, tmp_path):
         ledger, drafts = drafted(tmp_path, 1)
         sent = RecordingSend()
         audit = Audit(tmp_path / "audit.jsonl", run="r1", now=lambda: NOW)
@@ -253,7 +253,7 @@ class TestHook:
 
         assert result["status"] == "posted"
         events = [r["event"] for r in audit.records()]
-        assert events.index("posted") > events.index("post_verified")
+        assert events.index("posted") < events.index("post_verified")       # the read-back runs after the post is recorded, with the ledger lock released
         assert get.urls == [social_verify.posts_url(URI)]
 
 
