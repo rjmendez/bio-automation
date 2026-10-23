@@ -175,6 +175,10 @@ def main() -> None:
     rng = random.Random(args.seed)
     torch.manual_seed(args.seed)
     device = pick_device(args.cuda_name_substr)
+    if device.type != "cuda":
+        raise SystemExit("GPU-only training (owner standing rule) -- pass --cuda-name-substr "
+                          "(found by tools/sr_train/bootstrap_check.py's static scan; train_lora_hat.py "
+                          "already had this guard, this script didn't)")
 
     ema_decay = resolve_ema_decay(args.ema_decay, args.train_steps)
 
