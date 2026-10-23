@@ -21,6 +21,16 @@ TZ = dt.timezone(dt.timedelta(hours=-4))
 PRINT = "https://rjmendez.darkroom.com/products/1350563"
 
 
+def rules_with(**states):
+    """The posting rules with some switched: rules_with(month_posting=True, daily_cap=5, auto_approve=False); the rest keep their defaults."""
+    import os
+
+    from bio_automation.social_rules import load_rules
+
+    env = {f"BIO_SOCIAL_RULE_{k.upper()}": ("on" if v is True else "off" if v is False else str(v)) for k, v in states.items()}
+    return load_rules(Path(os.devnull), env=env)
+
+
 @pytest.fixture(autouse=True)
 def no_real_prints_file(tmp_path, monkeypatch):
     """draft_month loads settings.SOCIAL_PRINTS_FILE by default; point it at a file that does not exist."""
@@ -452,13 +462,28 @@ class TestDraft:
 
         report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
                                     keep_pending=3, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(),
-                                    pick_model=no_model, style_source=lambda: None)
+                                    pick_model=no_model, style_source=lambda: None, rules=rules_with(month_candidates=True, month_posting=True))
 
         assert report == {"month": "2026-10", "pending": 1, "drafted": ["2026-10-obs3", "2026-10-obs1"],
                           "skipped": {2: "observation 2 is casual"}}
         assert fetch.calls == [3, 2, 1]
         assert {k: v["state"] for k, v in ledger.drafts().items()} == {"2026-10-obs4": "drafted", "2025-10-obs5": "posted",
                                                                       "2026-10-obs3": "drafted", "2026-10-obs1": "drafted"}
+
+    def test_with_the_month_rules_off_the_default_any_observation_is_a_candidate_and_old_drafts_stay_pending(self, tmp_path):
+        g = tmp_path / "gallery"
+        index = {"files": {}}
+        for obs, rel in ((1, "2024/2024-10/a.jpg"), (2, "2025/2025-11/b.jpg"), (3, "2025/2025-03/c.jpg"), (4, "2026/2026-07/d.jpg")):
+            jpeg(g / rel, size=(300, 200))
+            index["files"][rel] = obs
+        ledger = Ledger(tmp_path / "ledger.jsonl")
+        ledger.append("drafted", "2026-09-obs4", obs_id=4, month="2026-09")          # an earlier month's draft: still pending, its observation taken
+        fetch = RecordingFetch({o: observation(o) for o in (1, 2, 3, 4)})
+        report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts", keep_pending=4,
+                                    model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(), pick_model=no_model,
+                                    style_source=lambda: None, prints={}, rules=rules_with())
+        assert report["pending"] == 1 and sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]
+        assert sorted(fetch.calls) == [1, 2, 3]
 
     def test_an_expired_draft_of_an_earlier_month_comes_back_but_rejected_posted_and_posting_never_do(self, tmp_path):
         g = tmp_path / "gallery"
@@ -476,10 +501,15 @@ class TestDraft:
 
         report = social.draft_month(index, ledger, today=dt.date(2026, 10, 1), gallery_dir=g, drafts_dir=tmp_path / "drafts",
                                     keep_pending=10, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(),
-                                    pick_model=no_model, style_source=lambda: None)
+                                    pick_model=no_model, style_source=lambda: None, rules=rules_with(month_posting=True))
 
         assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2"]
         assert sorted(fetch.calls) == [1, 2]
+
+        again = social.draft_month(index, Ledger(tmp_path / "l2.jsonl"), today=dt.date(2026, 10, 1), gallery_dir=g, drafts_dir=tmp_path / "d2",
+                                   keep_pending=10, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(),
+                                   pick_model=no_model, style_source=lambda: None, rules=rules_with(month_posting=True))
+        assert sorted(again["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3", "2026-10-obs4", "2026-10-obs5"]   # twin: nothing posted yet
 
     def test_draft_month_adds_the_print_link_only_to_listed_observations_and_reads_the_csv_by_default(self, tmp_path, monkeypatch):
         g = tmp_path / "gallery"
@@ -549,12 +579,12 @@ class TestPrintsIgnoreTheMonth:
             index["files"][rel] = obs
         return g, index
 
-    def run(self, tmp_path, index, g, *, prints, keep_pending, ledger=None):
+    def run(self, tmp_path, index, g, *, prints, keep_pending, ledger=None, rules=None):
         fetch = RecordingFetch({o: observation(o) for o in (1, 2, 3, 7)})
         ledger = ledger or Ledger(tmp_path / "ledger.jsonl")
         report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
                                     keep_pending=keep_pending, model="vis:1", fetch=fetch, read_label=labels,
-                                    describe_fn=RecordingDescribe(), pick_model=no_model, style_source=lambda: None, prints=prints)
+                                    describe_fn=RecordingDescribe(), pick_model=no_model, style_source=lambda: None, prints=prints, rules=rules)
         return report, fetch, ledger
 
     def test_a_july_observation_with_a_print_is_drafted_in_october_and_belongs_to_october(self, tmp_path):
@@ -565,11 +595,21 @@ class TestPrintsIgnoreTheMonth:
         links = [s[2] for s in social.load_draft(tmp_path / "drafts" / "2026-10-obs7")["text"] if s[0] == "link"]
         assert links == ["https://www.inaturalist.org/observations/7", PRINT]
 
-    def test_without_a_print_the_same_july_observation_is_not_a_candidate(self, tmp_path):
+    def test_without_a_print_the_same_july_observation_is_a_candidate_too_and_comes_after_the_year_rotation(self, tmp_path):
         g, index = self.gallery(tmp_path)
         report, fetch, _ = self.run(tmp_path, index, g, prints={}, keep_pending=10)
-        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]
-        assert 7 not in fetch.calls
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3", "2026-10-obs7"]
+
+    def test_with_the_month_candidates_rule_on_only_this_months_observations_qualify_a_print_or_not(self, tmp_path):
+        g, index = self.gallery(tmp_path)
+        report, fetch, _ = self.run(tmp_path, index, g, prints={7: PRINT}, keep_pending=10, rules=rules_with(month_candidates=True))
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"] and 7 not in fetch.calls
+
+    def test_with_prints_first_off_a_print_gives_no_precedence(self, tmp_path):
+        g, index = self.gallery(tmp_path)
+        first = self.run(tmp_path / "a", index, g, prints={7: PRINT}, keep_pending=1)[0]["drafted"]
+        second = self.run(tmp_path / "b", index, g, prints={7: PRINT}, keep_pending=1, rules=rules_with(prints_first=False))[0]["drafted"]
+        assert first == ["2026-10-obs7"] and second != ["2026-10-obs7"]
 
     def test_a_print_does_not_bring_back_a_posted_observation(self, tmp_path):
         g, index = self.gallery(tmp_path)
@@ -640,11 +680,17 @@ class TestPosting:
         tomorrow = social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=1), live=True, send=send, posts_per_day=1)
         assert tomorrow["status"] == "posted" and tomorrow["draft_id"] == "2026-10-obs2"
 
-    def test_only_this_months_approved_drafts_are_posted(self, tmp_path):
+    def test_with_month_posting_on_only_this_months_approved_drafts_are_posted(self, tmp_path):
         ledger, drafts = self.ready(tmp_path, 1)
         social.approve(ledger, drafts, "2026-10-obs1")
-        assert social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=15)) == {"status": "nothing approved", "month": "2026-11"}
-        assert social.post_next(ledger, drafts, now=NOW)["status"] == "dry-run"
+        rules = rules_with(month_posting=True, auto_approve=False)
+        assert social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=15), rules=rules) == {"status": "nothing approved", "month": "2026-11"}
+        assert social.post_next(ledger, drafts, now=NOW, rules=rules)["status"] == "dry-run"
+
+    def test_by_default_an_approved_draft_of_an_earlier_month_is_still_posted(self, tmp_path):
+        ledger, drafts = self.ready(tmp_path, 1)
+        social.approve(ledger, drafts, "2026-10-obs1")
+        assert social.post_next(ledger, drafts, now=NOW + dt.timedelta(days=45))["draft_id"] == "2026-10-obs1"
 
     def test_unapproved_drafts_are_never_posted(self, tmp_path):
         ledger, drafts = self.ready(tmp_path)
@@ -778,9 +824,11 @@ class TestScheduledPosts:
         monkeypatch.setattr(social.settings, "SOCIAL_AUTO_APPROVE", True)
         assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend())["status"] == "posted"
 
-    def test_a_draft_of_an_earlier_month_is_not_auto_approved_and_a_rejected_one_is_never_posted(self, tmp_path):
+    def test_a_draft_of_an_earlier_month_is_auto_approved_unless_month_posting_is_on_and_a_rejected_one_is_never_posted(self, tmp_path):
         ledger, drafts = drafted(tmp_path, 1, month="2026-09")
-        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend()) == {"status": "nothing approved", "month": "2026-10"}
+        strict = rules_with(month_posting=True)
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(), rules=strict) == {"status": "nothing approved", "month": "2026-10"}
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend())["draft_id"] == "2026-09-obs1"
         ledger2, drafts2 = drafted(tmp_path / "b", 2)
         social.reject(ledger2, "2026-10-obs1", "blurry")
         assert social.post_next(ledger2, drafts2, now=NOW, live=True, send=RecordingSend())["draft_id"] == "2026-10-obs2"
