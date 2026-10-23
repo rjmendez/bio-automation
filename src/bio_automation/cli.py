@@ -425,8 +425,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_console.add_argument("--host", default="127.0.0.1")
     p_review_console.add_argument("--port", type=int, default=8780)
 
-    from . import social_hooks
+    from . import disk_guard, social_hooks
 
+    disk_guard.add_parsers(sub)
     for ext in social_hooks.load_all():                     # extension modules (social_hooks.EXTENSIONS) add their own commands
         if hasattr(ext, "add_parsers"):
             ext.add_parsers(sub)
@@ -944,6 +945,18 @@ def post_exit_code(result: dict) -> int:
     return 1 if result.get("status") in ("blocked", "withdrawn") else 0
 
 
+def wait_for_post_room(**kw) -> bool:
+    """A live post run writes the ledger and the audit log: pause (audited, resumes by itself) while C:, the data drive or the drafts folder's drive is under the
+    post floor; False, with nothing written and nothing sent, when settings.SOCIAL_POST_MAX_WAIT_S ran out."""
+    from . import disk_guard
+    from .social_rules import Audit
+
+    floors = disk_guard.default_floors(system_gb=settings.SOCIAL_POST_MIN_FREE_GB, data_gb=settings.SOCIAL_POST_MIN_FREE_GB,
+                                       extra={"drafts": Path(settings.SOCIAL_DIR)})
+    kw.setdefault("audit", Audit().log)
+    return disk_guard.wait_for_room(floors, who="social-post", max_wait_s=settings.SOCIAL_POST_MAX_WAIT_S, **kw)
+
+
 def cmd_social_post(args: argparse.Namespace) -> int:
     import datetime as dt
     import json
@@ -952,6 +965,8 @@ def cmd_social_post(args: argparse.Namespace) -> int:
     from .social_rules import load_rules
 
     now = dt.datetime.now(settings.LOCAL_TZ)
+    if args.live and not wait_for_post_room():
+        return 1
     ledger = Ledger()
     try:
         result = post_next(ledger, settings.SOCIAL_DIR / "drafts", now=now, live=args.live, manual=args.manual, draft_id=args.draft)
@@ -1238,6 +1253,10 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
+    if args.command == "disk-guard":
+        from . import disk_guard
+
+        return disk_guard.cmd_disk_guard(args)
     ext_commands = {c: fn for ext in social_hooks.extensions() for c, fn in (getattr(ext, "COMMANDS", None) or {}).items()}
     if args.command in ext_commands or args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
         from .darkroom import DarkroomError

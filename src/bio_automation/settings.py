@@ -106,8 +106,11 @@ INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 SOCIAL_DIR = env_path("BIO_SOCIAL_DIR", RESULTS_DIR / "social")                     # drafts/<draft id>/: draft.json + the post's images
 SOCIAL_LEDGER = env_path("BIO_SOCIAL_LEDGER", CACHE_DIR / "state" / "social_ledger.jsonl")   # append-only draft/approve/post events
 GALLERY_TITLE_CACHE = env_path("BIO_GALLERY_TITLE_CACHE", CACHE_DIR / "state" / "gallery_titles_cache.json")   # social-index: embedded titles by (path, size, mtime)
-SOCIAL_PREP_MIN_FREE_C_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_C_GB", 15))    # social-prep stops below this (the NAS pipeline pauses there too)
+SOCIAL_PREP_MIN_FREE_C_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_C_GB", 15))    # social-prep pauses below this (the NAS pipeline pauses there too)
 SOCIAL_PREP_MIN_FREE_D_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_D_GB", 20))
+SOCIAL_PREP_MAX_WAIT_S = env_float("BIO_SOCIAL_PREP_MAX_WAIT_S", 3600)         # social-prep pauses this long for disk space (then stops with the reason)
+SOCIAL_POST_MIN_FREE_GB = env_float("BIO_SOCIAL_POST_MIN_FREE_GB", 2)          # a post run writes only the ledger, audit log and a draft's JSON: a far lower floor than a render
+SOCIAL_POST_MAX_WAIT_S = env_float("BIO_SOCIAL_POST_MAX_WAIT_S", 600)         # a missed post is worse than a late one, but a full disk must not be written to forever
 SOCIAL_INDEX_AUDIT = env("BIO_SOCIAL_INDEX_AUDIT", "D:/bio-cache/photos/adobe_ready_audit.csv")       # social-prep's social-index inputs, ';' separated (globs ok)
 SOCIAL_INDEX_CANDIDATES = env("BIO_SOCIAL_INDEX_CANDIDATES", ";".join([
     "D:/bio-cache/photos/stock_candidates_*.csv", "F:/bio-automation-data/nas_pipeline/candidates/*.csv",
@@ -180,6 +183,22 @@ BSKY_APPVIEW = env("BIO_BSKY_APPVIEW", "https://public.api.bsky.app")   # public
 PLC_URL = env("BIO_PLC_URL", "https://plc.directory")
 MODEL_POOL_FILE = env_path("BIO_MODEL_POOL", HOME / ".loci" / "backends.toml")
 VISION_IMAGE_EDGE = int(env("BIO_VISION_IMAGE_EDGE", 1024))       # long edge of the copy the vision model sees
+
+# --- disk guard (disk_guard.py): workers PAUSE (poll, audit, resume) instead of failing mid-write when a drive drops under its floor
+DISK_GUARD_SYSTEM_MIN_GB = env_float("BIO_DISK_GUARD_SYSTEM_MIN_GB", 15)    # the system drive (C:)
+DISK_GUARD_DATA_MIN_GB = env_float("BIO_DISK_GUARD_DATA_MIN_GB", 20)        # the data drive: the one holding CACHE_DIR
+DISK_GUARD_POLL_S = env_float("BIO_DISK_GUARD_POLL_S", 60)
+DISK_GUARD_RESUME_MARGIN_GB = env_float("BIO_DISK_GUARD_RESUME_MARGIN_GB", 1)   # resume only at floor + margin, so a drive at the edge does not flap
+DISK_GUARD_MAX_WAIT_S = env_float("BIO_DISK_GUARD_MAX_WAIT_S", 0)           # 0 = a daemon worker waits as long as it takes; a scheduled run sets its own limit
+DISK_GUARD_LOG = env_path("BIO_DISK_GUARD_LOG", CACHE_DIR / "state" / "disk_guard.jsonl")   # pause/resume events of workers that have no audit log of their own
+SCRATCH_DIR = env_path("BIO_SCRATCH_DIR", CACHE_DIR / "tmp")               # every temp file the package makes goes here (D:), never %TEMP% on C:
+
+
+def scratch_dir() -> Path:
+    """SCRATCH_DIR, created. Pass it as dir= to tempfile calls."""
+    SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    return SCRATCH_DIR
+
 
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space

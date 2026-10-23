@@ -13,6 +13,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pilot_style import Mcp, text, ROOT
+from bio_automation import disk_guard
+
+WHO = 'render_all'
 
 OUT = os.environ.get('BIO_RENDER_OUT', r'F:\Bio-export\inat-raws')
 MIN_FREE_GB = float(os.environ.get('BIO_MIN_FREE_GB', '20'))
@@ -43,8 +46,8 @@ def main():
         if os.path.exists(out) and os.path.getsize(out) > 0:
             done += 1
             continue
-        free = shutil.disk_usage(OUT).free / 1e9
-        if free < MIN_FREE_GB:
+        if not disk_guard.wait_for_room(disk_guard.output_floors(OUT, MIN_FREE_GB), who=WHO, audit=disk_guard.log_event, say=log):    # pauses, resumes by itself
+            free = shutil.disk_usage(OUT).free / 1e9
             log(f'STOP: only {free:.0f} GB free (limit {MIN_FREE_GB:.0f}); {len(todo) - i + 1} frames left')
             break
         os.makedirs(os.path.dirname(out), exist_ok=True)

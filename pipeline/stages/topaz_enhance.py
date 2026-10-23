@@ -22,7 +22,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'src'))
 
-from bio_automation import topaz
+from bio_automation import disk_guard, topaz
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -63,8 +63,8 @@ def main():
                 failed += 1
                 continue
 
-            free = shutil.disk_usage(OUT).free / 1e9
-            if free < MIN_FREE_GB:
+            if not disk_guard.wait_for_room(disk_guard.output_floors(OUT, MIN_FREE_GB), who='topaz_enhance', audit=disk_guard.log_event, say=log):
+                free = shutil.disk_usage(OUT).free / 1e9
                 log(f'STOP: only {free:.0f} GB free (limit {MIN_FREE_GB:.0f}); '
                     f'{len(todo) - i + 1} frames left')
                 break

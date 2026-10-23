@@ -42,18 +42,19 @@ DEDUP_WINDOW = dt.timedelta(hours=12)
 LATE_AFTER = dt.timedelta(minutes=60)          # a slot's post is missing when the slot is this old
 SILENT_AFTER = dt.timedelta(minutes=30)        # a slot's run left no trace when the slot is this old
 LOW_STOCK_POSTS = 10
-DISK_MIN_GB = (("C:\\", 15, "error"), ("D:\\", 20, "warning"))
+DISK_MIN_GB = (("C:\\", settings.SOCIAL_PREP_MIN_FREE_C_GB, "error"), ("D:\\", settings.SOCIAL_PREP_MIN_FREE_D_GB, "warning"))   # the same floors social-prep pauses at
 NOTIFY_TIMEOUT_S = 30
 NOTIFY_BUDGET_S = 90                           # all the notifications of one scan together: the rest wait for the next scan (the task has a 20 minute limit)
 ERROR_EVENTS = {"post_failed": "error", "post_verify_failed": "error", "circuit_open": "error", "ledger_corrupt": "error",
-                "draft_stalled": "error", "live_recheck_unavailable": "warning", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning"}
+                "draft_stalled": "error", "live_recheck_unavailable": "warning", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning",
+                "disk_pause": "warning", "disk_timeout": "error"}      # disk_guard: a worker waiting for disk space (resumes by itself), or one that gave up
 WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
 WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
 DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
 HOOK_REJECT = re.compile(r"observation \d+: ")  # make_draft words a draft-hook reject "observation N: <reason>"; its other skips have no colon there
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d) \[(?:post|prep)\]")   # a line the post or prep script wrote itself (not the watch script's, not python's output)
 LOG_TAIL_BYTES = 2_000_000                     # only the end of social.log is read
-PER_DAY_EVENTS = ("paused", "circuit_open")    # these repeat on every run: one alert a day
+PER_DAY_EVENTS = ("paused", "circuit_open", "disk_pause")    # these repeat on every run: one alert a day
 LEVELS = {"warning": 1, "error": 2}
 
 
@@ -243,7 +244,7 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
         detail = r.get("reason") or r.get("error") or r.get("status") or ""
         if not detail and r.get("problems"):
             detail = "; ".join(str(p) for p in r["problems"][:3])
-        who = r.get("draft_id") or r.get("name") or ""
+        who = r.get("draft_id") or r.get("name") or r.get("who") or ""
         text = f"{kind}{' ' + str(who) if who else ''}{': ' + str(detail)[:200] if detail else ''} ({r.get('at')})"
         key = (f"{kind}:{at.date().isoformat()}" if kind in PER_DAY_EVENTS else
                f"{kind}:{who}:{at.date().isoformat()}:{r.get('action')}" if kind == "draft_stalled" else f"{kind}:{who}:{r.get('at')}")      # a stalled draft: once a day each
@@ -331,7 +332,7 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
             notes.append(f"disk {root} not checked: {e}")
             continue
         if free < gb:
-            add(Alert(f"disk:{root[0]}", "disk", level, f"{root} has {free:.1f} GB free, under {gb} GB"))
+            add(Alert(f"disk:{root[0]}", "disk", level, f"{root} has {free:.1f} GB free, under {gb:g} GB"))
     return sorted(alerts.values(), key=lambda a: (-LEVELS[a.level], a.key)), notes
 
 
@@ -398,7 +399,7 @@ def run_notifier(argv: list[str], *, input: bytes, timeout: float) -> subprocess
     """Run the alert command with `input` on stdin; wait at most `timeout` seconds IN TOTAL. stdout goes nowhere and stderr to a temp file, so a
     grandchild that keeps them open cannot hold this call; on a timeout the whole process tree is killed and TimeoutExpired is raised."""
     kw: dict = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {"start_new_session": True}
-    with tempfile.TemporaryFile() as errf:
+    with tempfile.TemporaryFile(dir=settings.scratch_dir()) as errf:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errf, shell=False, **kw)
         try:
             try:

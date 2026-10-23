@@ -79,3 +79,12 @@ def library_callers_do_not_load_the_real_gates(request, monkeypatch):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_gates: the test runs the library entry points with the real social extensions loaded")
+
+
+@pytest.fixture(autouse=True)
+def private_scratch_and_disk_guard_log(tmp_path, monkeypatch):
+    """No test writes scratch files or disk-guard events to the machine-wide folders on D: (settings.SCRATCH_DIR, settings.DISK_GUARD_LOG)."""
+    from bio_automation import settings
+
+    monkeypatch.setattr(settings, "SCRATCH_DIR", tmp_path / "scratch")
+    monkeypatch.setattr(settings, "DISK_GUARD_LOG", tmp_path / "state" / "disk_guard.jsonl")

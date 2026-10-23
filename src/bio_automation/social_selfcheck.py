@@ -19,20 +19,19 @@ import importlib
 import inspect
 import json
 import os
-import shutil
 import sys
 import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import settings, social_hooks
+from . import disk_guard, settings, social_hooks
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 EXIT = {OK: 0, WARN: 1, FAIL: 2}
 INDEX_MAX_AGE_DAYS = 3
 GB = 1024 ** 3
-SYSTEM_DRIVE_FAIL_GB = 15.0                  # the NAS pipeline pauses below this much free space on C: (settings.MIN_FREE_GB)
-SYSTEM_DRIVE_WARN_GB = 20.0
+SYSTEM_DRIVE_FAIL_GB = settings.DISK_GUARD_SYSTEM_MIN_GB    # the workers pause below this much free space on C: (disk_guard)
+SYSTEM_DRIVE_WARN_GB = SYSTEM_DRIVE_FAIL_GB + 5.0
 DATA_DRIVE_FAIL_GB = 2.0
 DATA_DRIVE_WARN_GB = 10.0
 ONLINE_TIMEOUT_S = 10
@@ -298,16 +297,8 @@ def check_pause() -> Check:
     return Check("pause", OK, "info: posting is not paused")
 
 
-def default_drives() -> dict[str, Path]:
-    system = Path(os.environ.get("SystemDrive", "C:") + "\\") if os.name == "nt" else Path("/")
-    return {"system": system, "data": Path(settings.CACHE_DIR)}
-
-
-def _free_bytes(path: Path) -> int:
-    p = Path(path)
-    while not p.exists() and p != p.parent:
-        p = p.parent
-    return shutil.disk_usage(p).free
+default_drives = disk_guard.default_drives     # one definition of the drives and of "free bytes", shared with the workers' guard
+_free_bytes = disk_guard.free_bytes
 
 
 def check_disks(drives: dict[str, Path], free: Callable[[Path], int]) -> list[Check]:

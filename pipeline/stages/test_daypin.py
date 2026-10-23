@@ -10,13 +10,13 @@ import zipfile
 from http.server import ThreadingHTTPServer
 
 os.environ['BIO_QUEUE_TAG'] = '_lc'
-os.environ['BIO_EXPORT_DIR'] = os.path.join(tempfile.gettempdir(), 'daypin_export_test')
+os.environ['BIO_EXPORT_DIR'] = os.path.join(os.environ.get('BIO_SCRATCH_DIR', r'D:io-cache	mp'), 'daypin_export_test')
 sys.path.insert(0, r'F:\bio-automation-data')
 import piexif
 
 import inat_console as C
 
-tmp = os.path.join(tempfile.gettempdir(), 'daypin_test.jsonl')
+tmp = os.path.join(os.environ.get('BIO_SCRATCH_DIR', r'D:io-cache	mp'), 'daypin_test.jsonl')
 if os.path.exists(tmp):
     os.remove(tmp)
 C.PINS_PATH = tmp
