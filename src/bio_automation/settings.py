@@ -133,6 +133,11 @@ SOCIAL_ALERT_COMMAND = env("BIO_SOCIAL_ALERT_COMMAND", "")                      
 SOCIAL_DIGEST_DIR = env_path("BIO_SOCIAL_DIGEST_DIR", SOCIAL_DIR / "digest")
 SOCIAL_INTEGRITY_ACK_FILE = env_path("BIO_SOCIAL_INTEGRITY_ACK_FILE", SOCIAL_DIR / "integrity_ack.json")   # duplicate posts the owner accepted (social-integrity --accept-duplicate)
 SOCIAL_BACKUP_DIR = env_path("BIO_SOCIAL_BACKUP_DIR", SOCIAL_DIR / "backups")
+SOCIAL_BACKUP_MAX_MB = int(env("BIO_SOCIAL_BACKUP_MAX_MB", 500))                                  # total size cap of the backup folder (0: no size cap); the newest and the newest clean one always stay
+SOCIAL_BACKUP_OFFSITE_DIR = env("BIO_SOCIAL_BACKUP_OFFSITE_DIR", "")                              # OFF by default: a folder on ANOTHER drive/share that every new backup is also copied to (read back and hashed, audited)
+SOCIAL_BACKUP_STALE_DAYS = float(env("BIO_SOCIAL_BACKUP_STALE_DAYS", 2))                          # social-restore-check fails when the newest backup is older
+QDRANT_SYNC_MARKER = env_path("BIO_QDRANT_SYNC_MARKER", CACHE_DIR / "state" / "qdrant_sync_marker.json")   # when each Qdrant sync last wrote successfully
+QDRANT_STALE_DAYS = float(env("BIO_QDRANT_STALE_DAYS", 3))                                         # social-selfcheck and social-alerts warn when a sync is older than this
 SOCIAL_ENGAGEMENT_LOG = env_path("BIO_SOCIAL_ENGAGEMENT_LOG", CACHE_DIR / "state" / "social_engagement.jsonl")
 SOCIAL_SLOTS = env("BIO_SOCIAL_SLOTS", "08:00,12:00,20:00")                                        # the scheduled run times (local), for slot-aware rules
 # app.bsky.embed.images allows 2,000,000 B per image (formerly 1 MB); the official app compresses post images to the same pair
