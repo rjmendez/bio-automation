@@ -1,6 +1,8 @@
 """Suite-wide isolation: no test reaches the machine-wide iNat pace file (settings.INAT_RATE_DB on D:), which the running pipeline shares."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
@@ -28,3 +30,12 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SOCIAL_PRINTS_FILE", tmp_path / "no-prints" / "prints.csv")
     monkeypatch.setattr(settings, "SOCIAL_PRINTS_MANUAL_FILE", tmp_path / "no-prints" / "prints_manual.csv")
     monkeypatch.setattr(settings, "DARKROOM_DIR", tmp_path / "no-darkroom")
+    monkeypatch.setattr(settings, "SOCIAL_RULES_FILE", tmp_path / "no-prints" / "rules.toml")          # the owner's switches and decision log, too
+    monkeypatch.setattr(settings, "SOCIAL_AUDIT_LOG", tmp_path / "no-prints" / "audit.jsonl")
+    monkeypatch.setattr(settings, "SOCIAL_THEMES_FILE", tmp_path / "no-prints" / "themes.toml")
+    monkeypatch.setattr(settings, "OBS_TAXONOMY_FILE", tmp_path / "no-prints" / "obs_taxonomy.json")
+    monkeypatch.setattr(settings, "INAT_SNAPSHOT", tmp_path / "no-prints" / "inat_observations.json")      # nor the owner's real iNat snapshot and photos
+    monkeypatch.setattr(settings, "INAT_PHOTO_CACHE", tmp_path / "no-prints" / "inat_photos")
+    for name in list(os.environ):                                                                       # no rule is switched by the machine's environment
+        if name.startswith("BIO_SOCIAL_RULE_"):
+            monkeypatch.delenv(name)
