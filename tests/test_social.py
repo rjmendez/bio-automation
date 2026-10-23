@@ -1108,6 +1108,106 @@ class TestCli:
         assert [(r["event"], r["at"][:16]) for r in Ledger().records()][-1] == ("posted", "2026-10-20T23:50")
 
 
+class TestLedgerAppendKeepsRecordsApart:
+    def raw(self, ledger):
+        return ledger.path.read_bytes()
+
+    def test_a_complete_last_record_without_a_newline_gets_one_before_the_next_record(self, tmp_path):
+        ledger = Ledger(tmp_path / "l.jsonl")
+        ledger.path.write_bytes(b'{"at": "2026-10-21T09:00:00-04:00", "draft_id": "d1", "event": "drafted", "obs_id": 1}')
+        ledger.append("approved", "d1", obs_id=1, month="2026-10", hash="h", now=NOW)
+        lines = self.raw(ledger).split(b"\n")
+        assert [json.loads(x)["event"] for x in lines[:-1]] == ["drafted", "approved"] and lines[-1] == b""
+        assert ledger.drafts()["d1"]["state"] == "approved"
+
+    def test_a_torn_last_record_refuses_the_append_and_leaves_the_file_alone(self, tmp_path):
+        ledger = Ledger(tmp_path / "l.jsonl")
+        torn = b'{"at": "2026-10-21T09:00:00-04:00", "draft_id": "d1", "ev'
+        ledger.path.write_bytes(torn)
+        with pytest.raises(SocialError, match=r"^the ledger .*l.jsonl ends with a torn record \(no newline\); nothing was appended; run `bio social-integrity --repair-tail`$"):
+            ledger.append("approved", "d1", obs_id=1, month="2026-10", now=NOW)
+        assert self.raw(ledger) == torn
+
+    def test_positive_twin_a_newline_terminated_ledger_gets_no_blank_line(self, tmp_path):
+        ledger = Ledger(tmp_path / "l.jsonl")
+        ledger.append("drafted", "d1", obs_id=1, month="2026-10", now=NOW)
+        ledger.append("approved", "d1", obs_id=1, month="2026-10", hash="h", now=NOW)
+        assert [x for x in self.raw(ledger).split(b"\n")][-1] == b"" and b"\n\n" not in self.raw(ledger)
+        assert [r["event"] for r in ledger.records()] == ["drafted", "approved"]
+
+
+class TestOwnerCommandsTakeTheLedgerLock:
+    """social-approve / -reject / -resolve write the ledger, so they wait for a running post and read the state again once they hold the lock."""
+
+    def world(self, tmp_path, monkeypatch, *events):
+        from bio_automation import settings
+
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "l.jsonl")
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "social")
+        monkeypatch.setattr(social, "LEDGER_LOCK_POLL_S", 0.01)
+        write_draft(tmp_path / "social" / "drafts", "2026-10-obs1", 1, "2026-10")
+        ledger = Ledger()
+        for ev in events:
+            ledger.append(ev, "2026-10-obs1", obs_id=1, month="2026-10", **({"hash": social.draft_hash(tmp_path / "social" / "drafts" / "2026-10-obs1")} if ev == "approved" else {}))
+        return ledger
+
+    def during_a_post(self, ledger, then_append):
+        """Hold the ledger lock in a thread like a running post, append `then_append` to the ledger after 0.2 s, release."""
+        import threading
+        import time
+
+        held = threading.Event()
+
+        def hold():
+            with social.ledger_lock(ledger.path):
+                held.set()
+                time.sleep(0.2)
+                if then_append:
+                    ledger.append(then_append, "2026-10-obs1", obs_id=1, month="2026-10")
+
+        t = threading.Thread(target=hold)
+        t.start()
+        assert held.wait(5)
+        return t
+
+    def run(self, monkeypatch, *argv):
+        from bio_automation import cli
+
+        monkeypatch.setattr("sys.argv", ["bio", *argv])
+        return cli.main()
+
+    @pytest.mark.parametrize("command", [["social-approve", "2026-10-obs1"], ["social-reject", "2026-10-obs1"]])
+    def test_approve_and_reject_wait_for_the_post_and_then_refuse_a_draft_that_is_posting(self, tmp_path, monkeypatch, capsys, command):
+        ledger = self.world(tmp_path, monkeypatch, "drafted", "approved")
+        t = self.during_a_post(ledger, "posting")
+        assert self.run(monkeypatch, *command) == 1
+        t.join()
+        err = capsys.readouterr().err
+        assert "draft 2026-10-obs1 is posting; " in err and err.count("\n") == 1
+        assert [r["event"] for r in ledger.records()] == ["drafted", "approved", "posting"]
+
+    def test_resolve_waits_for_the_post_and_then_settles_the_posting_draft(self, tmp_path, monkeypatch):
+        ledger = self.world(tmp_path, monkeypatch, "drafted", "approved")
+        t = self.during_a_post(ledger, "posting")
+        assert self.run(monkeypatch, "social-resolve", "2026-10-obs1", "--not-posted") == 0
+        t.join()
+        assert [r["event"] for r in ledger.records()] == ["drafted", "approved", "posting", "failed"]
+
+    def test_with_the_lock_held_for_good_they_give_up_after_the_wait_and_write_nothing(self, tmp_path, monkeypatch, capsys):
+        ledger = self.world(tmp_path, monkeypatch, "drafted")
+        monkeypatch.setattr(social, "LEDGER_LOCK_WAIT_S", 0.0)
+        with social.ledger_lock(ledger.path):
+            assert self.run(monkeypatch, "social-approve", "2026-10-obs1") == 1
+        assert "another social-post run is posting" in capsys.readouterr().err
+        assert [r["event"] for r in ledger.records()] == ["drafted"]
+
+    def test_positive_twin_without_a_running_post_approve_reject_and_resolve_work(self, tmp_path, monkeypatch):
+        ledger = self.world(tmp_path, monkeypatch, "drafted")
+        assert self.run(monkeypatch, "social-approve", "2026-10-obs1") == 0
+        assert self.run(monkeypatch, "social-reject", "2026-10-obs1") == 0
+        assert [r["event"] for r in ledger.records()] == ["drafted", "approved", "rejected"]
+
+
 # ----------------------------------------------------------------------------------------------------------- owner's style in alt text
 
 class RecordingEmbedApi:

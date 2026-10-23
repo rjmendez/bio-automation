@@ -495,9 +495,31 @@ class Ledger:
             raise SocialError(f"unknown ledger event {event!r}")
         rec = {"at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds"), "event": event, "draft_id": draft_id, **fields}
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        lead = self._lead_newline()
         with open(self.path, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(rec, sort_keys=True) + "\n")
+            f.write(lead + json.dumps(rec, sort_keys=True) + "\n")
         return rec
+
+    def _lead_newline(self) -> str:
+        """"" when the file is empty, absent or ends with a newline. When the last record has no newline: "\n" if that record is complete (the
+        new one then starts its own line), SocialError if it is torn (appending would bury a damaged line in the middle of the ledger)."""
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return ""
+        if size == 0:
+            return ""
+        with open(self.path, "rb") as f:
+            f.seek(max(0, size - 1_000_000))
+            tail = f.read()
+        if tail.endswith(b"\n"):
+            return ""
+        last = tail.rsplit(b"\n", 1)[-1]
+        try:
+            json.loads(last.decode("utf-8"))
+        except ValueError as e:
+            raise SocialError(f"the ledger {self.path} ends with a torn record (no newline); nothing was appended; run `bio social-integrity --repair-tail`") from e
+        return "\n"
 
     def drafts(self) -> dict[str, dict]:
         """{draft_id: {"state", "obs_id", "month", "drafted_at", "last": <last state record>, "seq": its ledger position, "approved_hash",

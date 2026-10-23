@@ -893,29 +893,31 @@ def cmd_social_list(args: argparse.Namespace) -> int:
 
 
 def cmd_social_approve(args: argparse.Namespace) -> int:
-    from .social import Ledger, approve
+    from .social import Ledger, approve, ledger_lock_wait
 
     ledger = Ledger()
-    for draft_id in args.draft_ids:
-        approve(ledger, settings.SOCIAL_DIR / "drafts", draft_id)
-        print(f"approved {draft_id}")
+    with ledger_lock_wait(ledger.path):                               # approve() reads the state again inside the lock: a post run cannot move the draft on under it
+        for draft_id in args.draft_ids:
+            approve(ledger, settings.SOCIAL_DIR / "drafts", draft_id)
+            print(f"approved {draft_id}")
     return 0
 
 
 def cmd_social_reject(args: argparse.Namespace) -> int:
-    from .social import Ledger, reject
+    from .social import Ledger, ledger_lock_wait, reject
 
     ledger = Ledger()
-    for draft_id in args.draft_ids:
-        reject(ledger, draft_id, args.reason)
-        print(f"rejected {draft_id}")
+    with ledger_lock_wait(ledger.path):
+        for draft_id in args.draft_ids:
+            reject(ledger, draft_id, args.reason)
+            print(f"rejected {draft_id}")
     return 0
 
 
 def cmd_social_resolve(args: argparse.Namespace) -> int:
     import datetime as dt
 
-    from .social import Ledger, SocialError, resolve
+    from .social import Ledger, SocialError, ledger_lock_wait, resolve
 
     when = None
     if args.posted_at:
@@ -925,7 +927,9 @@ def cmd_social_resolve(args: argparse.Namespace) -> int:
             raise SocialError(f"--posted-at must be an ISO date and time like 2026-10-20T23:50, got {args.posted_at!r}") from e
         if when.tzinfo is None:
             when = when.replace(tzinfo=settings.LOCAL_TZ)
-    rec = resolve(Ledger(), args.draft_id, posted_uri=None if args.not_posted else args.posted_uri, now=when)
+    ledger = Ledger()
+    with ledger_lock_wait(ledger.path):
+        rec = resolve(ledger, args.draft_id, posted_uri=None if args.not_posted else args.posted_uri, now=when)
     print(f"{args.draft_id}: {rec['event']}")
     return 0
 
