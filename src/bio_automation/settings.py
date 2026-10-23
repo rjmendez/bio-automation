@@ -129,6 +129,14 @@ DARKROOM_URL = env("BIO_DARKROOM_URL", "https://rjmendez.darkroom.com")         
 DARKROOM_DIR = env_path("BIO_DARKROOM_DIR", CACHE_DIR / "darkroom")                 # product images, vectors, the sync state, the review csv
 DARKROOM_MARGIN = env_float("BIO_DARKROOM_MARGIN", 0.005)                           # a print matches only if no other observation is this close
 DARKROOM_PAUSE_S = env_float("BIO_DARKROOM_PAUSE_S", 1.0)                           # between storefront page requests
+QDRANT_COLLECTION = env("BIO_QDRANT_COLLECTION", "bio_observations")                # gallery images with iNat + Stock data (url/key: BIO_QDRANT_URL/_API_KEY or Loci's backends.toml)
+QDRANT_INAT_CACHE = env_path("BIO_QDRANT_INAT_CACHE", CACHE_DIR / "state" / "obs_inat.json")   # observation id -> taxon, lineage, grade, place, license, tags
+# every iNat observation of the owner (no photos) in Qdrant: `<prefix>observations` and `<prefix>taxa` (qdrant_inat.py)
+INAT_LOGIN = env("BIO_INAT_LOGIN", "rjmendez")                                       # whose public observations are read (unauthenticated API)
+QDRANT_INAT_PREFIX = env("BIO_QDRANT_INAT_PREFIX", "bio_inat_")
+QDRANT_INAT_FULL = env_path("BIO_QDRANT_INAT_FULL", CACHE_DIR / "state" / "inat_full.json")          # the shaped observations + places, topped up incrementally
+QDRANT_INAT_STATE = env_path("BIO_QDRANT_INAT_STATE", CACHE_DIR / "state" / "qdrant_inat_state.json")   # point id -> content hash: only changed points are written
+INAT_COVERAGE_CSV = env_path("BIO_INAT_COVERAGE_CSV", "F:/bio-automation-data/inat_coverage.csv")     # which iNat photos have a local source file
 # Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
 # @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
 # rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
