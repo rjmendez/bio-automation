@@ -98,21 +98,53 @@ def pause_hook(ctx: dict) -> Verdict | None:
     return Verdict("block", reason)
 
 
+def _snapshot(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _restore(path: Path, before: bytes | None) -> None:
+    """Put `path` back as it was (absent when `before` is None). Best effort: this runs while another error is being reported."""
+    with contextlib.suppress(OSError):
+        if before is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(before)
+
+
 def cmd_social_pause(args) -> int:
+    """Writes the local marker and, with --sync, the synced one. Both or neither: the local marker goes first and is rolled back (to what it was)
+    when the synced write fails, so a half-set pause never shows. With --sync a local marker that already exists does not need --force when the
+    synced one is still missing: that adds the missing remote marker and leaves the local one as it is."""
     path = Path(settings.SOCIAL_PAUSE_FILE)
     remote = sync_marker_path()
     if args.sync and remote is None:
         raise ControlsError("--sync needs BIO_SOCIAL_PAUSE_SYNC_FILE (the synced pause marker) to be set")
-    if path.exists() and not args.force:
+    add_remote_only = bool(args.sync and path.exists() and not remote.exists() and not args.force)
+    if path.exists() and not args.force and not add_remote_only:
         state = read_pause(path)
         raise ControlsError(f"already paused ({state['reason'] or 'no reason given'}{', since ' + state['at'] if state['at'] else ''}); "
                             "`bio social-resume` first, or use --force to replace the pause")
     at = _now().isoformat(timespec="seconds")
     body = json.dumps({"at": at, "reason": args.reason or ""}, ensure_ascii=False, indent=2) + "\n"
-    written = [path] + ([remote] if args.sync else [])
-    for target in written:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body, encoding="utf-8")
+    targets = ([] if add_remote_only else [path]) + ([remote] if args.sync else [])
+    before = {t: _snapshot(t) for t in targets}
+    written: list[Path] = []
+    try:
+        for target in targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
+            written.append(target)
+    except OSError as e:
+        for t in reversed(written):
+            _restore(t, before[t])
+        with contextlib.suppress(OSError):
+            Audit().log("paused", action="set_failed", reason=args.reason or "", files=[str(t) for t in targets], written_then_rolled_back=[str(t) for t in written],
+                        error=f"{type(e).__name__}: {e}"[:200])
+        raise ControlsError(f"could not write the pause marker {e.filename or targets[len(written)]} ({e.strerror or e}); "
+                            + ("nothing was changed" if not written else "the markers already written were put back")) from e
     Audit().log("paused", action="set", reason=args.reason or "", forced=bool(args.force), files=[str(t) for t in written])
     print(f"paused: {', '.join(str(t) for t in written)}" + (f" ({args.reason})" if args.reason else ""))
     return 0
@@ -124,10 +156,23 @@ def cmd_social_resume(args) -> int:
     if not targets:
         print("not paused")
         return 0
-    for p in targets:
-        p.unlink()
-    Audit().log("paused", action="cleared", files=[str(p) for p in targets])
-    print("resumed: " + ", ".join(f"{p} removed" for p in targets))
+    removed: list[tuple[Path, bytes | None]] = []
+    try:
+        for p in reversed(targets):                  # the synced marker (the one that can be locked or offline) first: if it fails, nothing has changed
+            before = _snapshot(p)
+            p.unlink()
+            removed.append((p, before))
+    except OSError as e:
+        for p, before in reversed(removed):
+            if before is not None:
+                _restore(p, before)
+        with contextlib.suppress(OSError):
+            Audit().log("paused", action="clear_failed", files=[str(p) for p in targets], error=f"{type(e).__name__}: {e}"[:200])
+        raise ControlsError(f"could not remove the pause marker {e.filename} ({e.strerror or e}); posting stays paused"
+                            + ("; nothing was changed" if not removed else "; the markers already removed were put back")) from e
+    done = [p for p, _ in reversed(removed)]
+    Audit().log("paused", action="cleared", files=[str(p) for p in done])
+    print("resumed: " + ", ".join(f"{p} removed" for p in done))
     return 0
 
 

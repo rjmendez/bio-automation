@@ -9,16 +9,26 @@ Per post, by URI:
   hidden place name              only for a post whose draft is on record (ledger posted uri -> draft_id -> drafts/<id>/draft.json): the place
                                  words of an observation that hides its location (geoprivacy / taxon geoprivacy / no public place)
   image floor                    the published image is too small, black, grossly under/over-exposed or far too blurry (social_gates.image_problem
-                                 on the CDN's full-size image; --no-images skips the downloads), GPS tags in the file, more than 4 images, a missing alt text
+                                 on the CDN's full-size image; --no-images skips the downloads), more than 4 images, a missing alt text
+  GPS tags                       checked ONLY on the original blob, fetched unauthenticated from the account's PDS (com.atproto.sync.getBlob, the
+                                 PDS found through the DID document). The AppView's full-size image is re-encoded and carries no EXIF, so it can say
+                                 nothing about GPS and is never used for it. When the blob cannot be fetched the image is counted as "GPS not
+                                 verifiable" (report and audit field gps_unverified): the audit then gives NO assurance about GPS for it.
 Reports and audit records name the post URI and the KIND of problem, never the text that leaked (the audit log, social.log, the digest and
 the backups are less private than the post's author thinks). Audit events: live_audit (every run), live_audit_problem (a run with problems),
 live_audit_failed (the AppView could not be read).
 
-Exit code: 0 clean, 1 problems found, 2 could not run. `--weekly` skips (exit 0) when the last live_audit record is under 7 days old, so the
-watch script can call it every evening."""
+Images are read from the AppView view (embed.images and embed.media.images of a record-with-media post) and, for the blob, from the record's own
+embed (the same two places).
+
+Exit code: 0 clean, 1 problems found, 2 could not run (the AppView could not be read, or any unexpected error: audited as live_audit_failed).
+`--weekly` skips (exit 0) only when the last live_audit record is CLEAN and under 7 days old, so the watch script can call it every evening and
+an audit that found problems repeats every evening until a run is clean."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import http.client
 import io
 import json
 import sys
@@ -55,6 +65,10 @@ def _get_json(url: str) -> dict:
         return json.load(r)
 
 
+# What a failed network read can raise besides URLError/OSError: a torn response (IncompleteRead, RemoteDisconnected), a bad status line, bad JSON.
+NET_ERRORS = (urllib.error.URLError, OSError, ValueError, http.client.HTTPException)
+
+
 def _get_bytes(url: str) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "bio-automation/social-audit-live"})
     with urllib.request.urlopen(req, timeout=60) as r:
@@ -71,7 +85,7 @@ def fetch_recent(handle: str, limit: int, *, get_json: Callable[[str], dict] | N
         url = f"{settings.BSKY_AUDIT_APPVIEW}/xrpc/app.bsky.feed.getAuthorFeed?{urllib.parse.urlencode(q)}"
         try:
             page = get_json(url)
-        except (urllib.error.URLError, OSError, ValueError) as e:
+        except NET_ERRORS as e:
             raise LiveAuditError(f"the public AppView could not be read ({type(e).__name__}: {e})") from e
         items = page.get("feed") or []
         for item in items:
@@ -129,16 +143,52 @@ def _image_kinds(data: bytes) -> list[str]:
         problem = "image could not be decoded"
     if problem:
         kinds.append("image floor: " + problem.split(" (")[0])      # the reason without its numbers
-    if _has_gps(data):
-        kinds.append(P_GPS)
     return kinds
 
 
-def check_post(post: dict, observations: list[dict] | None, *, get_bytes: Callable[[str], bytes] | None) -> list[str]:
-    """The KINDS of problem of one public post ([] = clean)."""
+def view_images(post: dict) -> list[dict]:
+    """The image views of a post: embed.images, or embed.media.images for a quote post with images (app.bsky.embed.recordWithMedia#view)."""
+    embed = post.get("embed") or {}
+    return list(embed.get("images") or (embed.get("media") or {}).get("images") or [])
+
+
+def blob_cids(post: dict) -> list[str | None]:
+    """The CID of each image blob in the post's record, in order (None where the record does not carry one), from record.embed.images or
+    record.embed.media.images."""
+    embed = (post.get("record") or {}).get("embed") or {}
+    imgs = embed.get("images") or (embed.get("media") or {}).get("images") or []
+    out = []
+    for img in imgs:
+        ref = ((img or {}).get("image") or {}).get("ref") or {}
+        out.append(ref.get("$link") if isinstance(ref, dict) else None)
+    return out
+
+
+def pds_of(did: str, *, get_json: Callable[[str], dict]) -> str:
+    """The PDS endpoint named in the DID document (did:plc through settings.PLC_URL, did:web through the host)."""
+    if did.startswith("did:plc:"):
+        doc = get_json(f"{settings.PLC_URL}/{urllib.parse.quote(did)}")
+    elif did.startswith("did:web:"):
+        doc = get_json(f"https://{urllib.parse.quote(did[len('did:web:'):], safe='')}/.well-known/did.json")
+    else:
+        raise LiveAuditError(f"unsupported DID {did!r}")
+    for svc in doc.get("service") or []:
+        if str(svc.get("id", "")).endswith("#atproto_pds") and svc.get("serviceEndpoint"):
+            return str(svc["serviceEndpoint"]).rstrip("/")
+    raise LiveAuditError(f"no PDS in the DID document of {did}")
+
+
+def fetch_blob(pds: str, did: str, cid: str, *, get_bytes: Callable[[str], bytes]) -> bytes:
+    return get_bytes(f"{pds}/xrpc/com.atproto.sync.getBlob?{urllib.parse.urlencode({'did': did, 'cid': cid})}")
+
+
+def check_post(post: dict, observations: list[dict] | None, *, get_bytes: Callable[[str], bytes] | None,
+               get_json: Callable[[str], dict] | None = None, gps: dict | None = None) -> list[str]:
+    """The KINDS of problem of one public post ([] = clean). `gps`, when given, is filled with {"verified": n, "unverified": n}: the images whose
+    original blob was (not) read for the GPS check."""
     record = post.get("record") or {}
     text = record.get("text") or ""
-    images = ((post.get("embed") or {}).get("images")) or []
+    images = view_images(post)
     kinds: list[str] = []
 
     def add(kind: str) -> None:
@@ -167,15 +217,43 @@ def check_post(post: dict, observations: list[dict] | None, *, get_bytes: Callab
                 continue
             try:
                 data = get_bytes(url)
-            except (urllib.error.URLError, OSError):
+            except Exception:  # noqa: BLE001 -- any failed download (torn response, bad status, decode) is one image "could not be fetched", never a crash
                 add(f"image {i} could not be fetched")
                 continue
             for kind in _image_kinds(data):
                 add(f"{kind} (image {i})")
+        _check_blobs(post, images, add, get_bytes=get_bytes, get_json=get_json or _get_json, gps=gps)
     return kinds
 
 
-def last_audit_at(audit_path: Path | None = None) -> dt.datetime | None:
+def _check_blobs(post: dict, images: list[dict], add, *, get_bytes, get_json, gps: dict | None) -> None:
+    """GPS tags, on the ORIGINAL blobs only. An image whose blob cannot be read is counted unverified, not clean."""
+    cids = blob_cids(post)
+    did = (post.get("author") or {}).get("did") or ""
+    pds = None
+    pds_error = False
+    for i in range(1, len(images) + 1):
+        cid = cids[i - 1] if i - 1 < len(cids) else None
+        data = None
+        if cid and did and not pds_error:
+            try:
+                pds = pds or pds_of(did, get_json=get_json)
+                data = fetch_blob(pds, did, cid, get_bytes=get_bytes)
+            except Exception:  # noqa: BLE001 -- unreachable, not public, or a torn read: "not verifiable", said so, never "clean"
+                pds_error = pds is None                             # no PDS: do not retry it for every image of the post
+                data = None
+        if data is None:
+            if gps is not None:
+                gps["unverified"] = gps.get("unverified", 0) + 1
+            continue
+        if gps is not None:
+            gps["verified"] = gps.get("verified", 0) + 1
+        if _has_gps(data):
+            add(f"{P_GPS} (image {i})")
+
+
+def last_audit_at(audit_path: Path | None = None, *, clean_only: bool = False) -> dt.datetime | None:
+    """When the latest live_audit record was written; with clean_only, the latest one that found no problem post (a run with problems does not count)."""
     path = Path(audit_path or settings.SOCIAL_AUDIT_LOG)
     if not path.is_file():
         return None
@@ -184,6 +262,8 @@ def last_audit_at(audit_path: Path | None = None) -> dt.datetime | None:
         try:
             r = json.loads(line)
             if r.get("event") != "live_audit":
+                continue
+            if clean_only and r.get("problem_posts") != 0:
                 continue
             at = dt.datetime.fromisoformat(r["at"])
         except (ValueError, KeyError, AttributeError):
@@ -196,7 +276,8 @@ def last_audit_at(audit_path: Path | None = None) -> dt.datetime | None:
 def audit_live(handle: str, *, limit: int = 50, images: bool = True, get_json: Callable[[str], dict] | None = None,
                get_bytes: Callable[[str], bytes] | None = None, ledger_path: Path | None = None, drafts_dir: Path | None = None,
                audit: Audit | None = None) -> dict:
-    """{"checked", "problem_posts", "place_unchecked", "problems": [{"uri", "kinds"}]}; audited. Raises LiveAuditError when the AppView fails."""
+    """{"checked", "problem_posts", "place_unchecked", "gps_verified", "gps_unverified", "problems": [{"uri", "kinds"}]}; audited. Raises LiveAuditError
+    when the AppView fails (and audits live_audit_failed for any other unexpected error before re-raising it as LiveAuditError)."""
     audit = audit or Audit()
     drafts_dir = Path(drafts_dir or settings.SOCIAL_DIR / "drafts")
     try:
@@ -204,18 +285,24 @@ def audit_live(handle: str, *, limit: int = 50, images: bool = True, get_json: C
     except LiveAuditError as e:
         audit.log("live_audit_failed", reason=str(e))
         raise
+    except Exception as e:  # noqa: BLE001 -- an unexpected shape of the feed: exit 2 with a record, not a traceback that reads like exit 1
+        audit.log("live_audit_failed", reason=f"{type(e).__name__}: {e}"[:300])
+        raise LiveAuditError(f"unexpected error reading the feed ({type(e).__name__}: {e})") from e
     by_uri = posted_drafts(ledger_path)
     problems, unchecked = [], 0
+    gps = {"verified": 0, "unverified": 0}
     for post in posts:
         draft_id = by_uri.get(post["uri"])
         obs = _observations(draft_id, drafts_dir) if draft_id else None
         if obs is None:
             unchecked += 1
-        kinds = check_post(post, obs, get_bytes=(get_bytes or _get_bytes) if images else None)
+        kinds = check_post(post, obs, get_bytes=(get_bytes or _get_bytes) if images else None, get_json=get_json, gps=gps)
         if kinds:
             problems.append({"uri": post["uri"], "kinds": kinds})
-    report = {"checked": len(posts), "problem_posts": len(problems), "place_unchecked": unchecked, "problems": problems}
-    audit.log("live_audit", checked=len(posts), problem_posts=len(problems), place_unchecked=unchecked, handle=handle)
+    report = {"checked": len(posts), "problem_posts": len(problems), "place_unchecked": unchecked, "problems": problems,
+              "gps_verified": gps["verified"], "gps_unverified": gps["unverified"], "images_checked": images}
+    audit.log("live_audit", checked=len(posts), problem_posts=len(problems), place_unchecked=unchecked, handle=handle,
+              gps_verified=gps["verified"], gps_unverified=gps["unverified"])
     if problems:
         audit.log("live_audit_problem",
                   reason=f"{len(problems)} public post(s) fail the privacy gates: " + ", ".join(p["uri"] for p in problems[:3]),
@@ -225,18 +312,30 @@ def audit_live(handle: str, *, limit: int = 50, images: bool = True, get_json: C
 
 def cmd_social_audit_live(args) -> int:
     if args.weekly:
-        last = last_audit_at()
+        last = last_audit_at(clean_only=True)
         now = dt.datetime.now(settings.LOCAL_TZ)
         if last is not None and now - last < WEEK:
-            print(f"skipped: the last live audit was {last.isoformat(timespec='seconds')}, under 7 days ago")
+            print(f"skipped: the last clean live audit was {last.isoformat(timespec='seconds')}, under 7 days ago")
             return 0
     try:
         report = audit_live(args.handle, limit=args.limit, images=not args.no_images)
     except LiveAuditError as e:
         print(f"bio social-audit-live: {e}", file=sys.stderr)
         return 2
+    except Exception as e:  # noqa: BLE001 -- anything else that stops the audit is "could not run" (2), never mistaken for "problems found" (1)
+        with contextlib.suppress(OSError):
+            Audit().log("live_audit_failed", reason=f"{type(e).__name__}: {e}"[:300])
+        print(f"bio social-audit-live: unexpected error ({type(e).__name__}: {e})", file=sys.stderr)
+        return 2
     print(f"checked {report['checked']} public posts of {args.handle}; {report['place_unchecked']} had no draft on record "
           "(place names not checked for those)")
+    if not report["images_checked"]:
+        print("GPS tags: not checked (--no-images)")
+    elif report["gps_unverified"]:
+        print(f"GPS tags: {report['gps_verified']} original image blob(s) checked; {report['gps_unverified']} image(s) NOT VERIFIABLE "
+              "(blob not fetched from the PDS): no assurance about GPS for those")
+    else:
+        print(f"GPS tags: {report['gps_verified']} original image blob(s) checked")
     for p in report["problems"]:
         print(f"PROBLEM {p['uri']}: {'; '.join(p['kinds'])}")
     if not report["problems"]:

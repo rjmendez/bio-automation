@@ -50,7 +50,13 @@ try {
         if ((Bio @('social-digest')) -ne 0) { $code = 1 }
         # Weekly (the command skips itself while its last audit is under 7 days old): re-run the privacy gates on what is actually public. Exit 1 =
         # problems found, which the alert scan below turns into an error alert (live_audit_problem); 2 or more = the AppView could not be read.
-        if ((Bio @('social-audit-live', '--weekly')) -ge 2) { $code = 1 }
+        # A production package that does not have the command yet (the script is deployed before the package) is logged and skipped, not failed.
+        $ErrorActionPreference = 'Continue'
+        $help = & $py -m bio_automation.cli --help 2>&1 | Out-String
+        $ErrorActionPreference = 'Stop'
+        if ($help -match 'social-audit-live') {
+            if ((Bio @('social-audit-live', '--weekly')) -ge 2) { $code = 1 }
+        } else { Log 'social-audit-live is not in this package yet: skipped (not a failure)' }
     }
     $alerts = Bio @('social-alerts', '--notify')
     # social-alerts: 0 none, 1 warnings, 2 errors. Warnings pass; errors and a crash (any other code) fail the task.
