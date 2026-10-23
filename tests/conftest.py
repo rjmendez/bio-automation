@@ -40,6 +40,7 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SOCIAL_ALERTS_LOG", tmp_path / "no-prints" / "alerts.jsonl")
     monkeypatch.setattr(settings, "SOCIAL_ALERT_COMMAND", "")
     monkeypatch.setattr(settings, "SOCIAL_DIGEST_DIR", tmp_path / "no-prints" / "digest")
+    monkeypatch.setattr(settings, "SOCIAL_INTEGRITY_ACK_FILE", tmp_path / "no-prints" / "integrity_ack.json")
     monkeypatch.setattr(settings, "SOCIAL_BACKUP_DIR", tmp_path / "no-prints" / "backups")
     monkeypatch.setattr(settings, "SOCIAL_ENGAGEMENT_LOG", tmp_path / "no-prints" / "engagement.jsonl")
     monkeypatch.setattr(settings, "GALLERY_TITLE_CACHE", tmp_path / "no-prints" / "titles_cache.json")

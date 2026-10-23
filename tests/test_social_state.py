@@ -174,7 +174,8 @@ class TestDuplicatePosts:
         recs = lifecycle("single", obs=7, n=0) + lifecycle("other", obs=7, n=10)
         report = check_integrity(write_lines(tmp_path / "l.jsonl", recs))
         assert kinds(report) == [(0, "duplicate_post")]
-        assert report.problems[0].message == "observation 7 is in 2 posted drafts: single, other"
+        assert report.problems[0].message == ("observation 7 is in 2 posted drafts: single, other; if this is known and accepted: "
+                                              "`bio social-integrity --accept-duplicate 7 --reason TEXT`")
 
     def test_two_posted_drafts_with_different_observations_are_clean(self, tmp_path):
         assert check_integrity(write_lines(tmp_path / "l.jsonl", lifecycle("a", obs=7) + lifecycle("b", obs=8, n=10))).ok
@@ -183,7 +184,8 @@ class TestDuplicatePosts:
         group = [rec("drafted", "group", 10, obs_ids=[5, 6, 7], obs_id=5), rec("approved", "group", 11), rec("posting", "group", 12),
                  rec("posted", "group", 13, uri="at://g")]
         report = check_integrity(write_lines(tmp_path / "l.jsonl", lifecycle("single", obs=7) + group))
-        assert [p.message for p in report.problems] == ["observation 7 is in 2 posted drafts: single, group"]
+        assert [p.message for p in report.problems] == ["observation 7 is in 2 posted drafts: single, group; if this is known and accepted: "
+                                                        "`bio social-integrity --accept-duplicate 7 --reason TEXT`"]
 
     def test_an_observation_in_a_posted_draft_and_a_merely_drafted_one_is_clean(self, tmp_path):
         recs = lifecycle("a", obs=7) + [rec("drafted", "b", 10, obs_id=7)]
@@ -222,7 +224,7 @@ class TestPreSendGate:
         verdict = social_state.ledger_gate(self.ctx(ledger, manual=True))
         assert verdict.action == "block"
         assert verdict.reason == (f"the ledger {ledger.path} is corrupt: bad_json at line 2: not valid JSON (Expecting value); "
-                                  "bad_json at line 3: not valid JSON (Expecting value); run `bio social-integrity`")
+                                  "bad_json at line 3: not valid JSON (Expecting value); posting is blocked; run `bio social-integrity`")
         (entry,) = logged()
         assert (entry["event"], entry["count"], entry["draft_id"], entry["manual"]) == ("ledger_corrupt", 2, "d1", True)
         assert entry["problems"] == ["bad_json at line 2: not valid JSON (Expecting value)", "bad_json at line 3: not valid JSON (Expecting value)"]
@@ -631,6 +633,76 @@ class TestUnparsableLedgerStopsThePost:
         with open(ledger.path, "a", encoding="utf-8") as f:
             f.write("{torn\n")
         send = RecordingSend()
-        with pytest.raises(SocialError, match=r"the ledger .*l\.jsonl is corrupt at line 3 \(Expecting property name enclosed in double quotes\)"):
+        with pytest.raises(SocialError, match=r"the ledger .*l\.jsonl is corrupt at line 3 \(bad_json: Expecting property name enclosed in double quotes\); posting is blocked until it is repaired"):
             social.post_next(ledger, drafts, now=NOW, live=True, send=send, rules=rules_with(), audit=Audit())
         assert send.calls == []
+
+
+# --------------------------------------------------------------------------------------------------- accepting a known duplicate post
+
+class TestAcceptDuplicate:
+    def dup_ledger(self, tmp_path, *, third=False):
+        recs = lifecycle("single", obs=7, n=0) + lifecycle("other", obs=7, n=10) + lifecycle("fine", obs=8, n=20)
+        if third:
+            recs += lifecycle("third", obs=7, n=30)
+        return write_lines(Path(settings.SOCIAL_LEDGER), recs)
+
+    def run(self, monkeypatch, capsys, *argv):
+        monkeypatch.setattr(sys, "argv", ["bio", "social-integrity", *argv])
+        code = cli.main()
+        return code, capsys.readouterr()
+
+    def test_an_unacknowledged_duplicate_blocks_the_pre_send_gate(self, tmp_path):
+        ledger = Ledger(self.dup_ledger(tmp_path))
+        verdict = social_state.ledger_gate({"draft_id": "d1", "ledger": ledger, "manual": False})
+        assert verdict.action == "block" and "duplicate_post" in verdict.reason
+
+    def test_accepting_it_records_the_drafts_and_reason_audits_and_unblocks_exactly_that_duplicate(self, tmp_path, monkeypatch, capsys):
+        path = self.dup_ledger(tmp_path)
+        code, out = self.run(monkeypatch, capsys, "--accept-duplicate", "7", "--reason", "posted by hand once, known")
+        assert code == 0
+        assert out.out.splitlines() == ["accepted the duplicate post of observation 7 (other, single): posted by hand once, known",
+                                        f"ledger {path}: 0 problems left"]
+        doc = json.loads(Path(settings.SOCIAL_INTEGRITY_ACK_FILE).read_text(encoding="utf-8"))
+        assert doc["duplicates"]["7"]["drafts"] == ["other", "single"] and doc["duplicates"]["7"]["reason"] == "posted by hand once, known"
+        assert not Path(str(settings.SOCIAL_INTEGRITY_ACK_FILE) + ".tmp").exists()
+        assert check_integrity(path).ok
+        assert social_state.ledger_gate({"draft_id": "d1", "ledger": Ledger(path), "manual": False}) is None
+        (entry,) = [r for r in Audit().records() if r["event"] == "integrity_acknowledged"]
+        assert (entry["obs_id"], entry["drafts"], entry["reason"]) == ("7", ["other", "single"], "posted by hand once, known")
+
+    def test_a_different_observation_with_a_duplicate_still_blocks(self, tmp_path, monkeypatch, capsys):
+        recs = lifecycle("a", obs=7, n=0) + lifecycle("b", obs=7, n=10) + lifecycle("c", obs=9, n=20) + lifecycle("d", obs=9, n=30)
+        path = write_lines(Path(settings.SOCIAL_LEDGER), recs)
+        code, _ = self.run(monkeypatch, capsys, "--accept-duplicate", "7", "--reason", "known")
+        assert code == 1                                               # observation 9 remains
+        report = check_integrity(path)
+        assert [(p.kind, p.obs) for p in report.problems] == [("duplicate_post", "9")]
+
+    def test_a_further_post_of_the_same_observation_is_a_different_duplicate_and_blocks_again(self, tmp_path, monkeypatch, capsys):
+        self.dup_ledger(tmp_path)
+        self.run(monkeypatch, capsys, "--accept-duplicate", "7", "--reason", "known")
+        path = self.dup_ledger(tmp_path, third=True)
+        assert [(p.kind, p.obs, p.drafts) for p in check_integrity(path).problems] == [("duplicate_post", "7", ("single", "other", "third"))]
+
+    def test_it_needs_a_reason_and_a_real_duplicate_and_writes_nothing_otherwise(self, tmp_path, monkeypatch, capsys):
+        self.dup_ledger(tmp_path)
+        with pytest.raises(SocialError, match="--reason is required"):
+            social_state.accept_duplicate(check_integrity(settings.SOCIAL_LEDGER), "7", "  ")
+        with pytest.raises(SocialError, match="no duplicate_post problem for observation 8"):
+            social_state.accept_duplicate(check_integrity(settings.SOCIAL_LEDGER), "8", "known")
+        assert not Path(settings.SOCIAL_INTEGRITY_ACK_FILE).exists()
+        code, out = self.run(monkeypatch, capsys, "--accept-duplicate", "7")
+        assert (code, out.err.strip()) == (1, "bio social-integrity: --reason is required: say why the duplicate post is known and accepted")
+
+    def test_a_damaged_acknowledgement_file_acknowledges_nothing(self, tmp_path):
+        path = self.dup_ledger(tmp_path)
+        Path(settings.SOCIAL_INTEGRITY_ACK_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(settings.SOCIAL_INTEGRITY_ACK_FILE).write_text("{not json", encoding="utf-8")
+        assert [p.kind for p in check_integrity(path).problems] == ["duplicate_post"]
+
+    def test_positive_twin_a_correct_acknowledgement_file_acknowledges_it(self, tmp_path):
+        path = self.dup_ledger(tmp_path)
+        Path(settings.SOCIAL_INTEGRITY_ACK_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(settings.SOCIAL_INTEGRITY_ACK_FILE).write_text(json.dumps({"duplicates": {"7": {"drafts": ["single", "other"]}}}), encoding="utf-8")
+        assert check_integrity(path).ok

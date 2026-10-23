@@ -1,8 +1,8 @@
 """Taste for the Bluesky posts: variety, a soft seasonal lean, and a cap on the downloaded photo cache (rules variety, seasonal_boost,
 photo_cache_cap).
 
-  variety          (order, priority 40)  candidates of the same genus as any of the last N posted drafts move to the END of the list.
-  seasonal_boost   (order, priority 60)  candidates photographed within +-SEASON_DAYS of today's day of the year (any year) move to the FRONT.
+  variety          (order, priority 60, LAST)  candidates of the same genus as any of the last N posted drafts move to the END of the list.
+  seasonal_boost   (order, priority 40, first)  candidates photographed within +-SEASON_DAYS of today's day of the year (any year) move to the FRONT.
   photo_cache_cap  (maintenance, 80)     settings.INAT_BEST_PHOTO_DIR is kept under <value> GB: least recently used files first, never one
                                          a pending (drafted/approved) draft still names, never anything outside that directory.
 
@@ -222,6 +222,7 @@ def photo_cache_cap(ctx: dict):
 
 
 def register_hooks() -> None:
-    social_hooks.register("variety", "order", variety, rule="variety", priority=40)
-    social_hooks.register("seasonal_boost", "order", seasonal_boost, rule="seasonal_boost", priority=60)
+    # seasonal_boost first, variety LAST: a stable partition run later wins, and a recently posted genus must stay demoted even in season
+    social_hooks.register("seasonal_boost", "order", seasonal_boost, rule="seasonal_boost", priority=40)
+    social_hooks.register("variety", "order", variety, rule="variety", priority=60)
     social_hooks.register("photo_cache_cap", "maintenance", photo_cache_cap, rule="photo_cache_cap", priority=80)

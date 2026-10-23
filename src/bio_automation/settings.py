@@ -131,6 +131,7 @@ SOCIAL_PAUSE_FILE = env_path("BIO_SOCIAL_PAUSE_FILE", SOCIAL_DIR / "PAUSED")    
 SOCIAL_ALERTS_LOG = env_path("BIO_SOCIAL_ALERTS_LOG", CACHE_DIR / "state" / "social_alerts.jsonl")
 SOCIAL_ALERT_COMMAND = env("BIO_SOCIAL_ALERT_COMMAND", "")                                         # optional: run with each alert's text; empty = log only
 SOCIAL_DIGEST_DIR = env_path("BIO_SOCIAL_DIGEST_DIR", SOCIAL_DIR / "digest")
+SOCIAL_INTEGRITY_ACK_FILE = env_path("BIO_SOCIAL_INTEGRITY_ACK_FILE", SOCIAL_DIR / "integrity_ack.json")   # duplicate posts the owner accepted (social-integrity --accept-duplicate)
 SOCIAL_BACKUP_DIR = env_path("BIO_SOCIAL_BACKUP_DIR", SOCIAL_DIR / "backups")
 SOCIAL_ENGAGEMENT_LOG = env_path("BIO_SOCIAL_ENGAGEMENT_LOG", CACHE_DIR / "state" / "social_engagement.jsonl")
 SOCIAL_SLOTS = env("BIO_SOCIAL_SLOTS", "08:00,12:00,20:00")                                        # the scheduled run times (local), for slot-aware rules
