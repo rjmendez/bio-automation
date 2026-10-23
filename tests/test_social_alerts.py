@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from bio_automation import settings, social_alerts, social_hooks, themes
+from bio_automation import settings, social_alerts, social_hooks, sync_marker, themes
 from bio_automation.social_alerts import Alert, AlertsError
 from test_social import rules_with
 
@@ -51,6 +51,9 @@ class Env:
         self.log = self.dir / "social.log"
         self.taxonomy = self.dir / "obs_taxonomy.json"
         self.alerts = self.dir / "alerts.jsonl"
+        self.marker = self.dir / "qdrant_sync_marker.json"
+        for sync in sync_marker.NAMES:
+            sync_marker.record(sync, path=self.marker, now=NOW)
         self.set_audit([*YESTERDAY, {"at": at(8, 16), "event": "posted", "draft_id": "a"}, {"at": at(12, 5), "event": "posted", "draft_id": "b"}])
         self.set_ledger([{"at": at(8, 16), "event": "posted", "draft_id": "a", "obs_id": 1},
                          {"at": at(12, 5), "event": "posted", "draft_id": "b", "obs_id": 2},
@@ -68,10 +71,17 @@ class Env:
     def scan(self, now=NOW, rules=None, free=None, **kw):
         free = free or {"C:\\": 100 * GB, "D:\\": 100 * GB}
         return social_alerts.scan(now, audit_path=self.audit, ledger_path=self.ledger, rules=rules or rules_with(), slots=SLOTS,
-                                  pause_file=self.pause, log_file=self.log, taxonomy_file=self.taxonomy, disk_free=lambda root: free[root], **kw)
+                                  pause_file=self.pause, log_file=self.log, taxonomy_file=self.taxonomy, qdrant_marker=self.marker, disk_free=lambda root: free[root], **kw)
 
     def kinds(self, **kw):
         return [a.kind for a in self.scan(**kw)[0]]
+
+
+@pytest.fixture(autouse=True)
+def fresh_qdrant_marker():
+    """run_alerts reads the marker named by settings (conftest points it into tmp_path): both syncs wrote at NOW unless a test says otherwise."""
+    for sync in sync_marker.NAMES:
+        sync_marker.record(sync, now=NOW)
 
 
 @pytest.fixture
@@ -91,13 +101,21 @@ def test_quiet_state_has_no_alert_and_says_the_taxonomy_was_not_checked(env):
 @pytest.mark.parametrize("event,level", [("post_failed", "error"), ("post_verify_failed", "error"), ("circuit_open", "error"),
                                          ("ledger_corrupt", "error"), ("post_blocked", "warning"), ("hook_error", "warning"),
                                          ("paused", "warning"), ("backup_failed", "warning"), ("live_recheck_unavailable", "warning"),
-                                         ("draft_stalled", "error")])
+                                         ("draft_stalled", "error"), ("disk_pause", "warning"), ("disk_timeout", "error")])
 def test_each_event_kind_alerts_with_its_level(env, event, level):
     env.add_audit({"at": at(12, 6), "event": event, "draft_id": "b", "reason": "because"})
     alerts, _ = env.scan()
     assert [(a.kind, a.level) for a in alerts] == [(event, level)]
     assert alerts[0].message.startswith(event) and "because" in alerts[0].message
     assert social_alerts.exit_code(alerts) == (2 if level == "error" else 1)
+
+
+def test_a_disk_pause_names_the_worker_that_waits_and_alerts_once_a_day(env):
+    for minute in (6, 7):                                                                  # two pauses the same day: one alert
+        env.add_audit({"at": at(12, minute), "event": "disk_pause", "who": "social-prep", "short": []})
+    alerts, _ = env.scan()
+    assert [(a.key, a.kind, a.level, a.message) for a in alerts] == [
+        ("disk_pause:2026-10-23", "disk_pause", "warning", f"disk_pause social-prep ({at(12, 7)})")]
 
 
 @pytest.mark.parametrize("event", ["post_failed", "post_verify_failed", "circuit_open", "ledger_corrupt", "post_blocked", "hook_error",
@@ -945,3 +963,13 @@ def test_a_message_with_characters_outside_the_locale_code_page_reaches_the_comm
     assert runner.calls[0][1]["input"] == f"[error] post_failed: {rep['new'][0].message}\n".encode("utf-8")
     assert "caf\u00e9 \u65e5\u672c \U0001F344" in runner.calls[0][1]["input"].decode("utf-8")
     assert [a.kind for a in rep["notified"]] == ["post_failed"] and rep["notify_failed"] == []
+
+
+def test_expected_post_missing_twin_remote_pause_marker(env, tmp_path):
+    missing_env(env)
+    remote = tmp_path / "synced" / "PAUSE-BIO"
+    assert env.kinds(pause_sync_file=remote) == ["expected_post_missing"]            # twin: configured, but no marker (folder missing too)
+    remote.parent.mkdir()
+    remote.write_text("", encoding="utf-8")
+    assert env.kinds(pause_sync_file=remote) == []                                   # the remote marker pauses like the local file
+    assert env.kinds(pause_sync_file=remote, rules=rules_with(pause_switch=False)) == ["expected_post_missing"]

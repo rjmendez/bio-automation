@@ -1,7 +1,7 @@
 # The watch task (Bio-Social-Watch): tells the owner when something is wrong, and writes the daily digest.
 #   09:00, 13:00, 21:00   bio social-alerts --notify     (60 minutes after the 08:00, 12:00 and 20:00 post slots, which is when a missing post
 #                                                         or a silent run can first be told from a slow one)
-#   21:30                 bio social-engagement --refresh, then bio social-digest   (the evening run: -Step evening, chosen by the clock
+#   21:30                 bio social-engagement --refresh, then bio social-digest, then bio social-audit-live --weekly   (the evening run: -Step evening, chosen by the clock
 #                                                         when run without -Step: from 21:20 on)
 # Exit code: 1 when social-alerts reports an alert of level error (its exit code 2), when a step cannot run, or when the alert command failed;
 # 0 otherwise (warnings do not fail the task; they are in the digest and the alerts log). So Task Scheduler's "last run result" shows red
@@ -48,6 +48,15 @@ try {
         # Engagement and the digest are best effort: a failure of either is logged and fails the task, but never stops the alert scan below.
         if ((Bio @('social-engagement', '--refresh')) -ne 0) { $code = 1 }
         if ((Bio @('social-digest')) -ne 0) { $code = 1 }
+        # Weekly (the command skips itself while its last audit is under 7 days old): re-run the privacy gates on what is actually public. Exit 1 =
+        # problems found, which the alert scan below turns into an error alert (live_audit_problem); 2 or more = the AppView could not be read.
+        # A production package that does not have the command yet (the script is deployed before the package) is logged and skipped, not failed.
+        $ErrorActionPreference = 'Continue'
+        $help = & $py -m bio_automation.cli --help 2>&1 | Out-String
+        $ErrorActionPreference = 'Stop'
+        if ($help -match 'social-audit-live') {
+            if ((Bio @('social-audit-live', '--weekly')) -ge 2) { $code = 1 }
+        } else { Log 'social-audit-live is not in this package yet: skipped (not a failure)' }
     }
     $alerts = Bio @('social-alerts', '--notify')
     # social-alerts: 0 none, 1 warnings, 2 errors. Warnings pass; errors and a crash (any other code) fail the task.

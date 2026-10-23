@@ -9,7 +9,11 @@ send it again, so:
     `bio social-integrity --accept-duplicate OBS_ID --reason TEXT` records the owner's acknowledgement of exactly that known duplicate post in
     settings.SOCIAL_INTEGRITY_ACK_FILE (audited); the checker then no longer reports it, while any other duplicate still blocks.
   * `bio social-backup [--keep N]`, a daily maintenance hook, and `bio social-restore` keep and bring back dated copies of the ledger, the
-    audit log and the owner's rule, theme and print files.
+    audit log and the owner's rule, theme and print files, plus drafts_hashes.json (the sha256 of every draft folder, informational).
+    Retention: the newest N backups and at most settings.SOCIAL_BACKUP_MAX_MB in all (the newest and the newest clean one always stay).
+    Optional off-drive copy: settings.SOCIAL_BACKUP_OFFSITE_DIR (off by default); each new backup is copied there, read back and hashed, audited
+    as backup_offsite or backup_offsite_failed; a folder on the backup folder's own drive is refused.
+  * `bio social-restore-check` restores the newest backup into a scratch folder and validates it (hashes, ledger integrity, audit parse, drafts).
 """
 from __future__ import annotations
 
@@ -21,10 +25,11 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
-from . import settings
+from . import secrets_guard, settings
 from .social import NOTES, STATES, SocialError, ledger_lock
 from .social_hooks import Verdict
 
@@ -271,8 +276,14 @@ def _audit(event: str, **fields) -> None:
         pass
 
 
-def _retain(root: Path, keep: int) -> list[str]:
-    """Delete all but the newest `keep` backups, except that the newest backup whose ledger was clean is never deleted. Returns the removed names."""
+def _folder_bytes(folder: Path) -> int:
+    return sum(p.stat().st_size for p in Path(folder).rglob("*") if p.is_file())
+
+
+def _retain(root: Path, keep: int, max_bytes: int | None = None) -> list[str]:
+    """Delete all but the newest `keep` backups, except that the newest backup whose ledger was clean is never deleted; then, while the
+    backups together exceed `max_bytes` (None or 0: no size cap), delete the oldest others (the newest backup and the newest clean one stay).
+    Returns the removed names."""
     folders = backups(root)
     survivors = folders[-keep:]
     good = next((f for f in reversed(folders) if _manifest_ledger_ok(f)), None)
@@ -285,6 +296,20 @@ def _retain(root: Path, keep: int) -> list[str]:
         except OSError:
             continue                                           # in use: the next backup retries
         removed.append(f.name)
+    if max_bytes:
+        left = backups(root)
+        sizes = {f: _folder_bytes(f) for f in left}
+        for f in left[:-1]:                                    # never the newest
+            if sum(sizes.values()) <= max_bytes:
+                break
+            if f == good:
+                continue
+            try:
+                shutil.rmtree(f)
+            except OSError:
+                continue
+            sizes.pop(f)
+            removed.append(f.name)
     return removed
 
 
@@ -295,13 +320,89 @@ def _manifest_ledger_ok(folder: Path) -> bool:
         return False
 
 
+DRAFTS_HASHES = "drafts_hashes.json"
+INFO_FILES = (DRAFTS_HASHES,)          # in a backup and hash-checked on restore, but not restored onto a live file
+
+
+def draft_hashes(drafts_dir: Path) -> dict[str, dict]:
+    """{draft_id: {"sha256": draft_hash} or {"error": why}} for every folder under drafts_dir that holds a draft.json."""
+    from .social import draft_hash
+
+    out: dict[str, dict] = {}
+    drafts_dir = Path(drafts_dir)
+    if not drafts_dir.is_dir():
+        return out
+    for d in sorted(drafts_dir.iterdir()):
+        if not (d / "draft.json").is_file():
+            continue
+        try:
+            out[d.name] = {"sha256": draft_hash(d)}
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            out[d.name] = {"error": f"{type(e).__name__}: {e}"[:200]}
+    return out
+
+
+def _device(path: Path):
+    p = Path(path).absolute()
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return os.stat(p).st_dev
+
+
+def offsite_copy(folder: Path, dest_root: Path | str, *, keep: int | None = KEEP_DEFAULT, drive_of=None) -> Path | None:
+    """Copy backup `folder` to <dest_root>/<its name> through a temp folder, read every file back and compare its sha256 with the manifest
+    (a copy that lost bytes, as on F:, fails), prune the destination to the newest `keep` backups, audit backup_offsite. A destination on the
+    same drive as the backup, or any error, is audited as backup_offsite_failed and returns None; it never raises (the backup itself exists)."""
+    folder, dest_root = Path(folder), Path(dest_root)
+    drive_of = drive_of or _device
+    tmp = dest_root / f".tmp-{folder.name}-{os.getpid()}"
+    try:
+        if drive_of(folder) == drive_of(dest_root):
+            raise SocialError(f"the off-drive folder {dest_root} is on the same drive as the backups {folder.parent}; it protects nothing")
+        manifest = read_manifest(folder)
+        dest_root.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir()
+        for fname in [*manifest["files"], MANIFEST]:
+            data = (folder / fname).read_bytes()
+            (tmp / fname).write_bytes(data)                    # one write, no appends (multi-write appends to F: lose bytes)
+        if (tmp / MANIFEST).read_bytes() != (folder / MANIFEST).read_bytes():
+            raise SocialError(f"{MANIFEST} read back from {dest_root} differs from the source's (a torn copy)")
+        for fname, info in manifest["files"].items():
+            back = hashlib.sha256((tmp / fname).read_bytes()).hexdigest()
+            if back != info["sha256"]:
+                raise SocialError(f"{fname} read back from {dest_root} does not match its sha256 (expected {info['sha256'][:12]}..., found {back[:12]}...)")
+        final = dest_root / folder.name
+        if final.exists():
+            shutil.rmtree(final)
+        os.replace(tmp, final)
+        removed = _retain(dest_root, keep) if keep is not None else []
+    except (OSError, SocialError) as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        _audit("backup_offsite_failed", name=folder.name, dest=str(dest_root), error=str(e)[:300])
+        return None
+    _audit("backup_offsite", name=folder.name, dest=str(dest_root), files=sorted(manifest["files"]), removed=removed)
+    return final
+
+
 def make_backup(root: Path | None = None, *, sources: dict[str, Path] | None = None, now: dt.datetime | None = None,
-                keep: int | None = KEEP_DEFAULT) -> Path:
+                keep: int | None = KEEP_DEFAULT, drafts_dir: Path | None = None, max_mb: int | None = None,
+                offsite: Path | str | None = None, drive_of=None) -> Path:
     """Copy the files that exist into <root>/<YYYYMMDD-HHMMSS>/ through a temp folder renamed into place, with a MANIFEST.json (sha256, bytes);
-    then keep the newest `keep` (None: keep all). Audits backup_made or, on failure, backup_failed (and raises SocialError)."""
+    then keep the newest `keep` (None: keep all) within `max_mb` (default settings.SOCIAL_BACKUP_MAX_MB). The sha256 of every draft folder goes
+    in as drafts_hashes.json. Audits backup_made or, on failure, backup_failed (and raises SocialError). `offsite` (default
+    settings.SOCIAL_BACKUP_OFFSITE_DIR, empty = off) gets a verified copy afterwards (offsite_copy)."""
     root = Path(root or settings.SOCIAL_BACKUP_DIR)
+    drafts_dir = Path(drafts_dir or Path(settings.SOCIAL_DIR) / "drafts")
+    max_mb = settings.SOCIAL_BACKUP_MAX_MB if max_mb is None else max_mb
+    offsite = settings.SOCIAL_BACKUP_OFFSITE_DIR if offsite is None else offsite
     sources = backup_sources() if sources is None else sources
     now = now or _now()
+    protected = (settings.BSKY_OAUTH_DIR, settings.BSKY_CLEANUP_OAUTH_DIR)
+    for name, src in sources.items():                          # OAuth key material is never copied into a backup (it has its own key backup, see docs)
+        if secrets_guard.is_key_material(Path(src), protected):
+            _audit("backup_failed", error=f"refused: {name} is OAuth key material", root=str(root))
+            raise SocialError(f"refusing to back up {name} ({src}): OAuth key material and sessions are never copied into a backup folder")
     if keep is not None and keep < 1:
         raise SocialError(f"--keep must be at least 1, got {keep}")
     tmp = root / f".tmp-{_stamp(now)}-{os.getpid()}"
@@ -321,6 +422,11 @@ def make_backup(root: Path | None = None, *, sources: dict[str, Path] | None = N
                 ledger_ok = check_integrity(tmp / name).ok
         if not files:
             raise SocialError("none of the files to back up exist")
+        hashes = draft_hashes(drafts_dir)
+        if hashes:
+            data = json.dumps(hashes, indent=2, sort_keys=True).encode("utf-8")
+            (tmp / DRAFTS_HASHES).write_bytes(data)
+            files[DRAFTS_HASHES] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "source": str(drafts_dir)}
         (tmp / MANIFEST).write_text(json.dumps({"created": now.isoformat(timespec="seconds"), "ledger_ok": ledger_ok, "files": files},
                                                indent=2, sort_keys=True), encoding="utf-8")
         final, n = root / _stamp(now), 1
@@ -334,8 +440,10 @@ def make_backup(root: Path | None = None, *, sources: dict[str, Path] | None = N
         if isinstance(e, SocialError):
             raise
         raise SocialError(f"backup into {root} failed: {e}") from e
-    removed = _retain(root, keep) if keep is not None else []
+    removed = _retain(root, keep, max_mb * 1024 * 1024) if keep is not None else []
     _audit("backup_made", name=final.name, files=sorted(files), bytes=sum(f["bytes"] for f in files.values()), ledger_ok=ledger_ok, removed=removed)
+    if str(offsite).strip():
+        offsite_copy(final, Path(str(offsite).strip()), keep=keep, drive_of=drive_of)
     return final
 
 
@@ -366,7 +474,7 @@ def restore(name: str, *, apply: bool = False, root: Path | None = None, targets
     targets = backup_sources() if targets is None else targets
     plan, payload = [], {}
     for fname, info in manifest["files"].items():
-        if fname not in targets:
+        if fname not in targets and fname not in INFO_FILES:
             raise SocialError(f"backup {name} holds {fname}, which this version does not know how to restore")
         src = folder / fname
         try:
@@ -376,6 +484,8 @@ def restore(name: str, *, apply: bool = False, root: Path | None = None, targets
         digest = hashlib.sha256(data).hexdigest()
         if digest != info["sha256"]:
             raise IntegrityError(f"backup {name}: {fname} does not match its recorded sha256 (expected {info['sha256'][:12]}..., found {digest[:12]}...); nothing was restored")
+        if fname in INFO_FILES:
+            continue                                           # hash-checked above, nothing to put back
         payload[fname] = data
         target = Path(targets[fname])
         plan.append((fname, "would create" if not target.is_file() else "same" if hashlib.sha256(target.read_bytes()).hexdigest() == digest else "would change"))
@@ -399,6 +509,110 @@ def restore(name: str, *, apply: bool = False, root: Path | None = None, targets
             done.append(fname)
     _audit("restored", name=name, files=done, pre_restore_backup=pre.name)       # after the replace: a restored audit log would otherwise lose this line
     return [(f, "restored" if f in done else s) for f, s in plan]
+
+
+# --------------------------------------------------------------------------------------------------- verified restore
+
+def restore_check(name: str | None = None, *, root: Path | None = None, scratch_root: Path | None = None, now: dt.datetime | None = None,
+                  stale_days: float | None = None) -> dict:
+    """Restore backup `name` (default the newest) into a scratch folder and validate what came back: every file's sha256 against the manifest,
+    the ledger (check_integrity), the audit log (every line a JSON object), and the drafts: for each draft that is approved or posting in the
+    restored ledger, the sha256 recorded in drafts_hashes.json must equal the hash the approval was bound to. The newest backup must also be
+    younger than `stale_days` (only when no `name` was given: asking for an old backup by name is not a failure). Touches no live file. Audits restore_check (ok) or restore_check_failed. Returns
+    {"ok", "name", "problems": [...], "notes": [...], "files": {...}}."""
+    from .social import Ledger
+
+    root = Path(root or settings.SOCIAL_BACKUP_DIR)
+    now = now or _now()
+    stale_days = settings.SOCIAL_BACKUP_STALE_DAYS if stale_days is None else stale_days
+    problems: list[str] = []
+    notes: list[str] = []
+    files: dict[str, str] = {}
+    folders = backups(root)
+    explicit = name                      # a backup the caller asked for by name is checked as asked, however old: the age rule is for "the newest"
+    if name is None and not folders:
+        problems.append(f"no backup in {root}")
+    elif name is None:
+        name = folders[-1].name
+    result = {"ok": False, "name": name, "problems": problems, "notes": notes, "files": files}
+    if name is not None and not problems:
+        scratch_root = Path(scratch_root or Path(settings.CACHE_DIR) / "tmp")
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        scratch = Path(tempfile.mkdtemp(prefix="restore-check-", dir=scratch_root))
+        try:
+            _check_into(scratch, root, name, now, stale_days, problems, notes, files, Ledger, check_age=explicit is None)
+        except (SocialError, OSError) as e:
+            problems.append(str(e))
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+    result["ok"] = not problems
+    _audit("restore_check" if result["ok"] else "restore_check_failed", name=name, files=sorted(files), problems=problems[:5], notes=notes[:5])
+    return result
+
+
+def _check_into(scratch: Path, root: Path, name: str, now, stale_days, problems, notes, files, Ledger, check_age: bool = True) -> None:
+    if not name or name != Path(name).name or name in (".", ".."):
+        raise SocialError(f"{name!r} is not a backup name (see `bio social-restore --list`)")
+    folder = root / name
+    if not folder.is_dir():
+        raise SocialError(f"no backup {name!r} in {root}")
+    manifest = read_manifest(folder)
+    try:
+        created = dt.datetime.fromisoformat(manifest["created"])
+        age = (now - created).total_seconds() / 86400
+        if check_age and age > stale_days:
+            problems.append(f"backup {name} is {age:.1f} days old, more than {stale_days:g}")
+    except (KeyError, ValueError, TypeError):
+        problems.append(f"backup {name}: manifest has no readable 'created' time")
+    for fname, info in manifest["files"].items():
+        try:
+            data = (folder / fname).read_bytes()
+        except OSError as e:
+            problems.append(f"{fname}: cannot read ({e})")
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != info["sha256"]:
+            problems.append(f"{fname}: sha256 {digest[:12]}... differs from the manifest's {info['sha256'][:12]}...")
+            continue
+        (scratch / fname).write_bytes(data)
+        files[fname] = digest
+    if "ledger.jsonl" not in files:
+        problems.append("the backup has no ledger.jsonl that restored")
+    else:
+        report = check_integrity(scratch / "ledger.jsonl")
+        if not report.ok:
+            problems.append("restored ledger: " + "; ".join(p.text() for p in report.problems[:SHOWN_PROBLEMS]))
+    if "audit.jsonl" in files:
+        bad = 0
+        for line in (scratch / "audit.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                if not isinstance(json.loads(line), dict):
+                    bad += 1
+            except ValueError:
+                bad += 1
+        if bad:
+            problems.append(f"restored audit log: {bad} line(s) are not JSON objects")
+    else:
+        notes.append("the backup has no audit.jsonl")
+    if DRAFTS_HASHES not in files:
+        notes.append(f"the backup has no {DRAFTS_HASHES} (no drafts existed, or an older backup): draft hashes not checked")
+    elif "ledger.jsonl" in files:
+        try:
+            hashes = json.loads((scratch / DRAFTS_HASHES).read_text(encoding="utf-8"))
+            drafts = Ledger(scratch / "ledger.jsonl").drafts()
+        except (ValueError, SocialError, OSError) as e:
+            problems.append(f"drafts check: {e}")
+            return
+        for did, d in sorted(drafts.items()):
+            if d.get("state") not in ("approved", "posting"):
+                continue
+            got = (hashes.get(did) or {}).get("sha256")
+            if got is None:
+                problems.append(f"draft {did} is {d['state']} but the backup has no usable hash of its folder ({(hashes.get(did) or {}).get('error', 'folder missing')})")
+            elif got != d.get("approved_hash"):
+                problems.append(f"draft {did} is {d['state']}: its folder hashes to {got[:12]}..., the approval was bound to {str(d.get('approved_hash'))[:12]}...")
 
 
 # --------------------------------------------------------------------------------------------------- torn tail
@@ -493,7 +707,18 @@ def cmd_social_restore(args: argparse.Namespace) -> int:
     return 0
 
 
-COMMANDS = {"social-integrity": cmd_social_integrity, "social-backup": cmd_social_backup, "social-restore": cmd_social_restore}
+def cmd_social_restore_check(args: argparse.Namespace) -> int:
+    res = restore_check(args.source, scratch_root=Path(args.scratch) if args.scratch else None)
+    print(f"restore check of backup {res['name']}: {'ok' if res['ok'] else 'FAILED'} ({len(res['files'])} files restored to a scratch folder and removed)")
+    for p in res["problems"]:
+        print(f"  problem: {p}")
+    for n in res["notes"]:
+        print(f"  note: {n}")
+    return 0 if res["ok"] else 1
+
+
+COMMANDS = {"social-integrity": cmd_social_integrity, "social-backup": cmd_social_backup, "social-restore": cmd_social_restore,
+            "social-restore-check": cmd_social_restore_check}
 ERRORS = (IntegrityError,)
 
 
@@ -509,6 +734,9 @@ def add_parsers(sub) -> None:
     p.add_argument("--from", dest="source", default=None, help="backup name (folder in the backup dir)")
     p.add_argument("--apply", action="store_true", help="really restore (a pre-restore backup is made first)")
     p.add_argument("--yes", action="store_true", help="confirm --apply")
+    p = sub.add_parser("social-restore-check", help="Restore the newest (or --from) backup into a scratch folder and validate it; touches no live file; exit 0 ok, 1 problems.")
+    p.add_argument("--from", dest="source", default=None, help="backup name (default the newest)")
+    p.add_argument("--scratch", default=None, help="folder to restore into (default <cache dir>/tmp; a temp subfolder, deleted afterwards)")
 
 
 def register_hooks() -> None:

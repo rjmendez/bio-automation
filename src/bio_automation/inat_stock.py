@@ -143,7 +143,7 @@ def embed_label(jpeg: Path, label: dict) -> None:
              + [a for kw in label["keywords"] for a in ("-IPTC:Keywords+=" + kw, "-XMP-dc:Subject+=" + kw)]]
     for step in steps:
         # Arguments go through a UTF-8 argfile: on Windows the command line is the ANSI codepage and turns "café" into "caf?".
-        with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False, encoding="utf-8", newline="\n") as af:
+        with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False, dir=settings.scratch_dir(), encoding="utf-8", newline="\n") as af:
             af.write("\n".join(step) + "\n")
         try:
             r = subprocess.run([exiftool, "-overwrite_original", "-m", "-charset", "utf8", "-@", af.name, str(jpeg)], capture_output=True, text=True)

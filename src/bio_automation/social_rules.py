@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Mapping, NamedTuple
 
-from . import settings
+from . import secrets_guard, settings
 
 
 class RulesError(Exception):
@@ -158,7 +158,7 @@ class Audit:
         self._now = now or (lambda: dt.datetime.now(settings.LOCAL_TZ))
 
     def log(self, event: str, **fields) -> dict:
-        rec = {"at": self._now().isoformat(timespec="seconds"), "run": self.run, "event": event, **fields}
+        rec = {"at": self._now().isoformat(timespec="seconds"), "run": self.run, "event": event, **secrets_guard.redact(fields)}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(rec, sort_keys=True, ensure_ascii=False) + "\n")

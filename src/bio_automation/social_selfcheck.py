@@ -15,24 +15,24 @@ cache, the drafts) is a warning at worst: a good deploy is not rolled back for t
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib
 import inspect
 import json
 import os
-import shutil
 import sys
 import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import settings, social_hooks
+from . import disk_guard, secrets_guard, settings, social_hooks
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 EXIT = {OK: 0, WARN: 1, FAIL: 2}
 INDEX_MAX_AGE_DAYS = 3
 GB = 1024 ** 3
-SYSTEM_DRIVE_FAIL_GB = 15.0                  # the NAS pipeline pauses below this much free space on C: (settings.MIN_FREE_GB)
-SYSTEM_DRIVE_WARN_GB = 20.0
+SYSTEM_DRIVE_FAIL_GB = settings.DISK_GUARD_SYSTEM_MIN_GB    # the workers pause below this much free space on C: (disk_guard)
+SYSTEM_DRIVE_WARN_GB = SYSTEM_DRIVE_FAIL_GB + 5.0
 DATA_DRIVE_FAIL_GB = 2.0
 DATA_DRIVE_WARN_GB = 10.0
 ONLINE_TIMEOUT_S = 10
@@ -204,6 +204,30 @@ def check_bsky_session() -> Check:
     return Check("bluesky-session", OK, f"session files present for {who}")
 
 
+def secret_scan_paths() -> list[Path]:
+    from . import social_alerts
+
+    return [social_alerts.social_log_path().parent, Path(settings.SOCIAL_AUDIT_LOG), Path(settings.SOCIAL_ALERTS_LOG), Path(settings.SOCIAL_ENGAGEMENT_LOG),
+            _drafts_dir(), Path(settings.SOCIAL_BACKUP_DIR), Path(settings.SOCIAL_DIGEST_DIR)]
+
+
+def check_secret_scan(paths: list[Path] | None = None) -> Check:
+    """No token-shaped string in the logs, audit, alerts, drafts, digests or backups. A real secret shape (JWT, bearer/DPoP/Authorization value, PEM
+    private key, JWK private member, api key) FAILS (and is a warning in --deploy, see for_deploy); only the weak forms (a Cookie header value,
+    `password=...`, `?token=...`, which prose can match too) WARN. Reads are bounded (secrets_guard caps). Names the files only, never the match."""
+    res = secrets_guard.scan(secret_scan_paths() if paths is None else paths)
+    found = res.findings
+    cap = f" (scan capped at {res.files} files: not everything was read)" if res.capped else ""
+    if found:
+        strong = [f for f in found if set(f.kinds) & secrets_guard.STRONG_KINDS]
+        shown = "; ".join(f"{f.path} ({', '.join(f.kinds)})" for f in (strong or found)[:5])
+        more = f" and {len(strong or found) - 5} more" if len(strong or found) > 5 else ""
+        if strong:
+            return Check("secret-scan", FAIL, f"{len(strong)} file(s) hold credential-like text: {shown}{more}. Remove or rotate; values are not shown{cap}")
+        return Check("secret-scan", WARN, f"{len(found)} file(s) hold text that looks like a cookie or key=value credential: {shown}{more}. Check and remove if real; values are not shown{cap}")
+    return Check("secret-scan", OK, "no credential-like text in the logs, audit, alerts, drafts, digests or backups" + cap)
+
+
 def check_gallery_index(now: dt.datetime) -> Check:
     path = Path(settings.GALLERY_OBS_INDEX)
     if not path.is_file():
@@ -217,6 +241,15 @@ def check_gallery_index(now: dt.datetime) -> Check:
     if days >= INDEX_MAX_AGE_DAYS:
         return Check("gallery-index", WARN, f"gallery index is {days:.1f} days old (limit {INDEX_MAX_AGE_DAYS}), {files} files")
     return Check("gallery-index", OK, f"gallery index is {days:.1f} days old, {files} files")
+
+
+def check_qdrant_sync(now: dt.datetime) -> Check:
+    from . import sync_marker
+
+    problems = sync_marker.stale(now)
+    if problems:
+        return Check("qdrant-sync", WARN, "; ".join(m for _, m in problems) + " (run `bio qdrant-sync` and `bio qdrant-inat-sync`, or the Bio-Qdrant-Sync task)")
+    return Check("qdrant-sync", OK, f"both Qdrant syncs wrote within {settings.QDRANT_STALE_DAYS:g} days")
 
 
 def check_taxonomy() -> Check:
@@ -291,23 +324,63 @@ def check_pending_quality(rules) -> Check:
     return Check("pending-quality", OK, f"all {n} pending drafts have photos of at least {floor} px")
 
 
-def check_pause() -> Check:
-    path = Path(settings.SOCIAL_PAUSE_FILE)
-    if path.exists():
-        return Check("pause", OK, f"info: posting is PAUSED ({path} exists)")
-    return Check("pause", OK, "info: posting is not paused")
+def check_pause(rules=None) -> Check:
+    from . import social_controls
+
+    state = social_controls.read_pause()
+    remote = social_controls.sync_marker_path()
+    notes = []
+    if remote is not None and not remote.parent.is_dir():
+        notes.append(f"the synced pause folder {remote.parent} is not reachable, so a remote pause cannot be seen")
+    if state is None:
+        return Check("pause", WARN if notes else OK, "; ".join(notes) if notes else "info: posting is not paused")
+    where = str(settings.SOCIAL_PAUSE_FILE) if state.get("source") == "local" else str(remote)
+    if rules is not None and not rules.on("pause_switch"):
+        return Check("pause", WARN, f"a pause marker exists ({where}) but the rule pause_switch is OFF, so posting is NOT paused")
+    return Check("pause", WARN if notes else OK, f"info: posting is PAUSED ({where} exists)" + "".join("; " + n for n in notes))
 
 
-def default_drives() -> dict[str, Path]:
-    system = Path(os.environ.get("SystemDrive", "C:") + "\\") if os.name == "nt" else Path("/")
-    return {"system": system, "data": Path(settings.CACHE_DIR)}
+ROLLBACK_SCRIPT = "run-social.ps1"           # the old single script: deployed by hand, never refreshed from the repo, never compared
 
 
-def _free_bytes(path: Path) -> int:
-    p = Path(path)
-    while not p.exists() and p != p.parent:
-        p = p.parent
-    return shutil.disk_usage(p).free
+def repo_scripts_dir() -> Path:
+    """scripts/windows of the tree this package runs from (src/bio_automation/ -> two levels up)."""
+    return Path(__file__).resolve().parents[2] / "scripts" / "windows"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_script_drift(repo_dir: Path | None = None, deployed_dir: Path | None = None) -> Check:
+    """The scheduled tasks run the copies in settings.SOCIAL_SCRIPTS_DIR, not the repo files. Warn when a repo scripts/windows/*.ps1 is missing
+    there or differs byte for byte (scripts/deploy_prod.ps1 refreshes them); run-social.ps1 is not compared. Never a failure: the post goes on."""
+    src = Path(repo_dir) if repo_dir is not None else repo_scripts_dir()
+    dst = Path(deployed_dir) if deployed_dir is not None else Path(settings.SOCIAL_SCRIPTS_DIR)
+    if not src.is_dir():
+        return Check("script-drift", WARN, f"cannot compare the scheduled-task scripts: no {src} next to this package")
+    wanted = sorted(f for f in src.glob("*.ps1") if f.is_file() and f.name.lower() != ROLLBACK_SCRIPT)
+    if not dst.is_dir():
+        return Check("script-drift", WARN, f"scheduled-task script folder {dst} does not exist ({len(wanted)} repo scripts not deployed)")
+    missing, differ, unreadable = [], [], []
+    for f in wanted:
+        copy = dst / f.name
+        try:
+            if not copy.is_file():
+                missing.append(f.name)
+            elif _sha256(copy) != _sha256(f):
+                differ.append(f.name)
+        except OSError:                                  # locked, or denied by an ACL: a warning that names the file, never a crash
+            unreadable.append(f.name)
+    if missing or differ or unreadable:
+        parts = ([f"missing in {dst}: {', '.join(missing)}"] if missing else []) + ([f"differ from the repo: {', '.join(differ)}"] if differ else [])             + ([f"unreadable (locked or access denied): {', '.join(unreadable)}"] if unreadable else [])
+        return Check("script-drift", WARN, "scheduled-task scripts drifted (" + "; ".join(parts) + "); run scripts\\deploy_prod.ps1 or copy them")
+    return Check("script-drift", OK, f"{len(wanted)} scheduled-task scripts in {dst} match the repo (sha256)")
+
+
+default_drives = disk_guard.default_drives     # one definition of the drives and of "free bytes", shared with the workers' guard
+_free_bytes = disk_guard.free_bytes
+
 
 
 def check_disks(drives: dict[str, Path], free: Callable[[Path], int]) -> list[Check]:
@@ -368,7 +441,9 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
                free: Callable[[Path], int] | None = None, whoami: Callable[[], dict] | None = None,
                inat_probe: Callable[[], int] | None = None, deploy: bool = False) -> list[Check]:
     """deploy: "rules" and "themes" check the built-in defaults (the code), the owner's files get their own checks (rules-file, themes-file)
-    and the CLI import is checked; for_deploy() then lets only the code-dependent checks fail."""
+    and the CLI import is checked; for_deploy() then lets only the code-dependent checks fail. The script-drift check is left out of --deploy:
+    deploy_prod.ps1 refreshes the scripts right after an accepted selfcheck, so the comparison would warn on every deploy that changed one
+    (the script verifies the hashes itself after copying)."""
     now = now or dt.datetime.now(settings.LOCAL_TZ)
     rules_check, rules = check_rules("rules", builtin=True) if deploy else check_rules()
     extra = []
@@ -376,8 +451,8 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
         file_check, file_rules = check_rules("rules-file")
         extra = [file_check, check_themes("themes-file")]
         rules = file_rules
-    checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
-              check_approved_drafts(), check_pending_quality(rules), check_pause(), *check_disks(drives or default_drives(), free or _free_bytes)]
+    checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_secret_scan(), check_bsky_session(), check_gallery_index(now), check_qdrant_sync(now), check_taxonomy(),
+              check_approved_drafts(), check_pending_quality(rules), check_pause(rules), *([] if deploy else [check_script_drift()]), *check_disks(drives or default_drives(), free or _free_bytes)]
     if online:
         checks += [check_bsky_online(whoami or default_whoami), check_inat_online(inat_probe or default_inat_probe)]
     return checks
