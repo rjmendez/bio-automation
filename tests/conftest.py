@@ -47,6 +47,7 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "no-prints" / "ledger.jsonl")
     monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "no-prints" / "social")                          # nor the drafts, the gallery index, the Bluesky session
     monkeypatch.setattr(settings, "GALLERY_OBS_INDEX", tmp_path / "no-prints" / "gallery_obs_index.json")
+    monkeypatch.setattr(settings, "INAT_BEST_PHOTO_DIR", tmp_path / "no-prints" / "inat_best")                # nor the downloaded best-size photo cache (photo_cache_cap evicts)
     monkeypatch.setattr(settings, "BSKY_OAUTH_DIR", tmp_path / "no-prints" / "oauth")
     for name in list(os.environ):                                                                       # no rule is switched by the machine's environment
         if name.startswith("BIO_SOCIAL_RULE_"):

@@ -898,6 +898,7 @@ class TestManualPosts:
         write_draft(tmp_path / "social" / "drafts", "2026-09-obs7", 7, "2026-09")
         Ledger().append("drafted", "2026-09-obs7", obs_id=7, month="2026-09")
         monkeypatch.setenv("BIO_SOCIAL_RULE_LIVE_RECHECK", "off")      # this test has no iNat to ask; the re-check would call the real API
+        monkeypatch.setenv("BIO_SOCIAL_RULE_IMAGE_FLOOR", "off")       # the draft's images are flat one-colour JPEGs: the pre_send image re-screen would call them blurry
         monkeypatch.setattr("sys.argv", ["bio", "social-post", "--draft", "2026-09-obs7"])
         assert cli.main() == 0
         out = json.loads(capsys.readouterr().out)

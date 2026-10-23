@@ -9,7 +9,11 @@
 Each gate is a hook (social_hooks) that runs only while its rule is on; register_hooks() is called by social_hooks.load_all()."""
 from __future__ import annotations
 
+import inspect
 import re
+import socket
+import unicodedata
+import urllib.error
 from pathlib import Path
 
 from . import social, social_hooks
@@ -18,8 +22,22 @@ from .social_rules import Audit
 
 # ------------------------------------------------------------------------------------------------------ alt_text_privacy
 
-# Two decimal numbers with 3+ decimals, comma-separated: "40.1234, -75.5678" (a measurement like "2.5, 3.1" has too few decimals to match).
-COORDINATES = re.compile(r"(?<![\d.])-?\d{1,3}\.\d{3,}\s*[,;/]\s*-?\d{1,3}\.\d{3,}(?![\d.])")
+# Coordinates, in the forms a photographer or a GPS app writes them. Unicode minus signs are normalised to "-" first (see _normalise).
+#   decimal pair   "40.4123, -75.9876", "40.41234 -75.98765", "+40.4123;-75.9876", comma decimals "40,4123 -75,9876", also at the end of a sentence
+#   labelled       "lat 40.4", "Longitude: -75.9", "lng=-75.9"
+#   hemisphere     "40.4123 N 75.9876 W", "N 40.41 W 75.98", "40.4123° N"
+#   DMS            40°24'44"N 75°59'15"W (degrees and minutes with their marks)
+# A number must have 3+ decimals (comma decimals: 4+) so a measurement like "2.5, 3.1 cm", "f/2.8", "10.5 mm", "4000 px" or "2025" never matches.
+_NUM = r"(?:[+\-]?\d{1,3}\.\d{3,}|[+\-]?\d{1,3},\d{4,})"
+_ANGLE = r"\d{1,3}(?:[.,]\d+)?"
+COORDINATES = re.compile(rf"(?<![\w.,]){_NUM}\s*(?:[,;/]\s*|\s)\s*{_NUM}(?!\d)")
+LABELLED_COORDINATE = re.compile(rf"\b(?:lat(?:itude)?|lon(?:gitude)?|lng)\b\.?\s*[:=]?\s*[+\-]?{_ANGLE}", re.IGNORECASE)
+HEMISPHERE_PAIR = re.compile(rf"(?<![\d.,]){_ANGLE}\s*°?\s*[NS]\b[\s,;/]*{_ANGLE}\s*°?\s*[EW]\b"
+                             rf"|(?<![\w.,])[NS]\s*{_ANGLE}\s*°?[\s,;/]*[EW]\s*{_ANGLE}")
+HEMISPHERE_SINGLE = re.compile(r"(?<![\d.,])\d{1,3}\.\d{3,}\s*°?\s*[NSEW]\b")
+DMS = re.compile(r"\d{1,3}\s*°\s*\d{1,2}(?:[.,]\d+)?\s*['′’]")
+COORDINATE_FORMS = (COORDINATES, LABELLED_COORDINATE, HEMISPHERE_PAIR, HEMISPHERE_SINGLE, DMS)
+_MINUS_SIGNS = dict.fromkeys(map(ord, "−‒–—‐‑﹣－"), "-")
 # A house number, one to three capitalised words, then a street word: "1234 Old Mill Rd", "7 Oak Street". The street word must be capitalised
 # so "2 long drive" or "3 ways" is not an address.
 STREET_WORDS = "St|Street|Rd|Road|Ave|Avenue|Dr|Drive|Ln|Lane|Blvd|Way|Ct|Court"
@@ -28,47 +46,114 @@ ADDRESS = re.compile(rf"\b\d{{1,6}}\s+(?:[A-Z][\w'-]*\s+){{1,3}}(?:{STREET_WORDS
 PLACE_TOKEN_MIN = 4
 PLACE_STOPLIST = frozenset({"county", "state", "usa", "united", "states", "township", "park", "city", "town", "borough", "village",
                             "north", "south", "east", "west", "national", "forest", "near", "area", "region", "province"})
-HIDING = ("private", "obscured-private")            # geoprivacy / taxon_geoprivacy values that keep the true place off the public record
-TAXON_HIDING = HIDING + ("obscured",)               # a taxon-obscured observation: the owner's own coordinates must not leak either
+# A place token that is also an everyday word only counts as a leak when the alt text writes it capitalised ("Black Rock", not "a black rock").
+COMMON_WORDS = frozenset({"black", "white", "red", "green", "blue", "yellow", "brown", "gray", "grey", "rock", "rocks", "stone", "hill", "hills",
+                          "ridge", "creek", "river", "lake", "pond", "spring", "springs", "woods", "wood", "field", "fields", "farm", "mill",
+                          "mountain", "mountains", "valley", "trail", "bridge", "road", "swamp", "marsh", "meadow", "island", "little", "long",
+                          "high", "great", "old", "upper", "lower", "middle", "falls", "glen", "pine", "oak", "maple", "cedar", "beaver", "bucks",
+                          "bear", "deer", "eagle", "hawk", "fox", "wolf", "bald", "sandy", "rocky", "cold", "clear", "round", "flat", "grove"})
+SEASON_WORDS = frozenset({"spring", "summer", "fall", "autumn", "winter"})
+HIDING = ("private", "obscured-private", "obscured")  # geoprivacy / taxon_geoprivacy values under which the true (or even a general) place is not for the text
+TAXON_HIDING = HIDING                                 # kept as a name: a taxon-obscured observation's coordinates must not leak either
+LEAK_COORDINATES, LEAK_ADDRESS, LEAK_PLACE = "coordinates", "street address", "hidden place name"
+
+
+def _normalise(text: str) -> str:
+    return unicodedata.normalize("NFKC", text).translate(_MINUS_SIGNS)
+
+
+def _fold(word: str) -> str:
+    """Case- and accent-folded form of a word ("Río" == "RIO" == "rio")."""
+    return "".join(c for c in unicodedata.normalize("NFKD", word.casefold()) if not unicodedata.combining(c))
+
+
+def has_coordinates(text: str) -> bool:
+    text = _normalise(text)
+    return any(rx.search(text) for rx in COORDINATE_FORMS)
+
+
+def hides_place(obs: dict) -> bool:
+    """geoprivacy or taxon_geoprivacy says the place is private or obscured."""
+    return (obs.get("geoprivacy") or "") in HIDING or (obs.get("taxon_geoprivacy") or "") in HIDING
 
 
 def location_hidden(obs: dict) -> bool:
-    """True when the observation hides its location: no public place, private/obscured-private geoprivacy, or a taxon geoprivacy that hides it."""
-    return (social.public_place(obs) is None or (obs.get("geoprivacy") or "") in HIDING
-            or (obs.get("taxon_geoprivacy") or "") in TAXON_HIDING)
+    """True when the observation hides its location: no public place, or private/obscured geoprivacy, or a taxon geoprivacy that hides it."""
+    return social.public_place(obs) is None or hides_place(obs)
 
 
 def place_tokens(place_guess: str | None) -> list[str]:
-    """The place name's words (split on commas and spaces) of PLACE_TOKEN_MIN+ letters that are not generic."""
+    """The place name's words (split on commas and spaces) of PLACE_TOKEN_MIN+ characters that are not generic. A token is letters, or letters
+    with digits ("SGL220"); pure numbers are not tokens."""
     words = re.split(r"[,\s]+", place_guess or "")
     out = []
     for w in words:
         w = w.strip(".()'\"")
-        if len(w) >= PLACE_TOKEN_MIN and w.isalpha() and w.casefold() not in PLACE_STOPLIST and w.casefold() not in [t.casefold() for t in out]:
+        if (len(w) >= PLACE_TOKEN_MIN and w.isalnum() and any(c.isalpha() for c in w) and w.casefold() not in PLACE_STOPLIST
+                and _fold(w) not in [_fold(t) for t in out]):
             out.append(w)
     return out
 
 
-def alt_leaks(alt: str, obs: dict) -> list[str]:
-    """What the alt text gives away, as human reasons ([] = clean): coordinates, a street address, a hidden place's name."""
+_CAPTION_PLACE = re.compile(r"\bphotographed\s+(?:at|in|near)\s+(.+?)(?:\s+on\s+(?:\d|[A-Z][a-z]+\s+\d)|\.?\s*$)")
+_TITLE_SPLIT = re.compile(r"\s+[—–-]\s+")
+
+
+def label_places(label: dict | None) -> list[str]:
+    """The place phrases of a Stock label: the caption's "photographed at <place>" and the title's context after the dash (a season is not one);
+    keywords are not read (a keyword cannot be told from a taxon term), the redundant ones are caught through these phrases."""
+    label = label or {}
+    out = []
+    m = _CAPTION_PLACE.search(_normalise(label.get("caption") or ""))
+    if m:
+        out.append(m.group(1))
+    parts = _TITLE_SPLIT.split(label.get("title") or "")
+    if len(parts) > 1 and parts[-1].strip().casefold() not in SEASON_WORDS:
+        out.append(parts[-1])
+    return out
+
+
+def forbidden_tokens(obs: dict, label: dict | None = None) -> list[str]:
+    """The place words an alt text must not carry for an observation whose location is hidden: the iNat place guess, the place text the
+    draft shows, and the place in the Stock label (title context, caption)."""
+    out: list[str] = []
+    for phrase in [obs.get("place_guess"), social.public_place(obs), *label_places(label)]:
+        for t in place_tokens(phrase):
+            if _fold(t) not in [_fold(o) for o in out]:
+                out.append(t)
+    return out
+
+
+def label_without_place(label: dict, obs: dict) -> dict:
+    """The Stock label with everything that names the place removed, for the vision model when the location is hidden: the title keeps its
+    name only, the caption goes, keywords that spell a place word go."""
+    tokens = {_fold(t) for t in forbidden_tokens(obs, label)}
+    parts = _TITLE_SPLIT.split(label.get("title") or "")
+    title = parts[0] if len(parts) > 1 and parts[-1].strip().casefold() not in SEASON_WORDS else label.get("title")
+    keywords = [k for k in (label.get("keywords") or []) if not ({_fold(w) for w in re.findall(r"[^\W_]+", k)} & tokens)]
+    return {**label, "title": title, "caption": None, "keywords": keywords}
+
+
+def alt_leaks(alt: str, obs: dict, label: dict | None = None) -> list[str]:
+    """The KINDS of leak in the alt text ([] = clean): "coordinates", "street address", "hidden place name". Never the leaked text itself
+    (reasons land in the audit log, social.log, the digest and the backups)."""
     found = []
-    m = COORDINATES.search(alt)
-    if m:
-        found.append(f"coordinates ({m.group(0)!r})")
-    m = ADDRESS.search(alt)
-    if m:
-        found.append(f"street address ({m.group(0)!r})")
+    if has_coordinates(alt):
+        found.append(LEAK_COORDINATES)
+    if ADDRESS.search(_normalise(alt)):
+        found.append(LEAK_ADDRESS)
     if location_hidden(obs):
-        # place names are capitalised in prose; a lower-case "black" or "rock" is the colour or the thing, not "Black Rock Road"
-        words = {w.casefold() for w in re.findall(r"\b[A-Z][a-z]+\b", alt)}
-        hit = [t for t in place_tokens(obs.get("place_guess")) if t.casefold() in words]
-        if hit:
-            found.append(f"hidden place name ({', '.join(hit)})")
+        tokens = {_fold(t): t for t in forbidden_tokens(obs, label)}
+        for w in re.findall(r"[^\W_]+", alt):
+            key = _fold(w)
+            if key in tokens and (w[0].isupper() or key not in COMMON_WORDS):
+                found.append(LEAK_PLACE)
+                break
     return found
 
 
 def alt_text_privacy(ctx: dict) -> Verdict | None:
-    leaks = alt_leaks(ctx.get("alt") or "", ctx["obs"])
+    leaks = alt_leaks(ctx.get("alt") or "", ctx["obs"], ctx.get("label"))
     if leaks:
         return Verdict("reject", "alt text leaks " + "; ".join(leaks))
     return None
@@ -131,8 +216,13 @@ def _taxon_name(obs: dict) -> str:
     return ((obs.get("taxon") or {}).get("name") or "").strip()
 
 
+def _levels(obs: dict) -> tuple:
+    return (obs.get("geoprivacy") or None, obs.get("taxon_geoprivacy") or None)
+
+
 def recheck_problem(obs_id: int, then: dict, now: dict, text: str) -> str | None:
-    """Why the draft written with `then` is no longer fine to send now that iNat says `now` (None = still fine)."""
+    """Why the draft written with `then` is no longer fine to send now that iNat says `now` (None = still fine). Reasons never repeat the
+    place (it may be the very thing iNat now hides)."""
     if now.get("quality_grade") == "casual":
         return f"observation {obs_id} is now casual"
     if not _taxon_name(now):
@@ -140,24 +230,36 @@ def recheck_problem(obs_id: int, then: dict, now: dict, text: str) -> str | None
     if _taxon_name(then) and _taxon_name(now) != _taxon_name(then):
         return f"observation {obs_id} was re-identified: {_taxon_name(then)} -> {_taxon_name(now)}"
     shown = social.public_place(then)
-    if shown and location_hidden(now) and shown in text:
-        return f"observation {obs_id} now hides its location but the post still shows {shown!r}"
+    if shown and shown in text:
+        # hidden now (private; obscured or taxon-obscured when that is new since the draft: an unchanged obscured place was already the
+        # public, generalised one when the draft was written, but a draft written before taxon_geoprivacy was recorded cannot prove it)
+        if social.public_place(now) is None or (hides_place(now) and _levels(now) != _levels(then)):
+            return f"observation {obs_id} now hides its location but the post still shows its place"
+        if social.public_place(now) != shown:
+            return f"observation {obs_id} has a different place on iNat than the one the post shows"
     return None
 
 
+def _transient_errors() -> tuple:
+    from .inat import InatTransientError
+
+    return (InatTransientError, urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout, socket.gaierror, socket.herror)
+
+
 def live_recheck(ctx: dict) -> Verdict | None:
+    """Fail open ONLY when iNat cannot be reached (a transient API error, a network or socket error, a timeout): audited as
+    live_recheck_unavailable. Any other exception (a coding error, an unexpected API answer) propagates, and the framework blocks the send."""
     from .inat import InatNotFoundError
 
     draft, audit = ctx["draft"], ctx.get("audit") or Audit()
     text = social.segments_text(draft.get("text") or [])
+    unavailable = _transient_errors()
     for obs_id, then in draft_observations(draft).items():
         try:
             now = ctx["fetch"](obs_id)
         except InatNotFoundError:
             return Verdict("withdraw", f"observation {obs_id} no longer exists on iNat")
-        except Exception as e:  # noqa: BLE001
-            # FAIL OPEN, deliberately: an iNat outage or timeout must not stop all posting. The draft was already checked when it was
-            # written; the recheck is an extra safety net, so when it cannot run we say so in the audit log and carry on.
+        except unavailable as e:
             audit.log("live_recheck_unavailable", draft_id=ctx.get("draft_id"), obs_id=obs_id, error=f"{type(e).__name__}: {e}"[:300])
             continue
         problem = recheck_problem(obs_id, then, now, text)
@@ -166,9 +268,55 @@ def live_recheck(ctx: dict) -> Verdict | None:
     return None
 
 
+# ------------------------------------------------------------------------------------------------------------- gate_rescreen
+
+def _image_observation(draft: dict, image: dict) -> dict:
+    per_image = (draft.get("observations") or {}).get(str(image.get("obs_id")))
+    return per_image or draft.get("observation") or {}
+
+
+def _rescreen_withdraw(ctx: dict, gate: str, reason: str) -> Verdict:
+    (ctx.get("audit") or Audit()).log("gate_rescreen", draft_id=ctx.get("draft_id"), gate=gate, reason=reason)
+    return Verdict("withdraw", reason)
+
+
+def rescreen_privacy(ctx: dict) -> Verdict | None:
+    """The alt_text_privacy check on every alt text of the STORED draft (so drafts written before the gate, or before it was improved, are
+    screened before they are sent). The reason names the image and the kind of leak, never the text."""
+    draft = ctx["draft"]
+    for i, image in enumerate(draft.get("images") or [], 1):
+        leaks = alt_leaks(image.get("alt") or "", _image_observation(draft, image))
+        if leaks:
+            return _rescreen_withdraw(ctx, "alt_text_privacy", f"alt text of image {i} leaks " + "; ".join(leaks))
+    return None
+
+
+def rescreen_image(ctx: dict) -> Verdict | None:
+    """The image_floor check on every image file of the STORED draft."""
+    draft = ctx["draft"]
+    for i, image in enumerate(draft.get("images") or [], 1):
+        path = Path(ctx["draft_dir"]) / image["file"]
+        try:
+            problem = image_problem(measure_image(path))
+        except OSError:
+            problem = "image file is missing or unreadable"
+        if problem:
+            return _rescreen_withdraw(ctx, "image_floor", f"image {i} ({image['file']}): {problem}")
+    return None
+
+
 # -------------------------------------------------------------------------------------------------------------- extension
 
+def _register(*args, **kwargs) -> None:
+    """social_hooks.register, passing critical=True (a failing hook fails closed in every stage) where the framework supports it."""
+    if "critical" not in inspect.signature(social_hooks.register).parameters:
+        kwargs.pop("critical", None)
+    social_hooks.register(*args, **kwargs)
+
+
 def register_hooks() -> None:
-    social_hooks.register("alt_text_privacy", "draft", alt_text_privacy, rule="alt_text_privacy", priority=10)
-    social_hooks.register("image_floor", "draft", image_floor, rule="image_floor", priority=30)
-    social_hooks.register("live_recheck", "pre_send", live_recheck, rule="live_recheck", priority=20)
+    _register("alt_text_privacy", "draft", alt_text_privacy, rule="alt_text_privacy", priority=10, critical=True)
+    _register("image_floor", "draft", image_floor, rule="image_floor", priority=30, critical=True)
+    _register("live_recheck", "pre_send", live_recheck, rule="live_recheck", priority=20, critical=True)
+    _register("gate_rescreen_privacy", "pre_send", rescreen_privacy, rule="alt_text_privacy", priority=25, critical=True)
+    _register("gate_rescreen_image", "pre_send", rescreen_image, rule="image_floor", priority=25, critical=True)

@@ -795,6 +795,7 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
     deleted and taxon-less observations raise SkipObservation. style(subject) -> {"rules", "examples", ...}: the owner's alt-text style
     for this photo (social_style.style_for), given to the vision model and recorded per image. The "draft" hooks (social_hooks) see each
     image with its alt text; a reject raises SkipObservation and leaves no folder."""
+    from . import social_gates
     from .inat import InatNotFoundError
 
     rules, audit = rules or load_rules(), audit or Audit()
@@ -816,12 +817,16 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
         name = f"{i}.jpg"
         info = prepare_image(src, out / name)
         label = read_label(src)
+        shown = label
+        if rules.on("alt_text_privacy") and social_gates.location_hidden(obs):
+            shown = social_gates.label_without_place(label, obs)         # a hidden place must not reach the vision model through the Stock label
         context = {"common_name": taxon.get("preferred_common_name") or taxon.get("common_name"), "scientific_name": taxon.get("name"),
                    "rank": taxon.get("rank"), "grade": GRADE_TEXT.get(grade or "", grade), "observed_on": format_date(obs.get("observed_on")),
-                   "place": public_place(obs), "title": label.get("title"), "caption": label.get("caption"), "keywords": label.get("keywords")}
+                   "place": None if shown is not label else public_place(obs), "title": shown.get("title"), "caption": shown.get("caption"),
+                   "keywords": shown.get("keywords")}
         if style is not None:
-            subject = " ".join(x for x in (context["common_name"], context["scientific_name"], label.get("title"),
-                                           ", ".join((label.get("keywords") or [])[:10])) if x)
+            subject = " ".join(x for x in (context["common_name"], context["scientific_name"], shown.get("title"),
+                                           ", ".join((shown.get("keywords") or [])[:10])) if x)
             context["style"] = style(subject)
         try:
             context["attempts"] = []
