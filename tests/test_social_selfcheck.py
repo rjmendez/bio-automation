@@ -161,8 +161,8 @@ class TestLedger:
         c = world.run()["ledger"]
         assert (c.level, c.message) == (FAIL, "ledger line 2 is corrupt (JSONDecodeError)")
         got = world.run()
-        assert got["approved-drafts"].message == "skipped: the ledger cannot be read (JSONDecodeError)"
-        assert got["pending-quality"].message == "skipped: the ledger cannot be read (JSONDecodeError)"
+        assert got["approved-drafts"].message == "skipped: the ledger cannot be read (SocialError)"
+        assert got["pending-quality"].message == "skipped: the ledger cannot be read (SocialError)"
         assert list(got) == NAMES
 
     def test_a_line_that_is_json_but_not_a_ledger_record_fails(self, world, monkeypatch):

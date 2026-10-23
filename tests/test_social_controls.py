@@ -6,11 +6,21 @@ import json
 from pathlib import Path
 
 import pytest
-from test_social import NOW, URI, RecordingSend, drafted, rules_with
+from test_social import NOW, URI, RecordingSend, drafted
+from test_social import rules_with as _rules_with
 
 from bio_automation import cli, settings, social, social_controls, social_hooks
 from bio_automation.social import SocialError
 from bio_automation.social_rules import Audit
+
+
+# The other modules' pre_send/post_send hooks are registered process-wide once any test loads them; these tests are about the controls only,
+# so the rules of the other owners are off here.
+OTHER_HOOKS_OFF = dict(live_recheck=False, ledger_integrity=False, image_floor=False, verify_posts=False, alerts=False)
+
+
+def rules_with(**states):
+    return _rules_with(**{**OTHER_HOOKS_OFF, **states})
 
 
 def audit_path() -> Path:
@@ -43,7 +53,7 @@ def run_cli(monkeypatch, *argv) -> int:
 
 def pre_send(manual=False, rules=None, draft_id="d1"):
     social_controls.register_hooks()
-    ctx = {"draft_id": draft_id, "draft": {}, "draft_dir": Path("."), "ledger": None, "now": NOW, "live": True, "manual": manual,
+    ctx = {"draft_id": draft_id, "draft": {}, "draft_dir": Path("."), "ledger": social.Ledger(), "now": NOW, "live": True, "manual": manual,
            "fetch": None, "rules": rules or rules_with()}
     results = social_hooks.run("pre_send", ctx, rules=ctx["rules"], audit=Audit(audit_path(), run="r1", now=lambda: NOW))
     return social_hooks.first_non_pass(results)

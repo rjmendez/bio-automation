@@ -192,11 +192,11 @@ def _drafts_dir() -> Path:
 
 def _ledger_drafts():
     """(drafts, None), or (None, a skipped Check's message) when the ledger cannot be read: check_ledger already failed, so these say so and go on."""
-    from .social import Ledger
+    from .social import Ledger, SocialError
 
     try:
         return Ledger().drafts(), None
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except (OSError, ValueError, KeyError, TypeError, SocialError) as e:
         return None, f"skipped: the ledger cannot be read ({type(e).__name__})"
 
 
