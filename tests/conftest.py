@@ -61,3 +61,19 @@ def no_hooks_between_tests():
     social_hooks.reset()
     yield
     social_hooks.reset()
+
+
+@pytest.fixture(autouse=True)
+def library_callers_do_not_load_the_real_gates(request, monkeypatch):
+    """post_next, make_draft, draft_month and draft_themes load every social extension themselves (so a library caller cannot bypass the gates).
+    Most tests exercise those functions with their own hooks or none, so the loading is switched off for them; a test that is about the loading
+    (or about the real gates in the flow) is marked `real_gates` and gets the real thing."""
+    if request.node.get_closest_marker("real_gates"):
+        return
+    from bio_automation import social
+
+    monkeypatch.setattr(social, "_require_gates", lambda: None)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_gates: the test runs the library entry points with the real social extensions loaded")

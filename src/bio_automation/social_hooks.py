@@ -3,7 +3,8 @@
 A hook is fn(ctx: dict) -> Verdict | None (None is a pass). It runs only while its rule is ON (rule=None: always), lower priority first.
 Every non-pass verdict is audited (event "hook"); an exception inside a hook is audited (event "hook_error") and then handled per stage:
 a pass for draft, order, post_send and maintenance (a broken check must not stop the drafting), a BLOCK for pre_send (a broken check must
-never let a post through: fail closed).
+never let a post through: fail closed). A CRITICAL hook (register(..., critical=True): the privacy gates) fails closed in every stage that can
+refuse: a reject for draft, a block for pre_send (order, post_send and maintenance cannot refuse, so those pass); the audit says outcome=reject|block|pass.
 
 Stages and their ctx:
   draft        {obs, obs_id, image (Path), alt, label, month, rules}        reject = skip this observation
@@ -13,7 +14,8 @@ Stages and their ctx:
   maintenance  {drafts_dir, ledger, rules, today}                            after each social-draft run
 draft and pre_send stop at the first non-pass verdict; the other stages run every hook.
 
-Extension modules (EXTENSIONS) are imported lazily; each may define register_hooks(), add_parsers(sub) and COMMANDS = {command: fn(args) -> int}
+Extension modules (EXTENSIONS) are imported lazily, each on its own: one that fails to import or to register is recorded in failed() and audited
+(hook_error, stage "load"), and the other commands go on; require_loaded() raises ExtensionsFailed for the commands that need the gates (GATED_COMMANDS); each may define register_hooks(), add_parsers(sub) and COMMANDS = {command: fn(args) -> int}
 (and ERRORS, a tuple of exception classes the CLI prints as one line)."""
 from __future__ import annotations
 
@@ -24,9 +26,14 @@ STAGES = ("draft", "order", "pre_send", "post_send", "maintenance")
 ACTIONS = ("pass", "reject", "withdraw", "block")
 STOP_AT_FIRST = ("draft", "pre_send")
 FAIL_CLOSED = ("pre_send",)
+GATED_COMMANDS = ("social-post", "social-draft", "social-prep")      # the commands that post or draft: they must not run without every extension's gates
 EXTENSIONS = ("social_gates", "social_controls", "social_verify", "social_alerts", "social_prep", "social_selfcheck", "social_state",
               "social_taste", "social_engagement")
 PACKAGE = __package__ or "bio_automation"
+
+
+class ExtensionsFailed(Exception):
+    """An extension module did not load, so its gates would be missing."""
 
 
 class Verdict(NamedTuple):
@@ -40,18 +47,22 @@ class Hook(NamedTuple):
     rule: str | None
     fn: Callable[[dict], "Verdict | None"]
     priority: int
+    critical: bool = False
 
 
 _hooks: list[Hook] = []
 _loaded: set[str] = set()
 _modules: dict[str, object] = {}
+_failed: dict[str, str] = {}
 
 
-def register(name: str, stage: str, fn: Callable[[dict], "Verdict | None"], *, rule: str | None = None, priority: int = 50) -> Hook:
-    """Add a hook (a second registration of the same name and stage replaces the first, so registering twice is harmless)."""
+def register(name: str, stage: str, fn: Callable[[dict], "Verdict | None"], *, rule: str | None = None, priority: int = 50,
+             critical: bool = False) -> Hook:
+    """Add a hook (a second registration of the same name and stage replaces the first, so registering twice is harmless). A critical hook
+    fails closed in every stage when it raises (see the module docstring)."""
     if stage not in STAGES:
         raise ValueError(f"unknown hook stage {stage!r} (stages: {', '.join(STAGES)})")
-    hook = Hook(name, stage, rule, fn, priority)
+    hook = Hook(name, stage, rule, fn, priority, critical)
     _hooks[:] = [h for h in _hooks if (h.name, h.stage) != (name, stage)] + [hook]
     return hook
 
@@ -99,9 +110,13 @@ def run(stage: str, ctx: dict, *, rules, audit) -> list[tuple[Hook, Verdict]]:
             verdict = _verdict(hook.fn(ctx))
         except Exception as e:  # noqa: BLE001 -- a hook is untrusted code to the flow it plugs into
             error = f"{type(e).__name__}: {e}"[:300]
-            closed = stage in FAIL_CLOSED
-            _log(audit, "hook_error", name=hook.name, stage=stage, error=error, outcome="block" if closed else "pass", **_who(ctx))
-            verdict = Verdict("block", f"hook {hook.name} failed ({error}); nothing is sent") if closed else Verdict("pass", f"hook error: {error}")
+            if stage in FAIL_CLOSED:
+                verdict = Verdict("block", f"hook {hook.name} failed ({error}); nothing is sent")
+            elif hook.critical and stage == "draft":
+                verdict = Verdict("reject", f"critical hook {hook.name} failed ({error}); the draft is rejected")
+            else:
+                verdict = Verdict("pass", f"hook error: {error}")
+            _log(audit, "hook_error", name=hook.name, stage=stage, error=error, outcome=verdict.action, **({"critical": True} if hook.critical else {}), **_who(ctx))
         results.append((hook, verdict))
         if verdict.action != "pass":
             _log(audit, "hook", name=hook.name, stage=stage, action=verdict.action, reason=verdict.reason, **_who(ctx))
@@ -123,8 +138,27 @@ def _qualified(name: str) -> str:
     return name if "." in name else f"{PACKAGE}.{name}"
 
 
+def failed() -> dict[str, str]:
+    """{extension module: error} for the extensions that did not load (a copy)."""
+    return dict(_failed)
+
+
+def _record_failure(name: str, e: BaseException) -> None:
+    error = f"{type(e).__name__}: {e}"[:300]
+    if _failed.get(name) == error:
+        return                                                  # the same failure seen again (every extensions() call retries): audited once
+    _failed[name] = error
+    try:
+        from .social_rules import Audit
+
+        Audit().log("hook_error", name=name, stage="load", error=error, outcome="skipped")
+    except Exception:  # noqa: BLE001 -- an unwritable audit log never turns a skipped extension into a crash
+        pass
+
+
 def extensions() -> list:
-    """The extension modules that exist. A module that is not there yet is skipped; an import error inside one that is there propagates."""
+    """The extension modules that load. A module that is not there yet is skipped; one that is there but fails to import is skipped too and
+    recorded in failed() (and audited): a broken extension must not take every other command down."""
     out = []
     for name in EXTENSIONS:
         full = _qualified(name)
@@ -133,21 +167,41 @@ def extensions() -> list:
                 _modules[full] = importlib.import_module(full)
             except ModuleNotFoundError as e:
                 if e.name != full:
-                    raise
+                    _record_failure(name, e)
                 continue
+            except Exception as e:  # noqa: BLE001 -- any import-time error of one extension
+                _record_failure(name, e)
+                continue
+            _failed.pop(name, None)
         out.append(_modules[full])
     return out
 
 
 def load_all() -> list:
-    """Import every extension and call its register_hooks() once (a second call does nothing more). Returns the modules."""
-    mods = extensions()
-    for mod in mods:
-        if mod.__name__ in _loaded:
-            continue
-        if hasattr(mod, "register_hooks"):
-            mod.register_hooks()
-        _loaded.add(mod.__name__)
+    """Import every extension and call its register_hooks() once (a second call does nothing more). Returns the modules that loaded; the ones
+    that did not are in failed() (see require_loaded())."""
+    mods = []
+    for mod in extensions():
+        if mod.__name__ not in _loaded:
+            name = mod.__name__.rsplit(".", 1)[-1]
+            try:
+                if hasattr(mod, "register_hooks"):
+                    mod.register_hooks()
+            except Exception as e:  # noqa: BLE001
+                _record_failure(name, e)
+                continue
+            _loaded.add(mod.__name__)
+            _failed.pop(name, None)
+        mods.append(mod)
+    return mods
+
+
+def require_loaded() -> list:
+    """load_all(), but raise ExtensionsFailed when any extension did not load: for the code that posts or drafts, which needs every gate."""
+    mods = load_all()
+    if _failed:
+        raise ExtensionsFailed("these social modules did not load, so their gates are missing and nothing is posted or drafted: "
+                               + "; ".join(f"{n} ({e})" for n, e in sorted(_failed.items())))
     return mods
 
 
@@ -156,3 +210,4 @@ def reset() -> None:
     _hooks.clear()
     _loaded.clear()
     _modules.clear()
+    _failed.clear()

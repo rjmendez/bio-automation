@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -206,24 +207,61 @@ class TestExtensions:
         monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_plain",))
         assert [m.__name__ for m in social_hooks.load_all()] == ["fakeext.ext_plain"]
 
-    def test_a_broken_extension_propagates_its_error(self, fakepkg, monkeypatch):
+    def test_a_broken_extension_is_skipped_recorded_audited_and_the_others_load(self, fakepkg, monkeypatch, tmp_path):
         (fakepkg / "ext_bad.py").write_text("raise SyntaxError('bad extension')\n", encoding="utf-8")
-        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_bad",))
-        with pytest.raises(SyntaxError, match="bad extension"):
-            social_hooks.extensions()
+        (fakepkg / "ext_good.py").write_text("X = 1\n", encoding="utf-8")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_bad", "ext_good"))
+        assert [m.__name__ for m in social_hooks.load_all()] == ["fakeext.ext_good"]
+        assert list(social_hooks.failed()) == ["ext_bad"]
+        assert social_hooks.failed()["ext_bad"].startswith("SyntaxError: bad extension")
+        [rec] = Audit().records()
+        assert (rec["event"], rec["name"], rec["stage"], rec["outcome"]) == ("hook_error", "ext_bad", "load", "skipped")
+        assert rec["error"] == social_hooks.failed()["ext_bad"]
 
-    def test_a_missing_dependency_inside_an_extension_propagates_not_tolerated(self, fakepkg, monkeypatch):
+    def test_the_same_failure_seen_again_is_audited_once(self, fakepkg, monkeypatch):
+        (fakepkg / "ext_bad.py").write_text("raise RuntimeError('still broken')\n", encoding="utf-8")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_bad",))
+        for _ in range(3):
+            social_hooks.load_all()
+        assert [r["error"] for r in Audit().records()] == ["RuntimeError: still broken"]
+
+    def test_a_missing_dependency_inside_an_extension_is_recorded_not_tolerated_as_absent(self, fakepkg, monkeypatch):
         (fakepkg / "ext_dep.py").write_text("import not_installed_anywhere_xyz\n", encoding="utf-8")
         monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_dep",))
-        with pytest.raises(ModuleNotFoundError, match="not_installed_anywhere_xyz"):
-            social_hooks.extensions()
+        assert social_hooks.extensions() == []
+        assert social_hooks.failed() == {"ext_dep": "ModuleNotFoundError: No module named 'not_installed_anywhere_xyz'"}
 
-    def test_a_failing_register_hooks_propagates_and_is_retried_by_the_next_load(self, fakepkg, monkeypatch):
+    def test_a_failing_register_hooks_is_recorded_and_retried_by_the_next_load(self, fakepkg, monkeypatch):
         (fakepkg / "ext_r.py").write_text("def register_hooks():\n    raise RuntimeError('cannot register')\n", encoding="utf-8")
         monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_r",))
         for _ in range(2):
-            with pytest.raises(RuntimeError, match="cannot register"):
-                social_hooks.load_all()
+            assert social_hooks.load_all() == []
+            assert social_hooks.failed() == {"ext_r": "RuntimeError: cannot register"}
+        (fakepkg / "ext_r.py").write_text("def register_hooks():\n    pass\n", encoding="utf-8")
+        importlib.reload(sys.modules["fakeext.ext_r"])
+        assert [m.__name__ for m in social_hooks.load_all()] == ["fakeext.ext_r"]
+        assert social_hooks.failed() == {}
+
+    def test_require_loaded_raises_naming_the_failed_module_and_passes_when_all_loaded(self, fakepkg, monkeypatch):
+        (fakepkg / "ext_good.py").write_text("X = 1\n", encoding="utf-8")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_good",))
+        assert [m.__name__ for m in social_hooks.require_loaded()] == ["fakeext.ext_good"]
+        (fakepkg / "ext_bad.py").write_text("raise RuntimeError('nope')\n", encoding="utf-8")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_good", "ext_bad"))
+        with pytest.raises(social_hooks.ExtensionsFailed, match=r"ext_bad \(RuntimeError: nope\)"):
+            social_hooks.require_loaded()
+
+    def test_a_broken_extension_does_not_stop_an_unrelated_command_but_stops_the_gated_ones(self, fakepkg, monkeypatch, capsys):
+        (fakepkg / "ext_bad.py").write_text("raise RuntimeError('nope')\n", encoding="utf-8")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_bad",))
+        assert social_hooks.GATED_COMMANDS == ("social-post", "social-draft", "social-prep")
+        for command in ("social-post", "social-draft"):          # social-prep is another branch's command
+            monkeypatch.setattr("sys.argv", ["bio", command])
+            assert cli.main() == 1
+            assert capsys.readouterr().err == (f"bio {command}: social modules did not load, so their gates are missing: ext_bad (RuntimeError: nope)\n")
+        monkeypatch.setattr("sys.argv", ["bio", "social-rules"])
+        assert cli.main() == 0                                          # not a gated command: it runs although an extension is broken
+        assert "posting rules" in capsys.readouterr().out
 
     def test_the_cli_adds_extension_parsers_and_dispatches_extension_commands(self, fakepkg, monkeypatch, capsys):
         (fakepkg / "ext_cmd.py").write_text(
@@ -400,7 +438,9 @@ class TestPreSendStage:
         social_hooks.register("all", "pre_send", lambda ctx: Verdict("withdraw", "nope"))
         send = RecordingSend()
         result = post(ledger, drafts, tmp_path, send=send)
-        assert (result, send.calls) == ({"status": "withdrawn", "withdrawn": ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]}, [])
+        ids = ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]
+        assert (result, send.calls) == ({"status": "withdrawn", "withdrawn": ids, "withdrawn_count": 3, "withdrawn_reasons": dict.fromkeys(ids, "nope"),
+                                         "reason": "3 drafts were withdrawn before sending (the cap per run is 3); nothing was posted"}, [])
         assert [d for d, v in ledger.drafts().items() if v["state"] == "withdrawn"] == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs3"]
 
     def test_a_block_sends_nothing_leaves_the_draft_untouched_and_audits_post_skipped(self, tmp_path):
@@ -448,14 +488,16 @@ class TestPreSendStage:
         social_hooks.register("floor", "pre_send", lambda ctx: Verdict("withdraw", "small"))
         send = RecordingSend()
         result = post(ledger, drafts, tmp_path, send=send, draft_id="2026-10-obs2")
-        assert (result, send.calls) == ({"status": "withdrawn", "draft_id": "2026-10-obs2", "reason": "small"}, [])
+        assert (result, send.calls) == ({"status": "withdrawn", "draft_id": "2026-10-obs2", "reason": "small", "withdrawn": ["2026-10-obs2"],
+                                         "withdrawn_count": 1, "withdrawn_reasons": {"2026-10-obs2": "small"}}, [])
         assert events(ledger, "2026-10-obs1") == ["drafted"]
 
     def test_a_withdrawal_with_nothing_else_eligible_reports_what_was_withdrawn(self, tmp_path):
         ledger, drafts = drafted(tmp_path, 1)
         social_hooks.register("floor", "pre_send", lambda ctx: Verdict("withdraw", "small"))
         result = post(ledger, drafts, tmp_path)
-        assert result == {"status": "nothing approved", "month": "2026-10", "withdrawn": ["2026-10-obs1"]}
+        assert result == {"status": "nothing approved", "month": "2026-10", "withdrawn": ["2026-10-obs1"], "withdrawn_count": 1,
+                          "withdrawn_reasons": {"2026-10-obs1": "small"}}
 
 
 class TestPostSendStage:
@@ -504,3 +546,285 @@ class TestMaintenanceStage:
         assert cli.main() == 0
         capsys.readouterr()
         assert seen == [(tmp_path / "social" / "drafts", True, dt.date(2026, 10, 21), True)]
+
+
+# --------------------------------------------------------------------------------------------------- critical hooks, gates in the library, exit codes
+
+class TestCriticalHooks:
+    @pytest.mark.parametrize("stage, action", [("draft", "reject"), ("pre_send", "block"), ("order", "pass"), ("post_send", "pass"), ("maintenance", "pass")])
+    def test_a_critical_hook_that_raises_fails_closed_where_the_stage_can_refuse(self, tmp_path, stage, action):
+        social_hooks.register("gate", stage, boom, critical=True)
+        results, recs = run(stage, {"obs_id": 7}, tmp_path)
+        [(hook, verdict)] = results
+        assert (hook.critical, verdict.action) == (True, action)
+        assert recs[0] == {"at": NOW.isoformat(timespec="seconds"), "run": "r1", "event": "hook_error", "name": "gate", "stage": stage,
+                           "error": "RuntimeError: kaput", "outcome": action, "critical": True, "obs_id": 7}
+
+    def test_a_critical_draft_hook_reason_names_the_hook_and_the_error(self, tmp_path):
+        social_hooks.register("gate", "draft", boom, critical=True)
+        [(_, verdict)], _ = run("draft", {"obs_id": 7}, tmp_path)
+        assert verdict.reason == "critical hook gate failed (RuntimeError: kaput); the draft is rejected"
+
+    def test_a_critical_hook_that_does_not_raise_passes_and_is_not_critical_by_default(self, tmp_path):
+        social_hooks.register("gate", "draft", lambda ctx: None, critical=True)
+        social_hooks.register("plain", "draft", lambda ctx: None)
+        results, recs = run("draft", {"obs_id": 7}, tmp_path)
+        assert [(h.name, h.critical, v.action) for h, v in results] == [("gate", True, "pass"), ("plain", False, "pass")] and recs == []
+
+    def test_a_critical_draft_gate_that_raises_stops_make_draft_and_leaves_no_folder(self, tmp_path):
+        social_hooks.register("gate", "draft", boom, critical=True)
+        with pytest.raises(social.HookRejected, match=r"observation 42: critical hook gate failed \(RuntimeError: kaput\)"):
+            TestDraftStage().make(tmp_path)
+        assert list((tmp_path / "drafts").iterdir()) == []
+
+
+@pytest.mark.real_gates
+class TestLibraryCallersCannotBypassTheGates:
+    def extension(self, fakepkg, monkeypatch, body):
+        (fakepkg / "ext_gate.py").write_text(body, encoding="utf-8")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_gate",))
+
+    BLOCKING = ("from bio_automation import social_hooks\nfrom bio_automation.social_hooks import Verdict\n"
+                "def register_hooks():\n    social_hooks.register('gate', 'pre_send', lambda ctx: Verdict('block', 'gate says no'))\n")
+
+    def test_post_next_loads_the_extensions_itself_so_a_pre_send_gate_blocks_without_the_cli(self, tmp_path, fakepkg, monkeypatch):
+        self.extension(fakepkg, monkeypatch, self.BLOCKING)
+        ledger, drafts = drafted(tmp_path, 1)
+        assert social_hooks.hooks("pre_send") == []                      # build_parser never ran
+        send = RecordingSend()
+        result = post(ledger, drafts, tmp_path, send=send)
+        assert (result["status"], result["reason"], send.calls) == ("blocked", "gate says no", [])
+
+    def test_post_next_posts_when_the_loaded_extension_has_no_objection(self, tmp_path, fakepkg, monkeypatch):
+        self.extension(fakepkg, monkeypatch, "X = 1\n")
+        ledger, drafts = drafted(tmp_path, 1)
+        send = RecordingSend()
+        assert (post(ledger, drafts, tmp_path, send=send)["status"], len(send.calls)) == ("posted", 1)
+
+    def test_post_next_refuses_to_run_when_an_extension_failed_to_load(self, tmp_path, fakepkg, monkeypatch):
+        self.extension(fakepkg, monkeypatch, "raise RuntimeError('import broke')\n")
+        ledger, drafts = drafted(tmp_path, 1)
+        send = RecordingSend()
+        with pytest.raises(SocialError, match=r"ext_gate \(RuntimeError: import broke\)"):
+            post(ledger, drafts, tmp_path, send=send)
+        assert (send.calls, events(ledger, "2026-10-obs1")) == ([], ["drafted"])
+
+    def test_make_draft_refuses_to_run_when_an_extension_failed_to_load_and_writes_nothing(self, tmp_path, fakepkg, monkeypatch):
+        self.extension(fakepkg, monkeypatch, "raise RuntimeError('import broke')\n")
+        with pytest.raises(SocialError, match=r"ext_gate \(RuntimeError: import broke\)"):
+            TestDraftStage().make(tmp_path)
+        assert not (tmp_path / "drafts").exists()
+
+    def test_make_draft_loads_the_extensions_and_their_draft_gate_runs(self, tmp_path, fakepkg, monkeypatch):
+        self.extension(fakepkg, monkeypatch, "from bio_automation import social_hooks\nfrom bio_automation.social_hooks import Verdict\n"
+                       "def register_hooks():\n    social_hooks.register('gate', 'draft', lambda ctx: Verdict('reject', 'gate says no'))\n")
+        with pytest.raises(SkipObservation, match="observation 42: gate says no"):
+            TestDraftStage().make(tmp_path)
+
+    def test_selfcheck_reports_a_failed_extension_and_passes_when_all_loaded(self, fakepkg, monkeypatch):
+        from bio_automation import social_selfcheck
+
+        self.extension(fakepkg, monkeypatch, "X = 1\n")
+        assert social_selfcheck.check_extensions() == social_selfcheck.Check("extensions", "ok", "1 social modules loaded")
+        social_hooks.reset()
+        (fakepkg / "ext_broken.py").write_text("raise RuntimeError('import broke')\n", encoding="utf-8")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_gate", "ext_broken"))
+        assert social_selfcheck.check_extensions() == social_selfcheck.Check(
+            "extensions", "fail", "1 social module(s) did not load: ext_broken (RuntimeError: import broke)")
+
+
+class TestWouldWithdraw:
+    def run_post(self, tmp_path, live):
+        ledger, drafts = drafted(tmp_path, 2)
+        social_hooks.register("floor", "pre_send", lambda ctx: Verdict("withdraw", "small") if ctx["draft_id"] == "2026-10-obs1" else None)
+        result = post(ledger, drafts, tmp_path, live=live)
+        recs = [r for r in Audit(tmp_path / "audit.jsonl").records() if r["event"] in ("withdrawn", "would_withdraw")]
+        return ledger, result, recs
+
+    def test_a_dry_run_audits_would_withdraw_and_never_withdrawn_and_writes_no_ledger_record(self, tmp_path):
+        ledger, result, recs = self.run_post(tmp_path, live=False)
+        assert [(r["event"], r["draft_id"], r["hook"], r["reason"], r["live"]) for r in recs] == [("would_withdraw", "2026-10-obs1", "floor", "small", False)]
+        assert events(ledger, "2026-10-obs1") == ["drafted"]
+        assert (result["status"], result["withdrawn"], result["withdrawn_count"], result["withdrawn_reasons"]) == (
+            "dry-run", ["2026-10-obs1"], 1, {"2026-10-obs1": "small"})
+
+    def test_a_live_run_audits_withdrawn_and_writes_the_ledger_record(self, tmp_path):
+        ledger, result, recs = self.run_post(tmp_path, live=True)
+        assert [(r["event"], r["draft_id"], r["live"]) for r in recs] == [("withdrawn", "2026-10-obs1", True)]
+        assert events(ledger, "2026-10-obs1") == ["drafted", "withdrawn"]
+
+    def test_the_post_decision_audit_says_how_many_were_withdrawn_and_why(self, tmp_path):
+        self.run_post(tmp_path, live=True)
+        [rec] = [r for r in Audit(tmp_path / "audit.jsonl").records() if r["event"] == "post_decision"]
+        assert (rec["draft_id"], rec["withdrawn"], rec["withdrawn_count"], rec["withdrawn_reasons"]) == (
+            "2026-10-obs2", ["2026-10-obs1"], 1, {"2026-10-obs1": "small"})
+
+    def test_a_run_without_a_withdrawal_carries_no_withdrawn_fields(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 1)
+        result = post(ledger, drafts, tmp_path, live=False)
+        assert not {"withdrawn", "withdrawn_count", "withdrawn_reasons"} & set(result)
+
+
+class TestPostExitCodes:
+    @pytest.fixture
+    def world(self, tmp_path, monkeypatch):
+        from bio_automation import settings
+
+        month = dt.datetime.now(settings.LOCAL_TZ).strftime("%Y-%m")
+        ledger, drafts = drafted(tmp_path, 4, month=month)
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", ledger.path)
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path)
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ())             # no real gate: the hooks of the test are the only ones
+        return ledger
+
+    def main(self, monkeypatch, capsys, *argv):
+        monkeypatch.setattr("sys.argv", ["bio", "social-post", *argv])
+        code = cli.main()
+        out = capsys.readouterr()
+        return code, json.loads(out.out), out.err
+
+    def test_a_dry_run_exits_0(self, world, monkeypatch, capsys):
+        code, doc, err = self.main(monkeypatch, capsys)
+        assert (code, doc["status"], err) == (0, "dry-run", "")
+
+    def test_nothing_approved_exits_0(self, tmp_path, monkeypatch, capsys):
+        from bio_automation import settings
+
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "none.jsonl")
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path)
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ())
+        code, doc, err = self.main(monkeypatch, capsys)
+        assert (code, doc["status"], err) == (0, "nothing approved", "")
+
+    def test_a_blocked_run_exits_1_and_says_why_on_stderr(self, world, monkeypatch, capsys):
+        social_hooks.register("pause", "pre_send", lambda ctx: Verdict("block", "paused by the owner"))
+        code, doc, err = self.main(monkeypatch, capsys)
+        assert (code, doc["status"], err) == (1, "blocked", "bio social-post: blocked: paused by the owner\n")
+
+    def test_a_withdrawal_that_ends_in_a_post_exits_0_and_says_how_many_were_withdrawn(self, world, monkeypatch, capsys):
+        social_hooks.register("floor", "pre_send", lambda ctx: Verdict("withdraw", "small") if ctx["draft_id"].endswith("obs1") else None)
+        code, doc, err = self.main(monkeypatch, capsys)
+        assert (code, doc["status"], doc["withdrawn_count"]) == (0, "dry-run", 1)
+        assert err == "bio social-post: 1 draft(s) withdrawn before sending (" + doc["withdrawn"][0] + ": small)\n"
+
+    def test_a_run_that_withdrew_everything_exits_1(self, world, monkeypatch, capsys):
+        social_hooks.register("floor", "pre_send", lambda ctx: Verdict("withdraw", "small"))
+        code, doc, err = self.main(monkeypatch, capsys)
+        assert (code, doc["status"], doc["withdrawn_count"]) == (1, "withdrawn", 3)
+        assert err.splitlines()[-1] == "bio social-post: withdrawn: 3 drafts were withdrawn before sending (the cap per run is 3); nothing was posted"
+
+    def test_post_exit_code_maps_every_status(self):
+        assert {s: cli.post_exit_code({"status": s}) for s in ("posted", "dry-run", "done for today", "nothing approved", "blocked", "withdrawn")} == {
+            "posted": 0, "dry-run": 0, "done for today": 0, "nothing approved": 0, "blocked": 1, "withdrawn": 1}
+
+    def test_a_live_run_runs_the_maintenance_stage_even_when_it_ends_blocked_and_a_dry_run_does_not(self, world, monkeypatch, capsys):
+        seen = []
+        social_hooks.register("m", "maintenance", lambda ctx: seen.append((ctx["drafts_dir"].name, ctx["today"] == dt.datetime.now().date())))
+        social_hooks.register("pause", "pre_send", lambda ctx: Verdict("block", "paused"))
+        self.main(monkeypatch, capsys)
+        assert seen == []
+        code, doc, _ = self.main(monkeypatch, capsys, "--live")
+        assert (code, doc["status"], seen) == (1, "blocked", [("drafts", True)])
+
+    def test_a_failing_maintenance_hook_audits_and_does_not_change_the_exit_code(self, world, monkeypatch, capsys):
+        from bio_automation import settings
+
+        social_hooks.register("m", "maintenance", boom)
+        social_hooks.register("pause", "pre_send", lambda ctx: Verdict("block", "paused"))
+        code, _, _ = self.main(monkeypatch, capsys, "--live")
+        assert code == 1
+        errors = [r for r in Audit(settings.SOCIAL_AUDIT_LOG).records() if r["event"] == "hook_error"]
+        assert [(r["name"], r["stage"], r["outcome"]) for r in errors] == [("m", "maintenance", "pass")]
+
+
+class TestMaintenanceAfterDraft:
+    def test_the_maintenance_stage_runs_even_when_a_drafting_step_fails(self, tmp_path, monkeypatch, capsys):
+        from bio_automation import settings
+
+        monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "social")
+        monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "ledger.jsonl")
+        monkeypatch.setattr(settings, "INAT_SNAPSHOT", tmp_path / "none.json")
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", ())
+        (tmp_path / "ledger.jsonl").write_text("this is not json\n", encoding="utf-8")        # withdraw_small reads the ledger and fails
+        index = tmp_path / "index.json"
+        index.write_text(json.dumps({"files": {}}), encoding="utf-8")
+        seen = []
+        social_hooks.register("m", "maintenance", lambda ctx: seen.append(ctx["today"]))
+        monkeypatch.setattr("sys.argv", ["bio", "social-draft", "--index", str(index), "--date", "2026-10-21", "--no-themes"])
+        assert cli.main() == 1
+        assert capsys.readouterr().err.startswith(f"bio social-draft: the ledger {tmp_path / 'ledger.jsonl'} is corrupt at line 1")
+        assert seen == [dt.date(2026, 10, 21)]
+
+
+class _Late:
+    """`in` answers False for the first `after` questions and True afterwards: a gate that rejects the first N observations it sees."""
+
+    def __init__(self, after):
+        self.seen, self.after = [], after
+
+    def __contains__(self, obs_id):
+        self.seen.append(obs_id)
+        return len(self.seen) > self.after
+
+
+class TestRejectCap:
+    def many(self, tmp_path, n):
+        g = tmp_path / "gallery"
+        rels = {}
+        for o in range(1, n + 1):
+            rel = f"2024/2024-10/2024-10-{o:02d}_DSC_{o}.jpg"
+            jpeg(g / rel, size=(300, 200))
+            rels[rel] = o
+        return g, {"files": rels}
+
+    def draft(self, tmp_path, n, accept, keep_pending=1, rejects=None, fetch=None):
+        g, index = self.many(tmp_path, n)
+        describe, audit = RecordingDescribe(), audit_at(tmp_path)
+        social_hooks.register("gate", "draft", lambda ctx: None if ctx["obs_id"] in accept else Verdict("reject", "private"))
+        report = social.draft_month(index, Ledger(tmp_path / "l.jsonl"), today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
+                                    keep_pending=keep_pending, model="vis:1",
+                                    fetch=fetch or RecordingFetch({o: observation(o) for o in range(1, n + 1)}), read_label=labels,
+                                    describe_fn=describe, pick_model=no_model, style_source=lambda: None, prints={}, rules=rules_with(),
+                                    audit=audit, rejects=rejects)
+        return report, describe, audit.records()
+
+    def test_a_gate_that_rejects_everything_stops_after_the_cap_and_the_run_reports_it(self, tmp_path):
+        assert social.MAX_DRAFT_REJECTS == 25
+        report, describe, recs = self.draft(tmp_path, 30, accept=set())
+        assert (len(report["skipped"]), report["drafted"], report["reject_cap"], len(describe.calls)) == (25, [], 25, 25)
+        [cap] = [r for r in recs if r["event"] == "draft_reject_cap"]
+        assert (cap["scope"], cap["limit"], cap["drafted"]) == ("single", 25, 0)
+
+    def test_below_the_cap_the_run_goes_on_to_the_accepted_observation(self, tmp_path):
+        report, describe, recs = self.draft(tmp_path, 30, accept=_Late(24))
+        assert (len(report["drafted"]), len(report["skipped"]), "reject_cap" in report, [r for r in recs if r["event"] == "draft_reject_cap"]) == (
+            1, 24, False, [])
+
+    def test_a_small_budget_is_honoured_and_non_hook_skips_do_not_spend_it(self, tmp_path):
+        budget = social.RejectBudget(2)
+        casual = {o: observation(o, grade="casual") if o <= 5 else observation(o) for o in range(1, 8)}
+        report, describe, recs = self.draft(tmp_path, 7, accept=set(), keep_pending=3, rejects=budget, fetch=RecordingFetch(casual))
+        by_hook = sorted(o for o, why in report["skipped"].items() if why.endswith(": private"))
+        assert (budget.used, report["reject_cap"], by_hook) == (2, 2, [6, 7])
+        assert {why for o, why in report["skipped"].items() if o not in by_hook} <= {f"observation {o} is casual" for o in range(1, 6)}
+
+    def test_the_themed_drafting_stops_at_the_shared_budget(self, tmp_path):
+        w = World(tmp_path, n=8)
+        social_hooks.register("gate", "draft", lambda ctx: Verdict("reject", "private"))
+        budget = social.RejectBudget(2)
+        audit = audit_at(tmp_path)
+        report = w.draft([MONDAY], MON, 14, rules=rules_with(), audit=audit, pick_model=lambda: "vis:1", rejects=budget)
+        assert (report["drafted"], report["reject_cap"], budget.used, len(w.describe.calls)) == ([], 2, 2, 2)
+        [cap] = [r for r in audit.records() if r["event"] == "draft_reject_cap"]
+        assert (cap["scope"], cap["limit"]) == ("theme", 2)
+
+    def test_a_budget_already_spent_by_the_themes_stops_the_ordinary_drafting_before_any_describe(self, tmp_path):
+        budget = social.RejectBudget(1)
+        budget.charge()
+        report, describe, recs = self.draft(tmp_path, 3, accept={1, 2, 3}, rejects=budget)
+        assert (report["drafted"], report["reject_cap"], describe.calls) == ([], 1, [])
+
+    def test_themes_without_rejections_report_no_cap(self, tmp_path):
+        w = World(tmp_path, n=8)
+        report = w.draft([MONDAY], MON, 1, rules=rules_with(), audit=audit_at(tmp_path), pick_model=lambda: "vis:1")
+        assert (len(report["drafted"]), "reject_cap" in report) == (1, False)
