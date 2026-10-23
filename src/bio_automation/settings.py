@@ -105,6 +105,13 @@ INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 # --- social posts (Bluesky): drafts the owner approves, one posted a day, from the current month of every year in the gallery
 SOCIAL_DIR = env_path("BIO_SOCIAL_DIR", RESULTS_DIR / "social")                     # drafts/<draft id>/: draft.json + the post's images
 SOCIAL_LEDGER = env_path("BIO_SOCIAL_LEDGER", CACHE_DIR / "state" / "social_ledger.jsonl")   # append-only draft/approve/post events
+GALLERY_TITLE_CACHE = env_path("BIO_GALLERY_TITLE_CACHE", CACHE_DIR / "state" / "gallery_titles_cache.json")   # social-index: embedded titles by (path, size, mtime)
+SOCIAL_PREP_MIN_FREE_C_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_C_GB", 15))    # social-prep stops below this (the NAS pipeline pauses there too)
+SOCIAL_PREP_MIN_FREE_D_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_D_GB", 20))
+SOCIAL_INDEX_AUDIT = env("BIO_SOCIAL_INDEX_AUDIT", "D:/bio-cache/photos/adobe_ready_audit.csv")       # social-prep's social-index inputs, ';' separated (globs ok)
+SOCIAL_INDEX_CANDIDATES = env("BIO_SOCIAL_INDEX_CANDIDATES", ";".join([
+    "D:/bio-cache/photos/stock_candidates_*.csv", "F:/bio-automation-data/nas_pipeline/candidates/*.csv",
+    "D:/bio-results/nas_pipeline/candidates/*.csv", "D:/bio-results/nas_pipeline/candidates-gaps/*.csv"]))
 GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gallery_obs_index.json")   # gallery file -> iNat observation
 SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
 SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 3))    # scheduled posts a day (08:00, 12:00, 20:00); manual posts are not counted
@@ -119,6 +126,15 @@ INAT_SNAPSHOT = env_path("BIO_INAT_SNAPSHOT", Path(r"F:\bio-automation-data\inat
 # every posting rule is optional and every decision audited (social_rules.py): the owner's switches, and the append-only decision log
 SOCIAL_RULES_FILE = env_path("BIO_SOCIAL_RULES_FILE", SOCIAL_DIR / "rules.toml")
 SOCIAL_AUDIT_LOG = env_path("BIO_SOCIAL_AUDIT_LOG", CACHE_DIR / "state" / "social_audit.jsonl")
+SOCIAL_BREAKER_COOLDOWN_H = float(env("BIO_SOCIAL_BREAKER_COOLDOWN_H", 6))                  # an open circuit breaker allows one probe post after this many hours
+SOCIAL_PAUSE_FILE = env_path("BIO_SOCIAL_PAUSE_FILE", SOCIAL_DIR / "PAUSED")                    # while it exists no scheduled post goes out (pause_switch rule)
+SOCIAL_ALERTS_LOG = env_path("BIO_SOCIAL_ALERTS_LOG", CACHE_DIR / "state" / "social_alerts.jsonl")
+SOCIAL_ALERT_COMMAND = env("BIO_SOCIAL_ALERT_COMMAND", "")                                         # optional: run with each alert's text; empty = log only
+SOCIAL_DIGEST_DIR = env_path("BIO_SOCIAL_DIGEST_DIR", SOCIAL_DIR / "digest")
+SOCIAL_INTEGRITY_ACK_FILE = env_path("BIO_SOCIAL_INTEGRITY_ACK_FILE", SOCIAL_DIR / "integrity_ack.json")   # duplicate posts the owner accepted (social-integrity --accept-duplicate)
+SOCIAL_BACKUP_DIR = env_path("BIO_SOCIAL_BACKUP_DIR", SOCIAL_DIR / "backups")
+SOCIAL_ENGAGEMENT_LOG = env_path("BIO_SOCIAL_ENGAGEMENT_LOG", CACHE_DIR / "state" / "social_engagement.jsonl")
+SOCIAL_SLOTS = env("BIO_SOCIAL_SLOTS", "08:00,12:00,20:00")                                        # the scheduled run times (local), for slot-aware rules
 # app.bsky.embed.images allows 2,000,000 B per image (formerly 1 MB); the official app compresses post images to the same pair
 # (social-app src/lib/constants.ts IMAGE_SIZE_CONFIG_POSTS: maxDimension 4000, maxSize 2000000)
 BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 2_000_000))

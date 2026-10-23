@@ -314,3 +314,42 @@ class TestRedraftUnderTheSameId:
         ledger.append("approved", "2026-10-26-mushroom-monday", obs_id=1, month="2026-10", hash="h1")
         v = ledger.drafts()["2026-10-26-mushroom-monday"]
         assert (v["state"], v["obs_ids"], v["approved_hash"], "approved_seq" in v) == ("approved", [1, 2], "h1", True)
+
+
+class TestThemedDraftsTakeTheLockAndHonourTheWithdrawalCap:
+    def test_the_themed_draft_append_gives_up_when_a_post_holds_the_lock_and_records_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(social, "LEDGER_LOCK_WAIT_S", 0.0)
+        w = World(tmp_path)
+        with social.ledger_lock(w.ledger.path):
+            with pytest.raises(SocialError, match="another social-post run is posting"):
+                w.draft([MONDAY], WED, 7, pick_model=lambda: "vis:1")
+        assert w.ledger.records() == []
+
+    def test_positive_twin_without_a_running_post_the_group_is_recorded(self, tmp_path):
+        w = World(tmp_path)
+        assert w.draft([MONDAY], WED, 7, pick_model=lambda: "vis:1")["drafted"] == ["2026-10-26-mushroom-monday"]
+        assert [r["event"] for r in w.ledger.records()] == ["drafted"]
+
+    def withdraw(self, w, obs, times, *, hook="live_recheck"):
+        for k in range(times):
+            did = f"2026-09-obs{obs}-try{k}"
+            w.ledger.append("drafted", did, obs_id=obs, month="2026-09")
+            w.ledger.append("withdrawn", did, obs_id=obs, month="2026-09", reason=f"gate said no {k}", **({"hook": hook} if hook else {}))
+
+    def test_an_observation_withdrawn_three_times_is_left_out_of_the_group_and_audited(self, tmp_path):
+        from bio_automation.social_rules import Audit
+
+        w = World(tmp_path, n=5)
+        self.withdraw(w, 1, 3)
+        audit = Audit(tmp_path / "audit.jsonl")
+        w.draft([MONDAY], WED, 7, pick_model=lambda: "vis:1", audit=audit)
+        (rec,) = [r for r in w.ledger.records() if r["draft_id"] == "2026-10-26-mushroom-monday"]
+        assert sorted(rec["obs_ids"]) == [2, 3, 4, 5]
+        assert [(r["obs_id"], r["reason"]) for r in audit.records() if r["event"] == "draft_skipped"] == [(1, "withdrawn 3 times: gate said no 2")]
+
+    def test_positive_twin_two_withdrawals_leave_the_observation_in_play(self, tmp_path):
+        w = World(tmp_path, n=4)
+        self.withdraw(w, 1, 2)
+        w.draft([MONDAY], WED, 7, pick_model=lambda: "vis:1")
+        (rec,) = [r for r in w.ledger.records() if r["draft_id"] == "2026-10-26-mushroom-monday"]
+        assert sorted(rec["obs_ids"]) == [1, 2, 3, 4]
