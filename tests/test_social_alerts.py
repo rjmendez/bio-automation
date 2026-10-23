@@ -91,13 +91,21 @@ def test_quiet_state_has_no_alert_and_says_the_taxonomy_was_not_checked(env):
 @pytest.mark.parametrize("event,level", [("post_failed", "error"), ("post_verify_failed", "error"), ("circuit_open", "error"),
                                          ("ledger_corrupt", "error"), ("post_blocked", "warning"), ("hook_error", "warning"),
                                          ("paused", "warning"), ("backup_failed", "warning"), ("live_recheck_unavailable", "warning"),
-                                         ("draft_stalled", "error")])
+                                         ("draft_stalled", "error"), ("disk_pause", "warning"), ("disk_timeout", "error")])
 def test_each_event_kind_alerts_with_its_level(env, event, level):
     env.add_audit({"at": at(12, 6), "event": event, "draft_id": "b", "reason": "because"})
     alerts, _ = env.scan()
     assert [(a.kind, a.level) for a in alerts] == [(event, level)]
     assert alerts[0].message.startswith(event) and "because" in alerts[0].message
     assert social_alerts.exit_code(alerts) == (2 if level == "error" else 1)
+
+
+def test_a_disk_pause_names_the_worker_that_waits_and_alerts_once_a_day(env):
+    for minute in (6, 7):                                                                  # two pauses the same day: one alert
+        env.add_audit({"at": at(12, minute), "event": "disk_pause", "who": "social-prep", "short": []})
+    alerts, _ = env.scan()
+    assert [(a.key, a.kind, a.level, a.message) for a in alerts] == [
+        ("disk_pause:2026-10-23", "disk_pause", "warning", f"disk_pause social-prep ({at(12, 7)})")]
 
 
 @pytest.mark.parametrize("event", ["post_failed", "post_verify_failed", "circuit_open", "ledger_corrupt", "post_blocked", "hook_error",

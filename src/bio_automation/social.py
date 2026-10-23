@@ -124,7 +124,7 @@ def read_titles(paths: list[Path]) -> dict[Path, str]:
     (locked, timed out, empty, corrupt: a record carrying an Error) is absent from the result: that is a miss, not an empty title."""
     if not paths:
         return {}
-    with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False, encoding="utf-8", newline="\n") as af:
+    with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False, dir=settings.scratch_dir(), encoding="utf-8", newline="\n") as af:
         af.write("\n".join(str(p) for p in paths) + "\n")
     try:
         r = subprocess.run([_exiftool(), "-j", "-charset", "utf8", "-charset", "filename=utf8", "-XMP-dc:Title", "-Error", "-@", af.name],
