@@ -76,6 +76,10 @@ FOCUS_STACK_ENV = "BIO_FOCUS_STACK"
 FOCUS_STACK_DEFAULT = HOME / "AppData" / "Local" / "Programs" / "focus-stack" / "focus-stack" / "focus-stack.exe"
 TOPAZ_MODELS_DIR = env_path("BIO_TOPAZ_MODELS_DIR", r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
 MODEL_CACHE_DIR = env_path("BIO_MODEL_CACHE_DIR", r"C:\TopazModels")   # extracted ONNX models (DA-CLIP, Topaz)
+# "ghqv2" (Topaz, default -- never silently switched) or "custom" (bio-sr2x-v1, trained on the owner's own
+# photos; measured +5.01 dB vs bicubic on held-out Stock crops, vs ghqv2's measured -5 dB). Owner picks after
+# comparing a 100% crop, same rule as every other enhancement model (AGENTS.md "never assume a model helps").
+UPSCALE_MODEL = env("BIO_UPSCALE_MODEL", "ghqv2")
 # onnxruntime's CUDA provider here is a CUDA 13 build: these DLL folders must be on the DLL path before onnxruntime is imported
 # (os.pathsep-separated list; the CUDA 12 pip `nvidia` packages do not satisfy it)
 CUDA_DLL_DIRS = tuple(Path(p) for p in env("BIO_CUDA_DLL_DIRS", os.pathsep.join([

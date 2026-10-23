@@ -615,6 +615,9 @@ def enhance(src: Path, dst: Path, mode: str = "stock",
                 _copy_unchanged()
                 return
             result_bgr = sharpened
+        elif settings.UPSCALE_MODEL == "custom":
+            from . import sr_model
+            result_bgr = sr_model.upscale_2x(sharpened)
         else:
             result_bgr = upscale_2x(sharpened, cache)
 
