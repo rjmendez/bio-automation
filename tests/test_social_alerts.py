@@ -963,3 +963,13 @@ def test_a_message_with_characters_outside_the_locale_code_page_reaches_the_comm
     assert runner.calls[0][1]["input"] == f"[error] post_failed: {rep['new'][0].message}\n".encode("utf-8")
     assert "caf\u00e9 \u65e5\u672c \U0001F344" in runner.calls[0][1]["input"].decode("utf-8")
     assert [a.kind for a in rep["notified"]] == ["post_failed"] and rep["notify_failed"] == []
+
+
+def test_expected_post_missing_twin_remote_pause_marker(env, tmp_path):
+    missing_env(env)
+    remote = tmp_path / "synced" / "PAUSE-BIO"
+    assert env.kinds(pause_sync_file=remote) == ["expected_post_missing"]            # twin: configured, but no marker (folder missing too)
+    remote.parent.mkdir()
+    remote.write_text("", encoding="utf-8")
+    assert env.kinds(pause_sync_file=remote) == []                                   # the remote marker pauses like the local file
+    assert env.kinds(pause_sync_file=remote, rules=rules_with(pause_switch=False)) == ["expected_post_missing"]

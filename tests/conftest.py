@@ -37,6 +37,7 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "INAT_SNAPSHOT", tmp_path / "no-prints" / "inat_observations.json")      # nor the owner's real iNat snapshot and photos
     monkeypatch.setattr(settings, "INAT_PHOTO_CACHE", tmp_path / "no-prints" / "inat_photos")
     monkeypatch.setattr(settings, "SOCIAL_PAUSE_FILE", tmp_path / "no-prints" / "PAUSED")                   # nor the pause switch, alerts, digests, backups, engagement
+    monkeypatch.setattr(settings, "SOCIAL_PAUSE_SYNC_FILE", None)                                            # the remote pause marker is off unless a test sets it
     monkeypatch.setattr(settings, "SOCIAL_ALERTS_LOG", tmp_path / "no-prints" / "alerts.jsonl")
     monkeypatch.setattr(settings, "SOCIAL_ALERT_COMMAND", "")
     monkeypatch.setattr(settings, "SOCIAL_DIGEST_DIR", tmp_path / "no-prints" / "digest")

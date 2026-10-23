@@ -6,7 +6,7 @@ when asked (--notify, or settings.SOCIAL_ALERT_COMMAND is set) and the rule `ale
 `bio social-digest` writes one Markdown page per day to settings.SOCIAL_DIGEST_DIR.
 
 Alert kinds and levels (exit code: 0 none, 1 warnings, 2 errors):
-  error    draft_stalled (a draft whose sends keep sending nothing: skipped for the day, later marked failed; the alert names it), post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
+  error    live_audit_problem (a public post fails the privacy gates; social-audit-live, weekly; the alert names post URIs, never the text), draft_stalled (a draft whose sends keep sending nothing: skipped for the day, later marked failed; the alert names it), post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
            ledger_corrupt (an audit event, or unreadable lines found in the ledger file itself), prep_failed (a prep_step with ok=false),
            selfcheck_failed (a selfcheck event with level fail), expected_post_missing, run_silent, disk (C: under 15 GB)
   warning  live_recheck_unavailable (iNat could not be asked right before a send; three in one run block the send), post_blocked, hook_error, paused, backup_failed, backup_offsite_failed (the off-drive copy), restore_check_failed (social-restore-check), qdrant_sync_failed, qdrant_stale (a Qdrant sync never recorded or older than QDRANT_STALE_DAYS), withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 
 from . import secrets_guard, settings
+from . import social_controls
 from .social_rules import Audit, Rules, load_rules
 
 DEDUP_WINDOW = dt.timedelta(hours=12)
@@ -48,7 +49,8 @@ NOTIFY_BUDGET_S = 90                           # all the notifications of one sc
 ERROR_EVENTS = {"post_failed": "error", "post_verify_failed": "error", "circuit_open": "error", "ledger_corrupt": "error",
                 "draft_stalled": "error", "live_recheck_unavailable": "warning", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning",
                 "disk_pause": "warning", "disk_timeout": "error",
-                "backup_offsite_failed": "warning", "restore_check_failed": "warning", "qdrant_sync_failed": "warning"}      # disk_guard: disk_pause = a worker waiting for disk space (resumes by itself), disk_timeout = one that gave up
+                "backup_offsite_failed": "warning", "restore_check_failed": "warning", "qdrant_sync_failed": "warning",
+                "live_audit_problem": "error", "live_audit_failed": "warning"}      # disk_guard: disk_pause = a worker waiting for disk space (resumes by itself), disk_timeout = one that gave up
 WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
 WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
 DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
@@ -205,7 +207,7 @@ def _load_pool(taxonomy_file: Path, themes_file, drafts: dict[str, dict]) -> tup
 # --------------------------------------------------------------------------------------------------- the scan
 
 def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audit_path: Path | None = None, ledger_path: Path | None = None,
-         rules: Rules | None = None, slots: list[dt.time] | None = None, pause_file: Path | None = None, log_file: Path | None = None,
+         rules: Rules | None = None, slots: list[dt.time] | None = None, pause_file: Path | None = None, pause_sync_file=social_controls._SETTINGS, log_file: Path | None = None,
          taxonomy_file: Path | None = None, themes_file: Path | None = None, qdrant_marker: Path | None = None, qdrant_stale_days: float | None = None,
          disk_free: Callable[[str], int] = lambda p: shutil.disk_usage(p).free) -> tuple[list[Alert], list[str]]:
     """(alerts, notes). Notes say what could not be checked (a missing cache, an unreadable disk); they are not alerts."""
@@ -281,7 +283,7 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
     manual_ids = {r.get("draft_id") for r in audit if r.get("event") == "posted" and r.get("manual")}
     scheduled = [r for r in ledger if r.get("event") == "posted" and str(r.get("at", ""))[:10] == today.isoformat()
                  and not r.get("manual") and r.get("draft_id") not in manual_ids]
-    paused = pause_file.exists() and rules.on("pause_switch")
+    paused = social_controls.read_pause(pause_file, pause_sync_file) is not None and rules.on("pause_switch")
 
     def eligible(d: dict) -> bool:
         if d.get("state") not in ("drafted", "approved"):

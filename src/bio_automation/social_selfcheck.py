@@ -318,11 +318,20 @@ def check_pending_quality(rules) -> Check:
     return Check("pending-quality", OK, f"all {n} pending drafts have photos of at least {floor} px")
 
 
-def check_pause() -> Check:
-    path = Path(settings.SOCIAL_PAUSE_FILE)
-    if path.exists():
-        return Check("pause", OK, f"info: posting is PAUSED ({path} exists)")
-    return Check("pause", OK, "info: posting is not paused")
+def check_pause(rules=None) -> Check:
+    from . import social_controls
+
+    state = social_controls.read_pause()
+    remote = social_controls.sync_marker_path()
+    notes = []
+    if remote is not None and not remote.parent.is_dir():
+        notes.append(f"the synced pause folder {remote.parent} is not reachable, so a remote pause cannot be seen")
+    if state is None:
+        return Check("pause", WARN if notes else OK, "; ".join(notes) if notes else "info: posting is not paused")
+    where = str(settings.SOCIAL_PAUSE_FILE) if state.get("source") == "local" else str(remote)
+    if rules is not None and not rules.on("pause_switch"):
+        return Check("pause", WARN, f"a pause marker exists ({where}) but the rule pause_switch is OFF, so posting is NOT paused")
+    return Check("pause", WARN if notes else OK, f"info: posting is PAUSED ({where} exists)" + "".join("; " + n for n in notes))
 
 
 ROLLBACK_SCRIPT = "run-social.ps1"           # the old single script: deployed by hand, never refreshed from the repo, never compared
@@ -434,7 +443,7 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
         extra = [file_check, check_themes("themes-file")]
         rules = file_rules
     checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_secret_scan(), check_bsky_session(), check_gallery_index(now), check_qdrant_sync(now), check_taxonomy(),
-              check_approved_drafts(), check_pending_quality(rules), check_pause(), *([] if deploy else [check_script_drift()]), *check_disks(drives or default_drives(), free or _free_bytes)]
+              check_approved_drafts(), check_pending_quality(rules), check_pause(rules), *([] if deploy else [check_script_drift()]), *check_disks(drives or default_drives(), free or _free_bytes)]
     if online:
         checks += [check_bsky_online(whoami or default_whoami), check_inat_online(inat_probe or default_inat_probe)]
     return checks

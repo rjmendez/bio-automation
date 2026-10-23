@@ -342,9 +342,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cl_run = sub.add_parser(
         "social-cleanup-run",
-        help="Delete exactly the posts in a cleanup plan. Requires --confirm <plan id>; resumable (ledger next to the plan).")
+        help="DRY RUN of a cleanup plan unless --confirm and --confirm-count are both given; then deletes exactly the plan's posts "
+             "(resumable: ledger next to the plan, one audit record per deletion).")
     p_cl_run.add_argument("plan")
-    p_cl_run.add_argument("--confirm", required=True, help="the plan id printed by social-cleanup-plan: your approval of that list")
+    p_cl_run.add_argument("--confirm", default=None, help="the plan id printed by social-cleanup-plan: your approval of that list")
+    p_cl_run.add_argument("--confirm-count", type=int, default=None, help="the number of posts the plan deletes (its 'delete' count): your approval of its size")
 
     p_social_style = sub.add_parser(
         "social-style",
@@ -432,6 +434,9 @@ def build_parser() -> argparse.ArgumentParser:
     for ext in social_hooks.load_all():                     # extension modules (social_hooks.EXTENSIONS) add their own commands
         if hasattr(ext, "add_parsers"):
             ext.add_parsers(sub)
+    from . import social_live_audit                          # read-only and not a gate: kept out of EXTENSIONS so a fault here never stops posting
+
+    social_live_audit.add_parsers(sub)
     return parser
 
 
@@ -1035,8 +1040,11 @@ def cmd_social_cleanup_run(args: argparse.Namespace) -> int:
 
     from .social_cleanup import run_plan
 
-    report = _bsky(lambda: run_plan(Path(args.plan), args.confirm))
+    report = _bsky(lambda: run_plan(Path(args.plan), args.confirm, confirm_count=args.confirm_count))
     print(json.dumps(report, indent=2))
+    if report["dry_run"]:
+        print(f"dry run: nothing deleted. To delete: --confirm {report['plan_id']} --confirm-count {report['plan_size']}", file=sys.stderr)
+        return 0
     return 0 if not report["stopped"] and report["remaining"] == 0 else 1
 
 
@@ -1291,6 +1299,10 @@ def main() -> int:
 
         return cmd_pipeline_selfcheck(args)
     ext_commands = {c: fn for ext in social_hooks.extensions() for c, fn in (getattr(ext, "COMMANDS", None) or {}).items()}
+    if args.command == "social-audit-live":
+        from . import social_live_audit
+
+        return social_live_audit.cmd_social_audit_live(args)
     if args.command in ext_commands or args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
         from .darkroom import DarkroomError
         from .qdrant_obs import QdrantError

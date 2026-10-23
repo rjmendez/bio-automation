@@ -264,6 +264,24 @@ class TestAuditSessionPause:
         assert c.level == OK and c.message == f"info: posting is PAUSED ({world.tmp / 'PAUSED'} exists)"
 
 
+    def test_a_remote_pause_marker_is_reported_and_an_unreachable_folder_or_a_disabled_rule_warns(self, world):
+        remote = world.tmp / "synced" / "PAUSE-BIO"
+        world.mp.setattr(settings, "SOCIAL_PAUSE_SYNC_FILE", remote)
+        c = world.run()["pause"]
+        assert (c.level, c.message) == (WARN, f"the synced pause folder {remote.parent} is not reachable, so a remote pause cannot be seen")
+        remote.parent.mkdir()
+        assert world.run()["pause"].message == "info: posting is not paused"                # twin: reachable folder, no marker
+        remote.write_text("", encoding="utf-8")
+        c = world.run()["pause"]
+        assert (c.level, c.message) == (OK, f"info: posting is PAUSED ({remote} exists)")
+
+    def test_a_pause_marker_with_the_rule_off_warns_that_nothing_is_paused(self, world):
+        (world.tmp / "PAUSED").write_text("", encoding="utf-8")
+        world.mp.setenv("BIO_SOCIAL_RULE_PAUSE_SWITCH", "off")
+        c = world.run()["pause"]
+        assert c.level == WARN and c.message == f"a pause marker exists ({world.tmp / 'PAUSED'}) but the rule pause_switch is OFF, so posting is NOT paused"
+
+
 # ----------------------------------------------------------------------------------------------------------------------- caches
 
 class TestIndexAndTaxonomy:
