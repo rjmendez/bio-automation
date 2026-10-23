@@ -74,7 +74,7 @@ class TestMigrationRollback:
         conn.execute("PRAGMA user_version=3")                      # the documented rollback for older code
         conn.close()
         with Queue(path, clock=Clock()) as q:
-            assert q.schema_version() == 4
+            assert q.schema_version() == 5
             assert q.counts() == {"pending": 1}
 
 

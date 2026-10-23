@@ -74,6 +74,29 @@ MIGRATIONS = (
         dead_at REAL NOT NULL
     );
     """,
+    # dead_letter gets its own key. `messages` has no AUTOINCREMENT, so SQLite reuses the largest id after it is deleted (a dead-lettered day is
+    # republished by backfill and gets the same id), and a second burial of that id failed on the old `id PRIMARY KEY` with IntegrityError, which
+    # jammed every claim() on the topic. `seq` is the unique key now; `id` stays as the id the message had (informational, may repeat). Old code
+    # keeps working on the rebuilt table (it inserts and reads by `id`), but needs `PRAGMA user_version=4` to open it.
+    """
+    DROP TABLE IF EXISTS dead_letter_v2;
+    CREATE TABLE dead_letter_v2 (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id INTEGER NOT NULL,
+        topic TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created REAL NOT NULL,
+        attempts INTEGER NOT NULL,
+        error TEXT,
+        reason TEXT NOT NULL,
+        dead_at REAL NOT NULL
+    );
+    INSERT INTO dead_letter_v2 (id, topic, payload, created, attempts, error, reason, dead_at)
+        SELECT id, topic, payload, created, attempts, error, reason, dead_at FROM dead_letter ORDER BY dead_at, id;
+    DROP TABLE dead_letter;
+    ALTER TABLE dead_letter_v2 RENAME TO dead_letter;
+    CREATE INDEX dead_letter_topic ON dead_letter (topic, seq);
+    """,
 )
 
 DEFAULT_LEASE_S = 60.0
@@ -332,8 +355,8 @@ class Queue:
 
     def requeue_dead(self, topic: str | None = None, *, reason_contains: str | None = None) -> int:
         """Move dead-lettered messages (in `topic`, whose reason or last error contains `reason_contains`, case-insensitive) back to pending
-        with their attempts reset to 0, under their old ids. Returns how many."""
-        sql, args = "SELECT id FROM dead_letter WHERE 1=1", []
+        with their attempts reset to 0, under NEW message ids (the old id may have been reused since). Returns how many."""
+        sql, args = "SELECT seq FROM dead_letter WHERE 1=1", []
         if topic is not None:
             sql, args = sql + " AND topic=?", [*args, topic]
         if reason_contains:
@@ -343,10 +366,10 @@ class Queue:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 ids = [r[0] for r in self._db.execute(sql, args).fetchall()]
-                for i in ids:
-                    self._db.execute("INSERT INTO messages (id, topic, payload, status, created, attempts) "
-                                     "SELECT id, topic, payload, 'pending', created, 0 FROM dead_letter WHERE id = ?", (i,))
-                    self._db.execute("DELETE FROM dead_letter WHERE id = ?", (i,))
+                for i in ids:                       # a fresh message id: the old one may belong to a live message by now (ids are reused)
+                    self._db.execute("INSERT INTO messages (topic, payload, status, created, attempts) "
+                                     "SELECT topic, payload, 'pending', created, 0 FROM dead_letter WHERE seq = ?", (i,))
+                    self._db.execute("DELETE FROM dead_letter WHERE seq = ?", (i,))
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
@@ -420,8 +443,17 @@ class Queue:
         if topic is not None:
             sql, args = sql + " WHERE topic=?", [topic]
         with self._lock:
-            rows = self._db.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()
+            rows = self._db.execute(sql + " ORDER BY seq DESC LIMIT ?", (*args, limit)).fetchall()
         return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
+
+    def dead_payloads(self, topic: str) -> list[dict]:
+        """Payloads of every dead-lettered `topic` message, oldest first. A backfill must treat these days as taken: republishing one only feeds
+        the same poison message to the workers again, an hour later; it comes back by an explicit requeue_dead once the cause is fixed."""
+        with self._lock:
+            if self.schema_version() < len(MIGRATIONS):
+                return []                                               # a read-only handle on a database no worker has migrated yet
+            rows = self._db.execute("SELECT payload FROM dead_letter WHERE topic=? ORDER BY seq", (topic,)).fetchall()
+        return [json.loads(r["payload"]) for r in rows]
 
     def health(self) -> dict[str, Any]:
         """Queue-wide numbers for a selfcheck: counts by status, dead-lettered, messages waiting out a retry delay, claimed leases already

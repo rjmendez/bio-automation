@@ -353,7 +353,7 @@ class TestTimings:
         conn.commit()
         conn.close()
         with Queue(path) as q:
-            assert q.schema_version() == len(MIGRATIONS) == 4
+            assert q.schema_version() == len(MIGRATIONS) == 5
             assert q.counts() == {"done": 1}
             assert q.timings() == {}                                   # finished before finish times were recorded: no made-up duration
 
@@ -595,7 +595,7 @@ class TestRequeueByReason:
         q.requeue_failed("u")
         assert q._db.execute("SELECT attempts FROM messages WHERE topic='u'").fetchone()[0] == 1
 
-    def test_dead_letters_are_requeued_under_their_old_id_with_attempts_reset(self, q):
+    def test_dead_letters_are_requeued_with_attempts_reset(self, q):
         mid = q.publish("t", {"day": "z"})
         q.claim(["t"], worker_id="w")
         q.retry(mid, "CUDA error 999", worker_id="w", delay_s=0.0, max_attempts=1)
@@ -603,7 +603,7 @@ class TestRequeueByReason:
         assert q.requeue_dead("t", reason_contains="cuda error 999") == 1
         assert q.dead_count() == 0
         m = q.claim(["t"], worker_id="w2")
-        assert (m.id, m.payload, m.attempts) == (mid, {"day": "z"}, 1)
+        assert (m.payload, m.attempts) == ({"day": "z"}, 1)
 
 
 class TestHealth:
@@ -635,7 +635,7 @@ class TestMigrationFromVersion3:
         conn.commit()
         conn.close()
         with Queue(path) as q:
-            assert q.schema_version() == 4
+            assert q.schema_version() == 5
             assert q.counts() == {"failed": 1} and q.dead_count() == 0
             assert q.requeue_failed(error_contains="boom") == 1
             assert q.claim(["t"], worker_id="w", max_attempts=5).attempts == 3
@@ -656,3 +656,64 @@ class TestClaimsAndExpire:
         assert q.expire_claim(mid, "nas-tag-42") is True
         assert q.reap_expired(max_attempts=3) == [(mid, "requeued")]
         assert q.claim(["t"], worker_id="w2").attempts == 2
+
+
+class TestDeadLetterIdReuse:
+    """messages has no AUTOINCREMENT: the id of a dead-lettered day (the table maximum) is handed out again to its republication."""
+
+    def bury(self, q, day, *, worker="w"):
+        mid = q.publish("t", {"day": day})
+        q.claim(["t"], worker_id=worker)
+        assert q.retry(mid, "boom", worker_id=worker, delay_s=0.0, max_attempts=1) == "dead"
+        return mid
+
+    def test_burying_the_same_reused_id_twice_keeps_both_dead_letters(self, q):
+        first = self.bury(q, "2026-10-01")
+        second = self.bury(q, "2026-10-01")                       # republished by a backfill: SQLite hands the freed id out again
+        assert first == second
+        assert q.dead_count("t") == 2
+        assert [(d["id"], d["payload"]) for d in q.peek_dead("t")] == [(first, {"day": "2026-10-01"})] * 2
+        assert len({d["seq"] for d in q.peek_dead("t")}) == 2
+
+    def test_requeue_after_the_id_was_reused_gives_every_dead_letter_its_own_new_message(self, q):
+        first = self.bury(q, "2026-10-01")
+        second = self.bury(q, "2026-10-02")
+        live = q.publish("t", {"day": "2026-10-03"})              # takes the same id again while two dead letters carry it
+        assert first == second == live
+        assert q.requeue_dead("t") == 2
+        assert q.dead_count() == 0
+        assert sorted(p["day"] for p in q.open_payloads("t")) == ["2026-10-01", "2026-10-02", "2026-10-03"]
+        assert q.counts() == {"pending": 3}
+
+    def test_an_expired_lease_that_collides_does_not_jam_claim_for_the_topic(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            first = self.bury(q, "d1")
+            again = q.publish("t", {"day": "d1"})
+            assert again == first
+            for _ in range(2):
+                q.claim(["t"], worker_id="w", lease_s=1.0, max_attempts=3)
+                clock.now += 5.0
+            q.claim(["t"], worker_id="w", lease_s=1.0, max_attempts=3)
+            clock.now += 5.0
+            assert q.claim(["t"], worker_id="w2", max_attempts=3) is None            # buried again by claim(), not raising IntegrityError
+            assert q.dead_count("t") == 2
+
+    def test_dead_payloads_lists_the_days_a_backfill_must_not_republish(self, q):
+        self.bury(q, "d1")
+        q.publish("t", {"day": "d2"})
+        assert q.dead_payloads("t") == [{"day": "d1"}]
+        assert q.dead_payloads("other") == []                      # positive twin: another topic is unaffected
+
+    def test_a_queue_at_version_4_with_a_dead_letter_is_rebuilt_keeping_it(self, tmp_path):
+        path = tmp_path / "v4.sqlite3"
+        conn = sqlite3.connect(str(path))
+        for m in MIGRATIONS[:4]:
+            conn.executescript(m)
+        conn.execute("INSERT INTO dead_letter VALUES (7, 't', '{\"day\": \"d1\"}', 1.0, 3, 'boom', 'why', 2.0)")
+        conn.execute("PRAGMA user_version=4")
+        conn.commit()
+        conn.close()
+        with Queue(path) as q:
+            assert q.schema_version() == 5
+            assert [(d["id"], d["seq"], d["payload"], d["reason"]) for d in q.peek_dead("t")] == [(7, 1, {"day": "d1"}, "why")]
