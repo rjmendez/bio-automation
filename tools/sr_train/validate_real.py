@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import piq
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -73,6 +74,25 @@ def deployment_sharpness_check(model, held_out_files: list[Path], device, rng: r
             model_vars.append(_laplacian_var(np.asarray(Image.fromarray(pred_u8).convert("L"))))
             bicubic_vars.append(_laplacian_var(np.asarray(Image.fromarray(bicubic).convert("L"))))
     return sum(model_vars) / len(model_vars), sum(bicubic_vars) / len(bicubic_vars)
+
+
+def perceptual_scores(pred_u8_list: list[np.ndarray], target_u8_list: list[np.ndarray], device) -> tuple[float, float]:
+    """Mean LPIPS and DISTS (both: lower = more similar) over a list of uint8
+    HWC image pairs. PSNR/SSIM are documented to anti-correlate with human
+    judgment in places (PIRM 2018) -- this exists so a checkpoint can't pass
+    the PSNR gate while actually looking worse, the way v1 would not have been
+    caught by PSNR alone if its failure mode had been "looks wrong" rather than
+    "numerically softer than bicubic". Report alongside PSNR, never instead of it.
+    """
+    def to_tensor(arr_list: list[np.ndarray]) -> torch.Tensor:
+        stacked = np.stack(arr_list).astype(np.float32) / 255.0
+        return torch.from_numpy(stacked).permute(0, 3, 1, 2).to(device)
+
+    pred_t, target_t = to_tensor(pred_u8_list), to_tensor(target_u8_list)
+    with torch.no_grad():
+        lpips = piq.LPIPS(reduction="mean")(pred_t, target_t).item()
+        dists = piq.DISTS(reduction="mean")(pred_t, target_t).item()
+    return float(lpips), float(dists)
 
 
 def main() -> None:
@@ -144,6 +164,7 @@ def main() -> None:
     # --- held-out PSNR: model vs plain bicubic, same LR input, never-trained-on images ---
     model.eval()
     model_psnrs, bicubic_psnrs = [], []
+    model_preds, bicubics, hrs = [], [], []
     with torch.no_grad():
         for p in held_out_files:
             with Image.open(p) as im:
@@ -162,6 +183,9 @@ def main() -> None:
 
             model_psnrs.append(psnr(pred_uint8, hr))
             bicubic_psnrs.append(psnr(bicubic, hr))
+            model_preds.append(pred_uint8)
+            bicubics.append(bicubic)
+            hrs.append(hr)
 
     model_avg = sum(model_psnrs) / len(model_psnrs)
     bicubic_avg = sum(bicubic_psnrs) / len(bicubic_psnrs)
@@ -171,6 +195,15 @@ def main() -> None:
     print(f"  bicubic PSNR: {bicubic_avg:.2f} dB")
     print(f"  delta:        {model_avg - bicubic_avg:+.2f} dB")
     print(f"  model beats bicubic on {wins}/{len(model_psnrs)} images")
+
+    model_lpips, model_dists = perceptual_scores(model_preds, hrs, device)
+    bicubic_lpips, bicubic_dists = perceptual_scores(bicubics, hrs, device)
+    print(f"  model  LPIPS {model_lpips:.4f}  DISTS {model_dists:.4f}  (lower = closer to target)")
+    print(f"  bicubic LPIPS {bicubic_lpips:.4f}  DISTS {bicubic_dists:.4f}")
+    if model_avg > bicubic_avg and (model_lpips >= bicubic_lpips or model_dists >= bicubic_dists):
+        print("  WARNING: model wins on PSNR but not on LPIPS/DISTS -- PSNR/SSIM are documented "
+              "to anti-correlate with perceived quality (PIRM 2018); do not accept this checkpoint "
+              "on PSNR alone, review real 100% crops before proceeding.")
 
     if model_avg <= bicubic_avg:
         print("\nGATE FAILED: trained model does not beat plain bicubic on held-out data. "

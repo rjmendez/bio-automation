@@ -23,7 +23,7 @@ from model import TinySR2x, count_params  # noqa: E402
 from degrade import degrade_hr_to_lr, random_hr_crop  # noqa: E402
 from train import pick_device, PATCH_SIZE  # noqa: E402
 from patch_dataset import make_patch_loader  # noqa: E402
-from validate_real import psnr, deployment_sharpness_check  # noqa: E402
+from validate_real import psnr, deployment_sharpness_check, perceptual_scores  # noqa: E402
 
 
 def main() -> None:
@@ -111,6 +111,7 @@ def main() -> None:
 
     model.eval()
     model_psnrs, bicubic_psnrs = [], []
+    model_preds, bicubics, hrs = [], [], []
     with torch.no_grad():
         for p in held_out_files:
             with Image.open(p) as im:
@@ -125,6 +126,9 @@ def main() -> None:
             bicubic = np.asarray(Image.fromarray(lr).resize((PATCH_SIZE, PATCH_SIZE), Image.BICUBIC))
             model_psnrs.append(psnr(pred_uint8, hr))
             bicubic_psnrs.append(psnr(bicubic, hr))
+            model_preds.append(pred_uint8)
+            bicubics.append(bicubic)
+            hrs.append(hr)
 
     model_avg = sum(model_psnrs) / len(model_psnrs)
     bicubic_avg = sum(bicubic_psnrs) / len(bicubic_psnrs)
@@ -136,6 +140,12 @@ def main() -> None:
     # would have caught it before any AWS money was spent on the bad run.
     model_sharp, bicubic_sharp = deployment_sharpness_check(model, held_out_files, device, rng)
 
+    # Third, independent signal: PSNR/SSIM are documented to anti-correlate with
+    # perceived quality in places (PIRM 2018) -- LPIPS/DISTS report alongside PSNR,
+    # never instead of it, so a checkpoint can't pass on a metric blind spot.
+    model_lpips, model_dists = perceptual_scores(model_preds, hrs, device)
+    bicubic_lpips, bicubic_dists = perceptual_scores(bicubics, hrs, device)
+
     result = {
         "steps": actual_steps, "batch_size": args.batch_size, "train_elapsed_s": train_elapsed,
         "train_loss_first20_avg": first_avg, "train_loss_last20_avg": last_avg,
@@ -143,6 +153,9 @@ def main() -> None:
         "delta_db": model_avg - bicubic_avg, "wins": wins,
         "deployment_model_sharpness": model_sharp, "deployment_bicubic_sharpness": bicubic_sharp,
         "deployment_gate_passed": model_sharp > bicubic_sharp,
+        "model_lpips": model_lpips, "bicubic_lpips": bicubic_lpips,
+        "model_dists": model_dists, "bicubic_dists": bicubic_dists,
+        "perceptual_gate_passed": model_lpips < bicubic_lpips and model_dists < bicubic_dists,
         "device_name": torch.cuda.get_device_name(0),
     }
     print(json.dumps(result, indent=2))

@@ -13,6 +13,8 @@ trained checkpoint can be fed through the same tiler the Topaz models use.
 """
 from __future__ import annotations
 
+import copy
+
 import torch
 from torch import nn
 
@@ -90,3 +92,37 @@ class TinyRestore1x(nn.Module):
 
 def count_params(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
+
+
+class EMA:
+    """Exponential moving average of a model's weights -- a training-loop
+    utility, not a new architecture: it wraps whatever model it is given
+    (TinySR2x or TinyRestore1x unchanged) and keeps a shadow copy that moves
+    more slowly than the raw optimizer weights, which is usually a better
+    checkpoint to evaluate/export than the last noisy SGD step.
+
+    Decay ramps up from 0 toward *decay* over the first ~9 updates (the
+    `updates / (updates + 9)` term below, the standard EMA warmup so the
+    shadow copy does not start out 99.9%-weighted toward an almost-random
+    initialization) and should itself be chosen scaled to the planned total
+    step count by the caller (a short run should use a lower ceiling so the
+    shadow actually has time to move; see train_denoise.py's --ema-decay).
+    """
+
+    def __init__(self, model: nn.Module, decay: float = 0.999) -> None:
+        if not 0.0 < decay < 1.0:
+            raise ValueError(f"decay must be in (0, 1), got {decay}")
+        self.decay = decay
+        self.module = copy.deepcopy(model).eval()
+        for p in self.module.parameters():
+            p.requires_grad_(False)
+        self.updates = 0
+
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        self.updates += 1
+        d = min(self.decay, self.updates / (self.updates + 9))
+        for ema_p, p in zip(self.module.parameters(), model.parameters()):
+            ema_p.mul_(d).add_(p.detach(), alpha=1 - d)
+        for ema_b, b in zip(self.module.buffers(), model.buffers()):
+            ema_b.copy_(b)  # buffers (none in these two models today) copied as-is, never EMA'd
