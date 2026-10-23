@@ -423,6 +423,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_console.add_argument("--host", default="127.0.0.1")
     p_review_console.add_argument("--port", type=int, default=8780)
 
+    from . import social_hooks
+
+    for ext in social_hooks.load_all():                     # extension modules (social_hooks.EXTENSIONS) add their own commands
+        if hasattr(ext, "add_parsers"):
+            ext.add_parsers(sub)
     return parser
 
 
@@ -749,6 +754,9 @@ def cmd_social_draft(args: argparse.Namespace) -> int:
                              rules=rules, local=local)
     report["local_photos"] = len(local)
     report["withdrawn"] = withdrawn
+    from . import social_hooks
+
+    social_hooks.run("maintenance", {"drafts_dir": drafts_dir, "ledger": ledger, "rules": rules, "today": today}, rules=rules, audit=Audit())
     print(json.dumps(report, indent=2))
     return 0
 
@@ -1177,16 +1185,20 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
-    if args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
+    from . import social_hooks
+
+    ext_commands = {c: fn for ext in social_hooks.extensions() for c, fn in (getattr(ext, "COMMANDS", None) or {}).items()}
+    if args.command in ext_commands or args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
         from .darkroom import DarkroomError
         from .qdrant_obs import QdrantError
         from .social import SocialError, VisionError
         from .social_rules import RulesError
         from .themes import ThemeError
 
+        ext_errors = tuple(err for ext in social_hooks.extensions() for err in (getattr(ext, "ERRORS", None) or ()))
         try:
-            return SOCIAL_COMMANDS[args.command](args)
-        except (SocialError, DarkroomError, QdrantError, VisionError, ThemeError, RulesError) as e:     # the message says what to do; a traceback would only bury it
+            return (ext_commands.get(args.command) or SOCIAL_COMMANDS[args.command])(args)
+        except (SocialError, DarkroomError, QdrantError, VisionError, ThemeError, RulesError, *ext_errors) as e:     # the message says what to do; a traceback would only bury it
             print(f"bio {args.command}: {e}", file=sys.stderr)
             return 1
     if args.command == "build-keywords":

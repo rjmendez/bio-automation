@@ -39,7 +39,7 @@ from typing import Callable, Iterator
 
 from PIL import Image, ImageOps
 
-from . import settings
+from . import settings, social_hooks
 from .social_rules import Audit, Rules, load_rules
 
 MAX_IMAGES = 4                     # app.bsky.embed.images: images maxLength 4
@@ -739,12 +739,15 @@ def _read_label(path: Path) -> dict:
 def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, drafts_dir: Path, model: str,
                fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                describe_fn: Callable[..., str] = describe, style: Callable[[str], dict] | None = None,
-               prints_url: str | None = None, now: dt.datetime | None = None, skip_casual: bool = True) -> dict:
+               prints_url: str | None = None, now: dt.datetime | None = None, skip_casual: bool = True,
+               rules: Rules | None = None, audit: Audit | None = None) -> dict:
     """Write drafts_dir/<month>-obs<obs_id>/ (draft.json + 1.jpg..4.jpg) and return the draft. The observation is fetched live: casual,
     deleted and taxon-less observations raise SkipObservation. style(subject) -> {"rules", "examples", ...}: the owner's alt-text style
-    for this photo (social_style.style_for), given to the vision model and recorded per image."""
+    for this photo (social_style.style_for), given to the vision model and recorded per image. The "draft" hooks (social_hooks) see each
+    image with its alt text; a reject raises SkipObservation and leaves no folder."""
     from .inat import InatNotFoundError
 
+    rules, audit = rules or load_rules(), audit or Audit()
     try:
         obs = fetch(obs_id)
     except InatNotFoundError as e:
@@ -776,6 +779,12 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
         except SkipObservation:
             shutil.rmtree(out)           # no half-written draft folder is left behind
             raise
+        hooked = social_hooks.run("draft", {"obs": obs, "obs_id": obs_id, "image": out / name, "alt": alt, "label": label, "month": month,
+                                            "rules": rules}, rules=rules, audit=audit)
+        stop = social_hooks.first_non_pass(hooked)
+        if stop is not None:
+            shutil.rmtree(out)
+            raise SkipObservation(f"observation {obs_id}: {stop[1].reason or stop[0].name}")
         images.append({"file": name, "source": rel, "alt": alt, **info, "alt_attempts": context["attempts"],
                        **({"style_examples": context["style"]["examples"]} if style is not None else {})})
     draft = {"draft_id": draft_id, "month": month, "obs_id": obs_id, "url": INAT_OBS_URL.format(obs_id), "text": text_segments(obs, prints_url),
@@ -865,6 +874,8 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
     order = order_candidates(cands, seen, seed=today.isoformat(), rotate_years=rules.on("year_rotation"), years=years)
     if rules.on("prints_first"):
         order.sort(key=lambda o: o not in prints)                 # observations with a print first (stable: the year rotation is kept inside each group)
+    social_hooks.run("order", {"candidates": order, "kind": "single", "taxonomy": None, "ledger": ledger, "today": today, "rules": rules},
+                     rules=rules, audit=audit)                    # the hooks reorder the list in place
     audit.log("draft_run", month=month, pending=len(pending), keep_pending=keep_pending, need=need, candidates=len(cands), local_only=from_local,
               taken=len(seen), eligible=len(order), with_print=sum(1 for o in order if o in prints), rules=rules.snapshot())
     for obs_id in order:
@@ -873,7 +884,7 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
         try:
             draft = make_draft(obs_id, resolve_photos(cands[obs_id], fetch_photo), month=month, gallery_dir=gallery_dir, drafts_dir=drafts_dir,
                                model=model, fetch=fetch, read_label=read_label, describe_fn=describe_fn, style=style,
-                               prints_url=prints.get(obs_id), skip_casual=rules.on("skip_casual"))
+                               prints_url=prints.get(obs_id), skip_casual=rules.on("skip_casual"), rules=rules, audit=audit)
         except SkipObservation as e:
             report["skipped"][obs_id] = str(e)
             audit.log("draft_skipped", obs_id=obs_id, reason=str(e))
@@ -926,7 +937,8 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
                      model: str, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                      describe_fn: Callable[..., str] = describe, style: Callable[[str], dict] | None = None,
                      prints: dict[int, str] | None = None, now: dt.datetime | None = None,
-                     skip_casual: bool = True, fetch_photo: Callable[[int], Path] | None = None) -> tuple[dict, dict[int, str]]:
+                     skip_casual: bool = True, fetch_photo: Callable[[int], Path] | None = None, rules: Rules | None = None,
+                     audit: Audit | None = None) -> tuple[dict, dict[int, str]]:
     """Write drafts_dir/<day>-<theme key>/ (draft.json + 1.jpg..) for the theme on `day`: the first photo of each observation of `obs_ids`
     (in that order, each fetched live and described like an ordinary draft) until theme.max_photos are made; an observation that cannot be
     posted (casual, gone, no taxon) is skipped for the next one. Returns (draft, {skipped obs id: reason}); SkipObservation when fewer than
@@ -943,7 +955,7 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
             try:
                 picked.append((o, make_draft(o, resolve_photos(rels_of[o][:1], fetch_photo), month=month, gallery_dir=gallery_dir, drafts_dir=scratch, model=model, fetch=fetch,
                                              read_label=read_label, describe_fn=describe_fn, style=style, prints_url=prints.get(o), now=now,
-                                             skip_casual=skip_casual)))
+                                             skip_casual=skip_casual, rules=rules, audit=audit)))
             except SkipObservation as e:
                 skipped[o] = str(e)
         if len(picked) < theme.min_photos:
@@ -1010,7 +1022,12 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         theme = themes_mod.theme_for(day, themes)
         if theme is None or (day.isoformat(), theme.key) in have:
             continue
-        ids = themes_mod.pick_group(theme, candidates, day=day, taken=taken, species_first=rules.on("theme_species_first"))
+        ids = list(themes_mod.pick_group(theme, candidates, day=day, taken=taken, species_first=rules.on("theme_species_first")))
+        if ids:
+            before = list(ids)
+            social_hooks.run("order", {"candidates": ids, "kind": f"theme:{theme.key}", "taxonomy": taxonomy, "ledger": ledger, "today": today,
+                                       "rules": rules}, rules=rules, audit=audit)
+            ids[:] = [o for o in ids if o in before]              # reordered or thinned by the hooks, never extended
         if not ids:
             report["short"][day.isoformat()] = f"{theme.name}: fewer than {theme.min_photos} observations left"
             audit.log("theme_short", day=day.isoformat(), theme=theme.key, reason=report["short"][day.isoformat()])
@@ -1021,7 +1038,8 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         try:
             draft, skipped = make_group_draft(ids, rels_of, theme, day, gallery_dir=gallery_dir, drafts_dir=drafts_dir, model=model, fetch=fetch,
                                               read_label=read_label, describe_fn=describe_fn, style=style, prints=prints,
-                                              skip_casual=rules.on("skip_casual"), fetch_photo=fetch_photo or default_photo_fetch(rules))
+                                              skip_casual=rules.on("skip_casual"), fetch_photo=fetch_photo or default_photo_fetch(rules),
+                                              rules=rules, audit=audit)
         except SkipObservation as e:
             report["short"][day.isoformat()] = str(e)
             audit.log("theme_short", day=day.isoformat(), theme=theme.key, reason=str(e))
@@ -1208,6 +1226,9 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
         return _post_next(ledger, drafts_dir, live=True, **kw)
 
 
+MAX_PRE_SEND_WITHDRAWALS = 3         # drafts the pre_send hooks may take back in one run before it gives up
+
+
 def _audit_or_stop(audit: Audit, event: str, *, then: str = "nothing was sent", **fields) -> None:
     """Write the audit record or raise SocialError saying that `then` (what did not happen) is the consequence."""
     try:
@@ -1242,38 +1263,68 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
     month_ok = (lambda v: v["month"] == month) if rules.on("month_posting") else (lambda v: True)
     why.append("month_posting: " + ("only drafts of " + month if rules.on("month_posting") else "off, drafts of any month are eligible"))
     explicit = draft_id is not None
-    if draft_id is not None:
-        d = drafts.get(draft_id)
-        if d is None:
-            raise SocialError(f"no draft {draft_id!r} in {ledger.path}")
-        if d["state"] not in ("drafted", "failed", "approved"):
-            raise SocialError(f"draft {draft_id} is {d['state']}; only a drafted, failed or approved draft can be posted")
-        needs_approval = d["state"] != "approved"
-        why.append(f"chosen by the owner: {draft_id}")
-    else:
+    owner_pick = draft_id
+
+    def choose(skip: set[str]):
+        """(draft_id, needs_approval, why) of the draft to post, skipping those the pre_send hooks took back this run; or (None, result, None)."""
+        why_here = list(why)
+        if owner_pick is not None:
+            d = drafts.get(owner_pick)
+            if d is None:
+                raise SocialError(f"no draft {owner_pick!r} in {ledger.path}")
+            if d["state"] not in ("drafted", "failed", "approved"):
+                raise SocialError(f"draft {owner_pick} is {d['state']}; only a drafted, failed or approved draft can be posted")
+            why_here.append(f"chosen by the owner: {owner_pick}")
+            return owner_pick, d["state"] != "approved", why_here
         today_iso = now.date().isoformat()
         day_only = rules.on("theme_day_only")
         # theme_day_only: a themed draft is for its own day only (today's goes first, a past day's never posts, a coming day's waits);
         # off: themed drafts are ordinary drafts
-        themed = [d for d, v in drafts.items() if day_only and v.get("for_date") == today_iso
+        themed = [d for d, v in drafts.items() if d not in skip and day_only and v.get("for_date") == today_iso
                   and (v["state"] == "approved" or (v["state"] == "drafted" and auto_approve))]
         ordinary = lambda v: not (day_only and v.get("for_date"))        # noqa: E731
-        ready = [(v["approved_seq"], d) for d, v in drafts.items() if v["state"] == "approved" and month_ok(v) and ordinary(v)]
+        ready = [(v["approved_seq"], d) for d, v in drafts.items() if d not in skip and v["state"] == "approved" and month_ok(v) and ordinary(v)]
         if themed:
-            draft_id = themed[0]
-            needs_approval = drafts[draft_id]["state"] != "approved"
-            why.append(f"theme_day_only: today's themed draft {draft_id} goes first")
-        elif ready:
-            draft_id, needs_approval = min(ready)[1], False
-            why.append(f"oldest approved draft: {draft_id}")
-        else:
-            fresh = [d for d, v in drafts.items() if v["state"] == "drafted" and month_ok(v) and ordinary(v)]
-            if not (auto_approve and fresh):
-                _audit_or_stop(audit, "post_skipped", live=live, status="nothing approved", auto_approve=auto_approve, drafted=len(fresh),
-                               rules=rules.snapshot())
-                return {"status": "nothing approved", "month": month}
-            draft_id, needs_approval = fresh[0], True
-            why.append(f"auto_approve: nothing approved, the oldest drafted draft {draft_id} is approved by this run")
+            why_here.append(f"theme_day_only: today's themed draft {themed[0]} goes first")
+            return themed[0], drafts[themed[0]]["state"] != "approved", why_here
+        if ready:
+            why_here.append(f"oldest approved draft: {min(ready)[1]}")
+            return min(ready)[1], False, why_here
+        fresh = [d for d, v in drafts.items() if d not in skip and v["state"] == "drafted" and month_ok(v) and ordinary(v)]
+        if not (auto_approve and fresh):
+            _audit_or_stop(audit, "post_skipped", live=live, status="nothing approved", auto_approve=auto_approve, drafted=len(fresh),
+                           rules=rules.snapshot())
+            return None, {"status": "nothing approved", "month": month}, None
+        why_here.append(f"auto_approve: nothing approved, the oldest drafted draft {fresh[0]} is approved by this run")
+        return fresh[0], True, why_here
+
+    taken_back: list[str] = []
+    for _attempt in range(MAX_PRE_SEND_WITHDRAWALS):
+        draft_id, needs_approval, why_now = choose(set(taken_back))
+        if draft_id is None:
+            return {**needs_approval, **({"withdrawn": taken_back} if taken_back else {})}
+        ddir = Path(drafts_dir) / draft_id
+        hooked = social_hooks.run(
+            "pre_send", {"draft_id": draft_id, "draft": load_draft(ddir), "draft_dir": ddir, "ledger": ledger, "now": now, "live": live,
+                         "manual": manual, "fetch": _fetch, "rules": rules}, rules=rules, audit=audit)
+        stop = social_hooks.first_non_pass(hooked)
+        if stop is None:
+            why = why_now
+            break
+        hook, verdict = stop
+        reason = verdict.reason or f"hook {hook.name}"
+        if verdict.action == "block":
+            _audit_or_stop(audit, "post_skipped", live=live, status="blocked", draft_id=draft_id, hook=hook.name, reason=reason, rules=rules.snapshot())
+            return {"status": "blocked", "reason": reason, "draft_id": draft_id}
+        _audit_or_stop(audit, "withdrawn", live=live, draft_id=draft_id, obs_ids=_obs_of(drafts[draft_id]), hook=hook.name, reason=reason)
+        if live:
+            ledger.append("withdrawn", draft_id, obs_id=drafts[draft_id]["obs_id"], month=drafts[draft_id]["month"], reason=reason, now=now)
+        taken_back.append(draft_id)
+        if explicit:
+            return {"status": "withdrawn", "draft_id": draft_id, "reason": reason}
+    else:
+        _audit_or_stop(audit, "post_skipped", live=live, status="withdrawn", drafts=taken_back, rules=rules.snapshot())
+        return {"status": "withdrawn", "withdrawn": taken_back}
     ddir = Path(drafts_dir) / draft_id
     if needs_approval and live:
         approve(ledger, drafts_dir, draft_id, rules=rules, audit=audit, by="owner" if explicit else "auto")
@@ -1310,6 +1361,8 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
     extra = {"manual": True} if manual else {}
     ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=dmonth, uri=uri, cid=cid, now=now, **extra)
     result = {"status": "posted", "uri": uri, **payload}
+    social_hooks.run("post_send", {"draft_id": draft_id, "draft": draft, "uri": uri, "cid": cid, "request": request, "ledger": ledger, "now": now,
+                                   "manual": manual, "rules": rules}, rules=rules, audit=audit)
     try:
         audit.log("posted", draft_id=draft_id, uri=uri, manual=manual)
     except OSError:

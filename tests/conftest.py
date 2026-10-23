@@ -36,6 +36,23 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "OBS_TAXONOMY_FILE", tmp_path / "no-prints" / "obs_taxonomy.json")
     monkeypatch.setattr(settings, "INAT_SNAPSHOT", tmp_path / "no-prints" / "inat_observations.json")      # nor the owner's real iNat snapshot and photos
     monkeypatch.setattr(settings, "INAT_PHOTO_CACHE", tmp_path / "no-prints" / "inat_photos")
+    monkeypatch.setattr(settings, "SOCIAL_PAUSE_FILE", tmp_path / "no-prints" / "PAUSED")                   # nor the pause switch, alerts, digests, backups, engagement
+    monkeypatch.setattr(settings, "SOCIAL_ALERTS_LOG", tmp_path / "no-prints" / "alerts.jsonl")
+    monkeypatch.setattr(settings, "SOCIAL_ALERT_COMMAND", "")
+    monkeypatch.setattr(settings, "SOCIAL_DIGEST_DIR", tmp_path / "no-prints" / "digest")
+    monkeypatch.setattr(settings, "SOCIAL_BACKUP_DIR", tmp_path / "no-prints" / "backups")
+    monkeypatch.setattr(settings, "SOCIAL_ENGAGEMENT_LOG", tmp_path / "no-prints" / "engagement.jsonl")
+    monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "no-prints" / "ledger.jsonl")
     for name in list(os.environ):                                                                       # no rule is switched by the machine's environment
         if name.startswith("BIO_SOCIAL_RULE_"):
             monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
+def no_hooks_between_tests():
+    """The hook registry is process-wide: every test starts and ends with it empty (and no extension loaded)."""
+    from bio_automation import social_hooks
+
+    social_hooks.reset()
+    yield
+    social_hooks.reset()

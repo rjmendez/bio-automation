@@ -119,6 +119,13 @@ INAT_SNAPSHOT = env_path("BIO_INAT_SNAPSHOT", Path(r"F:\bio-automation-data\inat
 # every posting rule is optional and every decision audited (social_rules.py): the owner's switches, and the append-only decision log
 SOCIAL_RULES_FILE = env_path("BIO_SOCIAL_RULES_FILE", SOCIAL_DIR / "rules.toml")
 SOCIAL_AUDIT_LOG = env_path("BIO_SOCIAL_AUDIT_LOG", CACHE_DIR / "state" / "social_audit.jsonl")
+SOCIAL_PAUSE_FILE = env_path("BIO_SOCIAL_PAUSE_FILE", SOCIAL_DIR / "PAUSED")                    # while it exists no scheduled post goes out (pause_switch rule)
+SOCIAL_ALERTS_LOG = env_path("BIO_SOCIAL_ALERTS_LOG", CACHE_DIR / "state" / "social_alerts.jsonl")
+SOCIAL_ALERT_COMMAND = env("BIO_SOCIAL_ALERT_COMMAND", "")                                         # optional: run with each alert's text; empty = log only
+SOCIAL_DIGEST_DIR = env_path("BIO_SOCIAL_DIGEST_DIR", SOCIAL_DIR / "digest")
+SOCIAL_BACKUP_DIR = env_path("BIO_SOCIAL_BACKUP_DIR", SOCIAL_DIR / "backups")
+SOCIAL_ENGAGEMENT_LOG = env_path("BIO_SOCIAL_ENGAGEMENT_LOG", CACHE_DIR / "state" / "social_engagement.jsonl")
+SOCIAL_SLOTS = env("BIO_SOCIAL_SLOTS", "08:00,12:00,20:00")                                        # the scheduled run times (local), for slot-aware rules
 # app.bsky.embed.images allows 2,000,000 B per image (formerly 1 MB); the official app compresses post images to the same pair
 # (social-app src/lib/constants.ts IMAGE_SIZE_CONFIG_POSTS: maxDimension 4000, maxSize 2000000)
 BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 2_000_000))
