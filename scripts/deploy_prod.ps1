@@ -11,7 +11,8 @@
        scripts\check_test_honesty.py and the targeted social tests there, basetemp on D:
     4. git merge --ff-only in the prod tree
     5. run `bio social-selfcheck` from the prod tree (PYTHONPATH=<prod>\src, the editable install may point elsewhere);
-       exit code 2 (or any failure to run it) -> git reset --hard to the previous head and exit 1; exit 1 (warnings) is accepted and logged
+       `social-selfcheck --deploy` is accepted only with exit code 0 or 1 AND its final summary line `selfcheck: ok` / `selfcheck: warn`;
+       exit code >= 2, a crash (a traceback has no summary line) or a missing line -> git reset --hard to the previous head and exit 1
   -WhatIf prints the plan (it still fetches, which only updates origin/* refs) and changes nothing else.
 
   Windows PowerShell 5.1 and PowerShell 7 both run it.
@@ -107,7 +108,7 @@ if ($plan) {
             Log "  1. git archive $Remote/$Branch -> $work; run scripts\check_test_honesty.py and tests\test_social*.py tests\test_themes.py tests\test_darkroom.py there (basetemp $basetemp)"
         }
         Log "  2. git -C $ProdDir merge --ff-only $Remote/$Branch   (prod live-reloads from here)"
-        Log "  3. PYTHONPATH=$ProdDir\src $Python -m bio_automation.cli social-selfcheck   (exit 2 or a crash -> git reset --hard $prev, exit 1)"
+        Log "  3. PYTHONPATH=$ProdDir\src $Python -m bio_automation.cli social-selfcheck --deploy   (exit >= 2, a crash or no summary line -> git reset --hard $prev, exit 1)"
     }
     Log "log file: $LogFile"
     exit 0
@@ -158,19 +159,31 @@ if ($prev -ne $target) {
     Log "prod fast-forwarded to $target"
 }
 
-# 5. self-check from the prod tree; roll back on a failure
+# 5. self-check from the prod tree; roll back unless it exits 0 or 1 AND prints its summary line
+# A python crash (an import error in the new code) exits 1 with a traceback: that is NOT "passed with warnings". Only rc 0/1 with the final
+# line `selfcheck: ok` (rc 0) or `selfcheck: warn` (rc 1) is accepted; rc >= 2, no rc, or a missing/mismatching summary line rolls back.
 $oldPath = $env:PYTHONPATH
 $env:PYTHONPATH = Join-Path $ProdDir 'src'
+$rc = $null
+$out = @()
 try {
-    Log 'social-selfcheck from the prod tree'
-    $out = & $Python -m bio_automation.cli social-selfcheck 2>&1 | ForEach-Object { "$_" }
+    Log 'social-selfcheck --deploy from the prod tree'
+    $out = @(& $Python -m bio_automation.cli social-selfcheck --deploy 2>&1 | ForEach-Object { "$_" })
     $rc = $LASTEXITCODE
     $out | ForEach-Object { Log "  $_" }
 }
+catch { Log "selfcheck could not run: $($_.Exception.Message)" }
 finally { $env:PYTHONPATH = $oldPath }
 
-if ($rc -ge 2 -or $null -eq $rc) {
-    Log "selfcheck failed (exit $rc)"
+$summary = ''
+$lines = @($out | Where-Object { $_.Trim() -ne '' })
+if ($lines.Count -gt 0) { $summary = $lines[$lines.Count - 1].Trim() }
+$accepted = $false
+if ($rc -eq 0 -and $summary -eq 'selfcheck: ok') { $accepted = $true }
+elseif ($rc -eq 1 -and $summary -eq 'selfcheck: warn') { $accepted = $true }
+
+if (-not $accepted) {
+    Log "selfcheck not accepted (exit $rc, final line '$summary'); a crash or a missing summary line counts as a failure"
     if ($prev -ne $target) {
         $reset = Invoke-Git reset --hard $prev
         if ($LASTEXITCODE -ne 0) { Fail "ROLLBACK FAILED, prod is at $target and needs a hand: $($reset -join ' ')" }

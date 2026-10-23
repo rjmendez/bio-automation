@@ -17,7 +17,7 @@ from bio_automation.social import Ledger
 from bio_automation.social_rules import Audit
 from bio_automation.social_selfcheck import FAIL, OK, WARN, GB
 
-NAMES = ["rules", "themes", "ledger", "audit", "bluesky-session", "gallery-index", "taxonomy", "approved-drafts", "pending-quality", "pause",
+NAMES = ["rules", "extensions", "themes", "ledger", "audit", "bluesky-session", "gallery-index", "taxonomy", "approved-drafts", "pending-quality", "pause",
          "disk-system", "disk-data"]
 
 
@@ -465,3 +465,84 @@ class TestCommand:
         doc = json.loads(out.out)
         assert (code, doc["online"], who.calls, inat.calls) == (0, True, 1, 1)
         assert [c["name"] for c in doc["checks"]][-2:] == ["bluesky-online", "inat-online"]
+
+
+# ----------------------------------------------------------------------------------------------------------------------- crashes and --deploy
+
+class TestCrash:
+    def break_a_draft(self, world):
+        (world.drafts / "2026-10-obs1" / "draft.json").write_text("[]", encoding="utf-8")       # valid JSON, not a draft: the pending-quality check crashes
+
+    def test_a_crash_is_exit_2_with_a_final_fail_line_and_no_traceback(self, world, plenty_of_disk, monkeypatch, capsys):
+        self.break_a_draft(world)
+        code, out = command(monkeypatch, capsys)
+        assert code == 2
+        assert out.out.splitlines()[-1] == "selfcheck: fail (TypeError)"
+        assert out.err.startswith("selfcheck crashed: TypeError: list indices must be integers or slices, not str")
+        assert "Traceback" not in out.out + out.err
+
+    def test_a_crash_in_deploy_mode_is_a_fail_too(self, world, plenty_of_disk, monkeypatch, capsys):
+        self.break_a_draft(world)
+        code, out = command(monkeypatch, capsys, "--deploy")
+        assert (code, out.out.splitlines()[-1]) == (2, "selfcheck: fail (TypeError)")
+
+    def test_without_a_broken_draft_the_same_command_exits_0(self, world, plenty_of_disk, monkeypatch, capsys):
+        code, out = command(monkeypatch, capsys, "--deploy")
+        assert (code, out.out.splitlines()[-1]) == (0, "selfcheck: ok")
+
+
+class TestDeployMode:
+    def detail(self, world, **kw):
+        return {c.name: c for c in social_selfcheck.run_checks(now=NOW, drives=kw.pop("drives", {"system": Path("C:/sys"), "data": Path("D:/data")}),
+                                                               free=kw.pop("free", lambda p: 100 * GB))}
+
+    def test_low_system_disk_is_a_fail_normally_and_a_warning_in_deploy_mode(self, world, monkeypatch):
+        low = lambda p: 1 * GB if str(p).startswith("C:") else 100 * GB       # noqa: E731
+        normal = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=low, now=NOW, audit=Audit(world.audit_path))
+        deploy = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=low, now=NOW, deploy=True,
+                                            audit=Audit(world.audit_path))
+        by = lambda out: {c["name"]: (c["level"], c["message"]) for c in out["checks"]}["disk-system"]           # noqa: E731
+        assert by(normal) == (FAIL, "C:\\sys has 1.0 GB free (below 15)")
+        assert by(deploy) == (WARN, "C:\\sys has 1.0 GB free (below 15) [environmental: a warning in --deploy mode]")
+        assert (normal["exit"], deploy["exit"], deploy["level"]) == (2, 1, "warn")
+
+    def test_a_missing_bluesky_session_is_a_warning_in_deploy_mode(self, world):
+        (world.oauth / "account.json").unlink()
+        normal = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW,
+                                            audit=Audit(world.audit_path))
+        deploy = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW, deploy=True,
+                                            audit=Audit(world.audit_path))
+        levels = lambda out: {c["name"]: c["level"] for c in out["checks"]}["bluesky-session"]                  # noqa: E731
+        assert (levels(normal), normal["exit"], levels(deploy), deploy["exit"]) == (FAIL, 2, WARN, 1)
+
+    def test_an_approved_draft_whose_hash_changed_is_a_warning_in_deploy_mode(self, world):
+        approve_all(world)
+        path = world.drafts / "2026-10-obs1" / "draft.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["images"][0]["alt"] = "edited after approval"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        kw = dict(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW, audit=Audit(world.audit_path))
+        normal, deploy = social_selfcheck.selfcheck(**kw), social_selfcheck.selfcheck(deploy=True, **kw)
+        level = lambda out: {c["name"]: c["level"] for c in out["checks"]}["approved-drafts"]                   # noqa: E731
+        assert (level(normal), level(deploy), deploy["exit"]) == (FAIL, WARN, 1)
+
+    def test_a_failure_that_is_not_environmental_stays_a_fail_in_deploy_mode(self, world, monkeypatch):
+        no_deep_integrity(monkeypatch)
+        lines = world.ledger_path.read_bytes().split(b"\n")
+        world.ledger_path.write_bytes(b"\n".join([lines[0], b"{broken", *lines[1:]]))
+        deploy = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW, deploy=True,
+                                            audit=Audit(world.audit_path))
+        assert ({c["name"]: c["level"] for c in deploy["checks"]}["ledger"], deploy["exit"]) == (FAIL, 2)
+
+    def test_the_command_prints_the_summary_line_last_and_exits_1_for_environmental_trouble(self, world, plenty_of_disk, monkeypatch, capsys):
+        (world.oauth / "account.json").unlink()
+        code, out = command(monkeypatch, capsys, "--deploy")
+        lines = out.out.splitlines()
+        assert (code, lines[-1]) == (1, "selfcheck: warn")
+        assert "[warn] bluesky-session: no Bluesky session" in out.out
+        code, out = command(monkeypatch, capsys)
+        assert (code, out.out.splitlines()[-1]) == (2, "selfcheck: fail")
+
+    def test_deploy_with_json_still_ends_with_the_summary_line(self, world, plenty_of_disk, monkeypatch, capsys):
+        code, out = command(monkeypatch, capsys, "--deploy", "--json")
+        assert (code, out.out.splitlines()[-1]) == (0, "selfcheck: ok")

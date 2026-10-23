@@ -6,7 +6,10 @@ matches its approval, no Bluesky session); a warning is something that degrades 
 will be withdrawn). The run is written to the audit log as the event "selfcheck" (level, problems). Nothing is posted, nothing is changed;
 --online adds two read-only probes (the Bluesky session refresh `social-whoami` does, and an iNat API request).
 
-scripts/deploy_prod.ps1 runs this from the prod tree after a fast-forward and rolls back when it exits 2."""
+scripts/deploy_prod.ps1 runs this from the prod tree after a fast-forward with --deploy and rolls back unless it exits 0 or 1 AND prints the final
+summary line "selfcheck: ok|warn|fail" (a crash, which exits 1 with a traceback in Python, has no such line; the command itself catches any
+crash and exits 2 with "selfcheck: fail (<kind>)"). In --deploy mode the checks that depend on the machine rather than on the code (disk space,
+the Bluesky session, an approved draft whose hash changed) are warnings, not failures: a good deploy is not rolled back for them."""
 from __future__ import annotations
 
 import datetime as dt
@@ -15,11 +18,12 @@ import inspect
 import json
 import os
 import shutil
+import sys
 import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import settings
+from . import settings, social_hooks
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 EXIT = {OK: 0, WARN: 1, FAIL: 2}
@@ -30,6 +34,7 @@ SYSTEM_DRIVE_WARN_GB = 20.0
 DATA_DRIVE_FAIL_GB = 2.0
 DATA_DRIVE_WARN_GB = 10.0
 ONLINE_TIMEOUT_S = 10
+ENVIRONMENTAL = ("disk-system", "disk-data", "bluesky-session", "bluesky-online", "approved-drafts")   # --deploy: a failure of these is a warning
 
 
 class Check(NamedTuple):
@@ -58,6 +63,15 @@ def check_rules():
         return Check("rules", FAIL, f"rules do not load: {e}"), load_rules(Path(os.devnull), env={})
     off = sorted(n for n, s in rules.snapshot().items() if not s["on"])
     return Check("rules", OK, f"rules load ({len(rules.snapshot()) - len(off)} on, {len(off)} off)"), rules
+
+
+def check_extensions() -> Check:
+    """Every social extension module must load: one that does not leaves its gates out of the posting run."""
+    mods = social_hooks.load_all()
+    bad = social_hooks.failed()
+    if bad:
+        return Check("extensions", FAIL, f"{len(bad)} social module(s) did not load: " + "; ".join(f"{n} ({e})" for n, e in sorted(bad.items())))
+    return Check("extensions", OK, f"{len(mods)} social modules loaded")
 
 
 def check_themes() -> Check:
@@ -325,7 +339,7 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
                inat_probe: Callable[[], int] | None = None) -> list[Check]:
     now = now or dt.datetime.now(settings.LOCAL_TZ)
     rules_check, rules = check_rules()
-    checks = [rules_check, check_themes(), check_ledger(), check_audit_writable(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
+    checks = [rules_check, check_extensions(), check_themes(), check_ledger(), check_audit_writable(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
               check_approved_drafts(), check_pending_quality(rules), check_pause(), *check_disks(drives or default_drives(), free or _free_bytes)]
     if online:
         checks += [check_bsky_online(whoami or default_whoami), check_inat_online(inat_probe or default_inat_probe)]
@@ -338,10 +352,18 @@ def report(checks: list[Check], *, online: bool) -> dict:
             "checks": [{"name": c.name, "level": c.level, "message": c.message} for c in checks]}
 
 
-def selfcheck(*, online: bool = False, audit=None, **kw) -> dict:
+def for_deploy(checks: list[Check]) -> list[Check]:
+    """--deploy: the environmental failures become warnings (the message says so); everything else stays as it is."""
+    return [Check(c.name, WARN, f"{c.message} [environmental: a warning in --deploy mode]") if c.name in ENVIRONMENTAL and c.level == FAIL else c
+            for c in checks]
+
+
+def selfcheck(*, online: bool = False, audit=None, deploy: bool = False, **kw) -> dict:
     from .social_rules import Audit
 
     checks = run_checks(online=online, **kw)
+    if deploy:
+        checks = for_deploy(checks)
     out = report(checks, online=online)
     try:
         (audit or Audit()).log("selfcheck", level=out["level"], online=online, problems=[f"{c.name}: {c.message}" for c in checks if c.level != OK])
@@ -351,20 +373,29 @@ def selfcheck(*, online: bool = False, audit=None, **kw) -> dict:
 
 
 def cmd_social_selfcheck(args) -> int:
-    out = selfcheck(online=args.online)
-    if args.json:
-        print(json.dumps(out, indent=2, ensure_ascii=False))
-    else:
+    """0 ok, 1 warn, 2 fail. Any crash is a fail: it prints "selfcheck: fail (<exception class>)" and exits 2, never a traceback with exit 1."""
+    deploy = bool(getattr(args, "deploy", False))
+    try:
+        out = selfcheck(online=args.online, deploy=deploy)
+        if args.json and not deploy:
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+            return out["exit"]
         for c in out["checks"]:
             print(f"[{c['level']:<4}] {c['name']}: {c['message']}")
         print(f"selfcheck: {out['level']}")
-    return out["exit"]
+        return out["exit"]
+    except Exception as e:  # noqa: BLE001 -- whatever broke, the answer is "fail", in the form the deploy script reads
+        print(f"selfcheck crashed: {type(e).__name__}: {e}"[:500], file=sys.stderr, flush=True)
+        print(f"selfcheck: fail ({type(e).__name__})")                           # last, so it is the final line even when stderr is merged in
+        return EXIT[FAIL]
 
 
 def add_parsers(sub) -> None:
     p = sub.add_parser("social-selfcheck", help="Check everything the scheduled Bluesky run depends on; exit 0 ok, 1 warn, 2 fail. Posts nothing.")
     p.add_argument("--online", action="store_true", help="also probe the Bluesky session and iNat (read-only)")
     p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.add_argument("--deploy", action="store_true", help="what scripts/deploy_prod.ps1 runs: disk space, the Bluesky session and a changed approved "
+                   "draft are warnings, not failures; the last output line is always `selfcheck: ok|warn|fail`")
 
 
 COMMANDS = {"social-selfcheck": cmd_social_selfcheck}

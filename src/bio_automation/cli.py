@@ -316,7 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
         "social-post",
         help="Post the oldest approved draft of this month, approving the oldest drafted one first when none is approved "
              "(BIO_SOCIAL_AUTO_APPROVE); at most BIO_SOCIAL_POSTS_PER_DAY scheduled posts a day. Dry-run unless --live; --live needs "
-             "the OAuth session from `bio social-login`.")
+             "the OAuth session from `bio social-login`. Exit code: 0 posted, dry-run, done for today or nothing approved; 1 blocked or "
+             "withdrawn (the reason goes to stderr) or an error; a withdrawn draft spends a posting slot, so the result lists how many and why.")
     p_social_post.add_argument("--live", action="store_true")
     p_social_post.add_argument("--manual", action="store_true", help="a manual post: not counted in, and not stopped by, the daily cap")
     p_social_post.add_argument("--draft", default=None, metavar="DRAFT_ID",
@@ -733,34 +734,50 @@ def cmd_social_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_maintenance(drafts_dir, ledger, rules, today) -> None:
+    """The "maintenance" hooks (backup, alerts scan, cache cap; each has its own once-a-day guard). A failure here is audited and never changes
+    the exit code of the command it follows."""
+    from . import social_hooks
+    from .social_rules import Audit
+
+    try:
+        social_hooks.run("maintenance", {"drafts_dir": drafts_dir, "ledger": ledger, "rules": rules, "today": today}, rules=rules, audit=Audit())
+    except Exception as e:  # noqa: BLE001 -- maintenance must not turn a finished draft or post run into a failure
+        try:
+            Audit().log("hook_error", name="maintenance", stage="maintenance", error=f"{type(e).__name__}: {e}"[:300], outcome="pass")
+        except OSError:
+            pass
+
+
 def cmd_social_draft(args: argparse.Namespace) -> int:
     import datetime as dt
     import json
 
-    from .social import Ledger, draft_month, inat_photo_candidates, load_index, withdraw_small
+    from .social import Ledger, RejectBudget, draft_month, inat_photo_candidates, load_index, withdraw_small
     from .social_rules import Audit, load_rules
 
     today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
     index, ledger, rules = load_index(Path(args.index)), Ledger(), load_rules()
     drafts_dir = settings.SOCIAL_DIR / "drafts"
-    gallery_obs = {int(o) for o in index["files"].values()}
-    min_edge = rules.value("lower_quality_photos") or 1000
-    local = inat_photo_candidates(min_edge=min_edge, exclude=gallery_obs) if rules.on("lower_quality_photos") else {}
-    withdrawn = withdraw_small(ledger, drafts_dir, min_edge=min_edge, audit=Audit()) if rules.on("lower_quality_photos") else []
-    if rules.on("themes") and not args.no_themes:                     # themed posts first: their observations are then off the table for the rest
-        report = {"themes": _draft_themes(index, ledger, today, Path(args.gallery_dir), drafts_dir, rules, local)}
-        report.update(draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir,
-                                  keep_pending=args.keep_pending, rules=rules, local=local))
-    else:
-        report = draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir, keep_pending=args.keep_pending,
-                             rules=rules, local=local)
-    report["local_photos"] = len(local)
-    report["withdrawn"] = withdrawn
-    from . import social_hooks
-
-    social_hooks.run("maintenance", {"drafts_dir": drafts_dir, "ledger": ledger, "rules": rules, "today": today}, rules=rules, audit=Audit())
-    print(json.dumps(report, indent=2))
-    return 0
+    try:                                                              # the maintenance hooks run even when a drafting step fails
+        gallery_obs = {int(o) for o in index["files"].values()}
+        min_edge = rules.value("lower_quality_photos") or 1000
+        local = inat_photo_candidates(min_edge=min_edge, exclude=gallery_obs) if rules.on("lower_quality_photos") else {}
+        withdrawn = withdraw_small(ledger, drafts_dir, min_edge=min_edge, audit=Audit()) if rules.on("lower_quality_photos") else []
+        rejects = RejectBudget()                                      # one budget of draft-hook rejects for the themed and the ordinary drafting
+        if rules.on("themes") and not args.no_themes:                 # themed posts first: their observations are then off the table for the rest
+            report = {"themes": _draft_themes(index, ledger, today, Path(args.gallery_dir), drafts_dir, rules, local, rejects)}
+            report.update(draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir,
+                                      keep_pending=args.keep_pending, rules=rules, local=local, rejects=rejects))
+        else:
+            report = draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir, keep_pending=args.keep_pending,
+                                 rules=rules, local=local, rejects=rejects)
+        report["local_photos"] = len(local)
+        report["withdrawn"] = withdrawn
+        print(json.dumps(report, indent=2))
+        return 0
+    finally:
+        run_maintenance(drafts_dir, ledger, rules, today)
 
 
 def _taxonomy(index: dict, local: dict | None = None) -> dict:
@@ -773,12 +790,12 @@ def _taxonomy(index: dict, local: dict | None = None) -> dict:
     return tax
 
 
-def _draft_themes(index: dict, ledger, today, gallery_dir: Path, drafts_dir: Path, rules, local: dict) -> dict:
+def _draft_themes(index: dict, ledger, today, gallery_dir: Path, drafts_dir: Path, rules, local: dict, rejects=None) -> dict:
     from . import themes
     from .social import draft_themes
 
     return draft_themes(index, ledger, _taxonomy(index, local if rules.on("lower_quality_photos") else None), themes.load_themes(), today=today,
-                        days_ahead=settings.SOCIAL_THEME_DAYS_AHEAD, gallery_dir=gallery_dir, drafts_dir=drafts_dir, rules=rules, local=local)
+                        days_ahead=settings.SOCIAL_THEME_DAYS_AHEAD, gallery_dir=gallery_dir, drafts_dir=drafts_dir, rules=rules, local=local, rejects=rejects)
 
 
 def cmd_social_rules(args: argparse.Namespace) -> int:
@@ -913,16 +930,36 @@ def cmd_social_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def post_exit_code(result: dict) -> int:
+    """0 for posted, dry-run, "done for today" and "nothing approved"; 1 for blocked and withdrawn: the scheduled task must not show success
+    for a run that sent nothing because a gate said no."""
+    return 1 if result.get("status") in ("blocked", "withdrawn") else 0
+
+
 def cmd_social_post(args: argparse.Namespace) -> int:
     import datetime as dt
     import json
 
     from .social import Ledger, post_next
+    from .social_rules import load_rules
 
-    result = post_next(Ledger(), settings.SOCIAL_DIR / "drafts", now=dt.datetime.now(settings.LOCAL_TZ), live=args.live,
-                       manual=args.manual, draft_id=args.draft)
+    now = dt.datetime.now(settings.LOCAL_TZ)
+    ledger = Ledger()
+    try:
+        result = post_next(ledger, settings.SOCIAL_DIR / "drafts", now=now, live=args.live, manual=args.manual, draft_id=args.draft)
+    finally:
+        if args.live:                                                  # the daily backup, the alerts scan and the cache cap also follow a post run
+            try:
+                run_maintenance(settings.SOCIAL_DIR / "drafts", ledger, load_rules(), now.date())
+            except Exception as e:  # noqa: BLE001 -- rules that do not load were already reported by the post itself
+                print(f"bio social-post: maintenance skipped ({type(e).__name__}: {e})", file=sys.stderr)
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    if result.get("withdrawn_count"):
+        why = "; ".join(f"{d}: {r}" for d, r in result["withdrawn_reasons"].items())
+        print(f"bio social-post: {result['withdrawn_count']} draft(s) withdrawn before sending ({why})", file=sys.stderr)
+    if result.get("status") in ("blocked", "withdrawn"):
+        print(f"bio social-post: {result['status']}: {result.get('reason') or 'see the audit log'}", file=sys.stderr)
+    return post_exit_code(result)
 
 
 def _bsky(call):
@@ -1149,6 +1186,12 @@ def cmd_review_console(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    from . import social_hooks
+
+    if args.command in social_hooks.GATED_COMMANDS and social_hooks.failed():     # these post or draft: they must not run with a gate missing
+        print(f"bio {args.command}: social modules did not load, so their gates are missing: "
+              + "; ".join(f"{n} ({e})" for n, e in sorted(social_hooks.failed().items())), file=sys.stderr)
+        return 1
     if args.command == "ingest":
         return cmd_ingest(args)
     if args.command == "auto-ingest":
@@ -1187,8 +1230,6 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
-    from . import social_hooks
-
     ext_commands = {c: fn for ext in social_hooks.extensions() for c, fn in (getattr(ext, "COMMANDS", None) or {}).items()}
     if args.command in ext_commands or args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
         from .darkroom import DarkroomError

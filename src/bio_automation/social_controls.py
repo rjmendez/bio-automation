@@ -3,9 +3,11 @@
 Pause: `bio social-pause [--reason TEXT]` writes settings.SOCIAL_PAUSE_FILE; while it exists every scheduled post is blocked (a manual post is
 not: the pause is for the automation). `bio social-resume` removes it. A pause file that cannot be read still pauses (fail closed).
 Breaker: from the audit log, the scheduled posts that ended in post_failed since the last posted or breaker_reset record; at N (the rule's number)
-scheduled posts are blocked until `bio social-breaker --reset` or a successful post (a manual one counts). Only the tail of the log is read.
+scheduled posts are blocked until `bio social-breaker --reset` or a successful post (a manual one counts). It also closes itself: once
+settings.SOCIAL_BREAKER_COOLDOWN_H hours have passed since the last failure (or the last probe), ONE live scheduled post is let through as a probe
+(audit breaker_probe); a posted record closes the breaker, a failure re-opens it and restarts the cool-down. Only the tail of the log is read.
 
-Audit events: paused (action set | cleared | blocked), circuit_open, breaker_reset."""
+Audit events: paused (action set | cleared | blocked), circuit_open, breaker_probe, breaker_reset."""
 from __future__ import annotations
 
 import contextlib
@@ -111,12 +113,25 @@ def _reverse_lines(path: Path) -> Iterator[str]:
             yield tail.decode("utf-8", errors="replace")
 
 
-def breaker_state(audit_path: Path | None = None, limit: int | None = None) -> dict:
-    """{"count", "failures" (newest first, at most SHOWN_FAILURES), "limit", "open"}: scheduled post_failed records since the last
-    posted or breaker_reset record. A failure of a manual post (its post_decision says manual) is not counted."""
+def _parse_at(value) -> dt.datetime | None:
+    try:
+        when = dt.datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=settings.LOCAL_TZ)
+
+
+def breaker_state(audit_path: Path | None = None, limit: int | None = None, *, now: dt.datetime | None = None,
+                  cooldown_h: float | None = None) -> dict:
+    """{"count", "failures" (newest first, at most SHOWN_FAILURES), "limit", "open", "cooldown_h", "next_probe_at", "probe_due"}: scheduled
+    post_failed records since the last posted or breaker_reset record. A failure of a manual post (its post_decision says manual) is not
+    counted. While open, next_probe_at is the cool-down's end after the newest failure or probe, and probe_due says `now` has reached it."""
     path = Path(audit_path or settings.SOCIAL_AUDIT_LOG)
+    cooldown_h = settings.SOCIAL_BREAKER_COOLDOWN_H if cooldown_h is None else cooldown_h
+    now = now or _now()
     failures: list[dict] = []
     manual_runs: set[tuple] = set()
+    last_probe: str | None = None
     if path.is_file():
         for line in _reverse_lines(path):
             try:
@@ -130,25 +145,43 @@ def breaker_state(audit_path: Path | None = None, limit: int | None = None) -> d
                 break
             if event == "post_failed":
                 failures.append(rec)
+            elif event == "breaker_probe" and last_probe is None:
+                last_probe = rec.get("at")
             elif event == "post_decision" and rec.get("manual"):
                 manual_runs.add((rec.get("run"), rec.get("draft_id")))
     scheduled = [r for r in failures if (r.get("run"), r.get("draft_id")) not in manual_runs]
+    is_open = limit is not None and len(scheduled) >= limit
+    next_probe = None
+    if is_open:
+        marks = [m for m in (_parse_at(scheduled[0].get("at")), _parse_at(last_probe)) if m is not None]
+        if marks:
+            next_probe = max(marks) + dt.timedelta(hours=cooldown_h)
     return {"count": len(scheduled), "limit": limit,
             "failures": [{"at": r.get("at"), "draft_id": r.get("draft_id"), "outcome": r.get("outcome"), "error": r.get("error")}
                          for r in scheduled[:SHOWN_FAILURES]],
-            "open": limit is not None and len(scheduled) >= limit}
+            "open": is_open, "cooldown_h": cooldown_h, "next_probe_at": next_probe.isoformat(timespec="seconds") if next_probe else None,
+            "probe_due": bool(next_probe and now >= next_probe)}
 
 
 def breaker_hook(ctx: dict) -> Verdict | None:
     if ctx.get("manual"):
         return None
     limit = ctx["rules"].value("circuit_breaker")
-    state = breaker_state(limit=limit)
+    now = ctx.get("now")
+    state = breaker_state(limit=limit, now=now if isinstance(now, dt.datetime) else None)
     if not state["open"]:
         return None
-    reason = f"circuit breaker open: {state['count']} scheduled posts failed in a row (limit {limit}); `bio social-breaker --reset` closes it"
+    if state["probe_due"]:
+        if ctx.get("live"):
+            with contextlib.suppress(OSError):
+                Audit().log("breaker_probe", draft_id=ctx.get("draft_id"), count=state["count"], limit=limit, cooldown_h=state["cooldown_h"])
+        return None                                              # one probe: success closes the breaker, a failure restarts the cool-down
+    after = f"; the next probe is allowed after {state['next_probe_at']}" if state["next_probe_at"] else ""
+    reason = (f"circuit breaker open: {state['count']} scheduled posts failed in a row (limit {limit}){after}; "
+              "`bio social-breaker --reset` closes it")
     with contextlib.suppress(OSError):
-        Audit().log("circuit_open", draft_id=ctx.get("draft_id"), count=state["count"], limit=limit, failures=state["failures"], live=ctx.get("live"))
+        Audit().log("circuit_open", draft_id=ctx.get("draft_id"), count=state["count"], limit=limit, failures=state["failures"], live=ctx.get("live"),
+                    next_probe_at=state["next_probe_at"])
     return Verdict("block", reason)
 
 
@@ -158,6 +191,9 @@ def cmd_social_breaker(args) -> int:
     state = breaker_state(limit=limit)
     print(f"circuit breaker: {'OPEN' if state['open'] else 'closed'}; {state['count']} failed scheduled posts in a row (limit {limit})"
           + ("" if rules.on("circuit_breaker") else "; the rule circuit_breaker is OFF, so nothing is blocked"))
+    if state["open"]:
+        print(f"  next probe: {state['next_probe_at'] or 'unknown'} (cool-down {state['cooldown_h']:g} h)"
+              + ("; due now: the next scheduled post goes out as a probe" if state["probe_due"] else ""))
     for f in state["failures"]:
         print(f"  {f['at']}  {f['draft_id']}  {f['outcome']}  {(f['error'] or '')[:120]}")
     if args.reset:

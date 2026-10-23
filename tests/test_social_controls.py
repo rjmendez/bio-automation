@@ -51,9 +51,9 @@ def run_cli(monkeypatch, *argv) -> int:
     return cli.main()
 
 
-def pre_send(manual=False, rules=None, draft_id="d1"):
+def pre_send(manual=False, rules=None, draft_id="d1", now=NOW, live=True):
     social_controls.register_hooks()
-    ctx = {"draft_id": draft_id, "draft": {}, "draft_dir": Path("."), "ledger": social.Ledger(), "now": NOW, "live": True, "manual": manual,
+    ctx = {"draft_id": draft_id, "draft": {}, "draft_dir": Path("."), "ledger": social.Ledger(), "now": now, "live": live, "manual": manual,
            "fetch": None, "rules": rules or rules_with()}
     results = social_hooks.run("pre_send", ctx, rules=ctx["rules"], audit=Audit(audit_path(), run="r1", now=lambda: NOW))
     return social_hooks.first_non_pass(results)
@@ -147,7 +147,7 @@ class TestBreakerCount:
         return social_controls.breaker_state(limit=limit)
 
     def test_no_audit_log_is_a_closed_breaker_at_zero(self):
-        assert self.count() == {"count": 0, "limit": 3, "failures": [], "open": False}
+        assert self.count() == {"count": 0, "limit": 3, "failures": [], "open": False, "cooldown_h": 6.0, "next_probe_at": None, "probe_due": False}
 
     def test_n_minus_one_failures_stay_closed_and_n_open(self):
         write_audit(fail("r1", "a"), fail("r2", "b"))
@@ -226,7 +226,7 @@ class TestBreakerHook:
         write_audit(fail("r1", "a"), fail("r2", "b"), fail("r3", "c", outcome="unknown"))
         hook, verdict = pre_send()
         assert (hook.name, verdict.action) == ("circuit_breaker", "block")
-        assert verdict.reason == "circuit breaker open: 3 scheduled posts failed in a row (limit 3); `bio social-breaker --reset` closes it"
+        assert verdict.reason == "circuit breaker open: 3 scheduled posts failed in a row (limit 3); the next probe is allowed after 2026-10-22T14:00:00-04:00; `bio social-breaker --reset` closes it"
         [rec] = events("circuit_open")
         assert (rec["draft_id"], rec["count"], rec["limit"], [f["draft_id"] for f in rec["failures"]]) == ("d1", 3, 3, ["c", "b", "a"])
 
@@ -316,6 +316,99 @@ class TestInThePostingFlow:
         assert blocked["status"] == "blocked" and send.calls == []
         manual, send = self.post(tmp_path / "manual", manual=True)
         assert manual["status"] == "posted" and len(send.calls) == 1
-        assert social_controls.breaker_state(limit=3) == {"count": 0, "limit": 3, "failures": [], "open": False}
+        assert social_controls.breaker_state(limit=3) == {"count": 0, "limit": 3, "failures": [], "open": False, "cooldown_h": 6.0, "next_probe_at": None,
+                                                          "probe_due": False}
         again, send = self.post(tmp_path / "again")
         assert again["status"] == "posted"
+
+
+class TestBreakerCooldown:
+    """Open at 3 failures (the last one 2026-10-22 08:00 -04:00); the cool-down is settings.SOCIAL_BREAKER_COOLDOWN_H = 6 h."""
+
+    LAST = dt.datetime(2026, 10, 22, 8, 0, tzinfo=dt.timezone(dt.timedelta(hours=-4)))
+
+    def three_failures(self):
+        write_audit(fail("r1", "a"), fail("r2", "b"), fail("r3", "c"))
+
+    def test_the_default_cool_down_is_six_hours(self):
+        assert settings.SOCIAL_BREAKER_COOLDOWN_H == 6.0
+
+    def test_inside_the_cool_down_the_post_is_blocked_and_the_next_probe_time_is_named(self):
+        self.three_failures()
+        hook, verdict = pre_send(now=self.LAST + dt.timedelta(hours=5, minutes=59))
+        assert (hook.name, verdict.action) == ("circuit_breaker", "block")
+        assert verdict.reason == ("circuit breaker open: 3 scheduled posts failed in a row (limit 3); the next probe is allowed after "
+                                  "2026-10-22T14:00:00-04:00; `bio social-breaker --reset` closes it")
+        assert events("breaker_probe") == []
+
+    def test_after_the_cool_down_one_live_probe_goes_through_and_is_audited(self):
+        self.three_failures()
+        assert pre_send(now=self.LAST + dt.timedelta(hours=6)) is None
+        [rec] = events("breaker_probe")
+        assert (rec["draft_id"], rec["count"], rec["limit"], rec["cooldown_h"]) == ("d1", 3, 3, 6.0)
+
+    def test_a_dry_run_after_the_cool_down_passes_without_spending_the_probe(self):
+        self.three_failures()
+        assert pre_send(now=self.LAST + dt.timedelta(hours=7), live=False) is None
+        assert events("breaker_probe") == []
+
+    def test_a_manual_post_is_never_stopped_and_never_a_probe(self):
+        self.three_failures()
+        assert pre_send(manual=True, now=self.LAST + dt.timedelta(hours=7)) is None
+        assert events("breaker_probe") == []
+
+    def test_a_probe_that_did_not_end_in_a_post_restarts_the_cool_down(self):
+        self.three_failures()
+        write_audit(("breaker_probe", "r4", {"draft_id": "d", "at": "2026-10-23T08:00:00-04:00"}))
+        state = social_controls.breaker_state(limit=3, now=dt.datetime(2026, 10, 23, 9, 0, tzinfo=self.LAST.tzinfo))
+        assert (state["open"], state["probe_due"], state["next_probe_at"]) == (True, False, "2026-10-23T14:00:00-04:00")
+        hook, verdict = pre_send(now=dt.datetime(2026, 10, 23, 13, 0, tzinfo=self.LAST.tzinfo))
+        assert verdict.action == "block"
+        assert pre_send(now=dt.datetime(2026, 10, 23, 14, 0, tzinfo=self.LAST.tzinfo)) is None
+
+    def test_a_failed_probe_reopens_the_breaker_with_a_fresh_cool_down(self):
+        self.three_failures()
+        write_audit(("breaker_probe", "r4", {"draft_id": "d", "at": "2026-10-23T08:00:00-04:00"}),
+                    ("post_failed", "r4", {"draft_id": "d", "outcome": "nothing sent", "error": "boom", "at": "2026-10-23T08:01:00-04:00"}))
+        state = social_controls.breaker_state(limit=3, now=dt.datetime(2026, 10, 23, 14, 0, tzinfo=self.LAST.tzinfo))
+        assert (state["count"], state["open"], state["probe_due"], state["next_probe_at"]) == (4, True, False, "2026-10-23T14:01:00-04:00")
+
+    def test_a_posted_record_after_the_probe_closes_the_breaker(self):
+        self.three_failures()
+        write_audit(("breaker_probe", "r4", {"draft_id": "d"}), ("posted", "r4", {"draft_id": "d"}))
+        state = social_controls.breaker_state(limit=3, now=self.LAST + dt.timedelta(days=3))
+        assert (state["count"], state["open"], state["probe_due"], state["next_probe_at"]) == (0, False, False, None)
+        assert pre_send(now=self.LAST + dt.timedelta(days=3)) is None
+
+    def test_the_cool_down_comes_from_the_setting(self, monkeypatch):
+        self.three_failures()
+        monkeypatch.setattr(settings, "SOCIAL_BREAKER_COOLDOWN_H", 1.0)
+        state = social_controls.breaker_state(limit=3, now=self.LAST + dt.timedelta(minutes=61))
+        assert (state["cooldown_h"], state["next_probe_at"], state["probe_due"]) == (1.0, "2026-10-22T09:00:00-04:00", True)
+
+    def test_a_closed_breaker_has_no_probe_time(self):
+        write_audit(fail("r1", "a"))
+        state = social_controls.breaker_state(limit=3, now=self.LAST)
+        assert (state["open"], state["next_probe_at"], state["probe_due"]) == (False, None, False)
+
+    def test_the_breaker_command_shows_the_next_probe_time(self, monkeypatch, capsys):
+        self.three_failures()
+        assert run_cli(monkeypatch, "social-breaker") == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert lines[0] == "circuit breaker: OPEN; 3 failed scheduled posts in a row (limit 3)"
+        assert lines[1] == "  next probe: 2026-10-22T14:00:00-04:00 (cool-down 6 h)" + ("; due now: the next scheduled post goes out as a probe"
+                                                                                   if dt.datetime.now(settings.LOCAL_TZ) >= dt.datetime(2026, 10, 22, 14, 0, tzinfo=self.LAST.tzinfo) else "")
+
+    def test_in_the_posting_flow_a_probe_that_succeeds_closes_the_breaker(self, tmp_path, monkeypatch):
+        failing = RecordingSend(fail=social.NothingSent("network down"))
+        flow = TestInThePostingFlow()
+        for n in range(3):
+            with pytest.raises(SocialError, match="nothing was posted"):
+                flow.post(tmp_path / f"t{n}", send=failing)
+        assert social_controls.breaker_state(limit=3, now=NOW)["probe_due"] is False
+        blocked, send = flow.post(tmp_path / "blocked")
+        assert (blocked["status"], send.calls) == ("blocked", [])
+        monkeypatch.setattr(settings, "SOCIAL_BREAKER_COOLDOWN_H", 0.0)        # the flow's clock is frozen at NOW: a zero cool-down is "elapsed"
+        probe, send = flow.post(tmp_path / "probe")
+        assert (probe["status"], len(send.calls), len(events("breaker_probe"))) == ("posted", 1, 1)
+        assert social_controls.breaker_state(limit=3, now=NOW)["open"] is False
