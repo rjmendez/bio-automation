@@ -99,7 +99,8 @@ def _exiftool() -> str:
 
 
 def read_titles(paths: list[Path]) -> dict[Path, str]:
-    """{path: embedded XMP-dc title ('' when none)} for many files in one exiftool run (argfile, UTF-8)."""
+    """{path: embedded XMP-dc title ('' when the file has none)} for many files in one exiftool run (argfile, UTF-8). A file exiftool skipped
+    (locked, timed out) is absent from the result: that is a miss, not an empty title."""
     if not paths:
         return {}
     with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False, encoding="utf-8", newline="\n") as af:
@@ -115,7 +116,9 @@ def read_titles(paths: list[Path]) -> dict[Path, str]:
     for d in json.loads(r.stdout.decode("utf-8")):
         t = d.get("Title")
         by_name[os.path.normcase(os.path.normpath(d["SourceFile"]))] = "" if t is None else str(t)
-    return {p: by_name.get(os.path.normcase(os.path.normpath(str(p))), "") for p in paths}
+    got = {p: by_name[os.path.normcase(os.path.normpath(str(p)))] for p in paths if os.path.normcase(os.path.normpath(str(p))) in by_name}
+    return got                                           # a file exiftool did not report is left OUT (a miss, retried next run), never ''
+
 
 
 def _render_name(row: dict) -> str:
@@ -147,12 +150,16 @@ def _cached_titles(gallery_dir: Path, files: list[Path], wanted: list[Path], tit
             out[p] = e["title"]
         else:
             stale.append(p)
-    if stale:
-        out.update(titles(stale))
+    read: dict[Path, str] = titles(stale) if stale else {}
+    out.update(read)
     present = {p.relative_to(gallery_dir).as_posix() for p in files}
     fresh = {rel: e for rel, e in entries.items() if rel in present}                      # a deleted file is dropped
     for p in stale:
-        fresh[p.relative_to(gallery_dir).as_posix()] = {"size": stats[p][0], "mtime_ns": stats[p][1], "title": out.get(p, "")}
+        rel = p.relative_to(gallery_dir).as_posix()
+        if p in read:                                                  # only a successful read is cached; a miss is retried next run
+            fresh[rel] = {"size": stats[p][0], "mtime_ns": stats[p][1], "title": read[p]}
+        else:
+            fresh.pop(rel, None)
     if fresh != entries or not Path(cache_path).is_file():
         cache_path = Path(cache_path)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,7 +328,13 @@ def withdraw_small(ledger: "Ledger", drafts_dir: Path, *, min_edge: int, audit: 
                  if max(i.get("width") or 0, i.get("height") or 0) < min_edge}
         if small:
             reason = f"photo(s) under {min_edge} px: " + ", ".join(f"{f} is {e}" for f, e in small.items())
-            ledger.append("withdrawn", did, obs_id=v["obs_id"], month=v["month"], reason=reason)
+            with ledger_lock_wait(ledger.path):                  # a post run may have moved the draft on since the listing above
+                now_v = ledger.drafts().get(did)
+                if now_v is None or now_v["state"] not in ("drafted", "approved"):
+                    audit.log("withdraw_skipped", draft_id=did, state=now_v["state"] if now_v else None,
+                              reason="the draft is no longer pending; it was not withdrawn")
+                    continue
+                ledger.append("withdrawn", did, obs_id=now_v["obs_id"], month=now_v["month"], reason=reason)
             audit.log("withdrawn", draft_id=did, obs_ids=_obs_of(v), reason=reason)
             out.append(did)
     return out
@@ -377,23 +390,65 @@ def order_candidates(cands: dict[int, list[str]], exclude: set[int], seed: str, 
 
 # --------------------------------------------------------------------------------------------------- ledger
 
+_CORRUPT_LOGGED: set[tuple] = set()               # (ledger, run, line, kind) already audited as ledger_corrupt
+LEDGER_LOCK_WAIT_S = 60.0                         # a writer other than the post run waits this long for a running post to release the ledger lock
+LEDGER_LOCK_POLL_S = 0.5
+MAX_WITHDRAWALS_PER_OBS = 3                       # pre_send gates may take back drafts of one observation this often; then it is no candidate any more
+                                                  # (a draft that fails the gates every time would otherwise be redrafted and withdrawn forever, burning stock and slots)
+
+
 class Ledger:
     """Append-only JSON lines: {"at", "event", "draft_id", ...}. A draft's state is its last event."""
 
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, audit: Audit | None = None):
         self.path = Path(path or settings.SOCIAL_LEDGER)
+        self.audit = audit                              # where a corrupt line is recorded (default: a new Audit() at that moment)
 
     def records(self) -> list[dict]:
         if not self.path.is_file():
             return []
         out = []
-        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
+        text = self.path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError as e:
-                raise SocialError(f"the ledger {self.path} is corrupt at line {number} ({e.msg}); nothing was changed; run `bio social-integrity`") from e
+                kind = "torn_tail" if number == len(lines) and not text.endswith(chr(10)) else "bad_json"
+                self._audit_corrupt(number, kind)
+                fix = "`bio social-integrity --repair-tail`" if kind == "torn_tail" else "`bio social-integrity`"
+                raise SocialError(f"the ledger {self.path} is corrupt at line {number} ({kind}: {e.msg}); posting is blocked until it is repaired; "
+                                  f"nothing was changed; run {fix}") from e
+        return out
+
+    def _audit_corrupt(self, line: int, kind: str) -> None:
+        """Audit ledger_corrupt (line number and kind only, no ledger content) once per run and ledger; the alerter reads it from the audit log."""
+        key = (str(self.path), self.audit.run if self.audit is not None else "process", line, kind)
+        if key in _CORRUPT_LOGGED:
+            return
+        _CORRUPT_LOGGED.add(key)
+        reason = f"{kind} at line {line}"
+        with contextlib.suppress(OSError):                 # the block does not depend on the audit line
+            (self.audit or Audit()).log("ledger_corrupt", path=str(self.path), line=line, kind=kind, count=1, problems=[reason], reason=reason)
+
+    def append_locked(self, event: str, draft_id: str, **fields) -> dict:
+        """append() under the ledger's poster lock (waiting up to LEDGER_LOCK_WAIT_S for a running post), for writers other than the post run."""
+        with ledger_lock_wait(self.path):
+            return self.append(event, draft_id, **fields)
+
+    def withdrawal_counts(self) -> dict[int, tuple[int, str]]:
+        """{observation id: (how many times a pre_send hook took a draft of it back, the last reason)}, from the ledger's withdrawn records
+        that carry a `hook` (the withdrawal a gate made at send time); the observations are those of the draft's latest drafted record."""
+        obs_of: dict[str, list[int]] = {}
+        out: dict[int, tuple[int, str]] = {}
+        for r in self.records():
+            if r["event"] == "drafted":
+                obs_of[r["draft_id"]] = _obs_of(r)
+            elif r["event"] == "withdrawn" and r.get("hook"):
+                for o in obs_of.get(r["draft_id"], []):
+                    out[o] = (out.get(o, (0, ""))[0] + 1, str(r.get("reason") or ""))
         return out
 
     def append(self, event: str, draft_id: str, *, now: dt.datetime | None = None, **fields) -> dict:
@@ -871,6 +926,18 @@ def _taken(v: dict, month: str, today: dt.date, rules: Rules) -> bool:
     return False
 
 
+def _exhausted_by_withdrawals(ledger: Ledger, audit: Audit, *, wanted=None) -> set[int]:
+    """Observations whose drafts the pre_send gates took back MAX_WITHDRAWALS_PER_OBS times: no candidates any more. Each one that is in `wanted`
+    (the candidates of this run; None: all) is audited as draft_skipped "withdrawn N times: <last reason>"."""
+    out = set()
+    for o, (n, last) in sorted(ledger.withdrawal_counts().items()):
+        if n >= MAX_WITHDRAWALS_PER_OBS:
+            out.add(o)
+            if wanted is None or o in wanted or str(o) in wanted:
+                audit.log("draft_skipped", obs_id=o, reason=f"withdrawn {n} times: {last}")
+    return out
+
+
 def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Path, drafts_dir: Path, keep_pending: int | None = None,
                 model: str | None = None, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                 describe_fn: Callable[..., str] = describe, pick_model: Callable[[], str] = vision_model,
@@ -901,6 +968,7 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
         audit.log("draft_run", month=month, pending=len(pending), keep_pending=keep_pending, outcome="queue full", rules=rules.snapshot())
         return report
     seen = {int(o) for v in known.values() if _taken(v, month, today, rules) for o in _obs_of(v)}
+    seen |= _exhausted_by_withdrawals(ledger, audit, wanted=set(index["files"].values()))
     prints = load_prints() if prints is None else prints
     if rules.on("month_candidates"):
         cands = month_observations(index, today.month)
@@ -939,7 +1007,7 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
             report["skipped"][obs_id] = str(e)
             audit.log("draft_skipped", obs_id=obs_id, reason=str(e))
             continue
-        ledger.append("drafted", draft["draft_id"], obs_id=obs_id, month=month, images=len(draft["images"]))
+        ledger.append_locked("drafted", draft["draft_id"], obs_id=obs_id, month=month, images=len(draft["images"]))
         audit.log("drafted", draft_id=draft["draft_id"], obs_id=obs_id, print=obs_id in prints, images=len(draft["images"]))
         report["drafted"].append(draft["draft_id"])
     return report
@@ -1064,6 +1132,7 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
     have = {(v["for_date"], v["theme"]) for v in known.values() if v.get("for_date") and v["state"] != "withdrawn"}
     taken = {o for v in known.values() if _taken(v, f"{today.year}-{today.month:02d}", today, rules) for o in _obs_of(v)}
     candidates, rels_of = theme_candidates(index, taxonomy, prints if rules.on("prints_first") else {}, local if rules.on("lower_quality_photos") else None)
+    taken |= _exhausted_by_withdrawals(ledger, audit, wanted=set(candidates))
     audit.log("theme_run", today=today.isoformat(), days_ahead=days_ahead, themes=[t.key for t in themes if t.enabled], candidates=len(candidates),
               taken=len(taken), rules=rules.snapshot())
     model = style = None
@@ -1097,8 +1166,8 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         report["skipped"].update({str(o): r for o, r in skipped.items()})
         for o, reason in skipped.items():
             audit.log("draft_skipped", obs_id=o, theme=theme.key, reason=reason)
-        ledger.append("drafted", draft["draft_id"], obs_id=draft["obs_id"], obs_ids=draft["obs_ids"], month=draft["month"], kind="theme",
-                      theme=theme.key, for_date=draft["for_date"], images=len(draft["images"]))
+        ledger.append_locked("drafted", draft["draft_id"], obs_id=draft["obs_id"], obs_ids=draft["obs_ids"], month=draft["month"], kind="theme",
+                             theme=theme.key, for_date=draft["for_date"], images=len(draft["images"]))
         audit.log("theme_drafted", draft_id=draft["draft_id"], theme=theme.key, for_date=draft["for_date"], obs_ids=draft["obs_ids"],
                   with_print=sum(1 for o in draft["obs_ids"] if o in prints))
         taken |= set(draft["obs_ids"])
@@ -1250,6 +1319,23 @@ def ledger_lock(ledger_path: Path | str) -> Iterator[None]:
         f.close()
 
 
+@contextlib.contextmanager
+def ledger_lock_wait(ledger_path: Path | str, *, wait: float | None = None) -> Iterator[None]:
+    """ledger_lock, but a busy lock is retried every LEDGER_LOCK_POLL_S for `wait` seconds (default LEDGER_LOCK_WAIT_S) before SocialError:
+    prep and drafting append to the ledger while a post run may hold the lock, and must not interleave with it."""
+    deadline = time.monotonic() + (LEDGER_LOCK_WAIT_S if wait is None else wait)
+    with contextlib.ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(ledger_lock(ledger_path))
+                break
+            except SocialError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(LEDGER_LOCK_POLL_S)
+        yield
+
+
 def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool = False, posts_per_day: int | None = None,
               send: Callable[[dict], tuple[str, str]] = bsky_post, manual: bool = False, draft_id: str | None = None,
               auto_approve: bool | None = None, rules: Rules | None = None, audit: Audit | None = None) -> dict:
@@ -1268,6 +1354,8 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
     (NothingSent) records an "error" note and the draft stays approved for the next run; any other failure leaves it "posting" (outcome
     unknown -> social-resolve)."""
     rules, audit = rules or load_rules(), audit or Audit()
+    if ledger.audit is None:
+        ledger.audit = audit                                          # a corrupt ledger line is audited in this run's log
     kw = dict(now=now, posts_per_day=posts_per_day, send=send, manual=manual or draft_id is not None, draft_id=draft_id,
               auto_approve=rules.on("auto_approve") if auto_approve is None else auto_approve, rules=rules, audit=audit)
     if not live:
@@ -1368,7 +1456,7 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
             return {"status": "blocked", "reason": reason, "draft_id": draft_id}
         _audit_or_stop(audit, "withdrawn", live=live, draft_id=draft_id, obs_ids=_obs_of(drafts[draft_id]), hook=hook.name, reason=reason)
         if live:
-            ledger.append("withdrawn", draft_id, obs_id=drafts[draft_id]["obs_id"], month=drafts[draft_id]["month"], reason=reason, now=now)
+            ledger.append("withdrawn", draft_id, obs_id=drafts[draft_id]["obs_id"], month=drafts[draft_id]["month"], reason=reason, hook=hook.name, now=now)
         taken_back.append(draft_id)
         if explicit:
             return {"status": "withdrawn", "draft_id": draft_id, "reason": reason}

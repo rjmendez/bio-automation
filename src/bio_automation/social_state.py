@@ -6,6 +6,8 @@ send it again, so:
     no observation in two different posted drafts, no unknown event, no torn last line.
   * a pre_send hook (priority 2) blocks every post, scheduled or manual, while the ledger is corrupt.
   * `bio social-integrity [--repair-tail]` prints the report and can move a torn final line aside (after a backup).
+    `bio social-integrity --accept-duplicate OBS_ID --reason TEXT` records the owner's acknowledgement of exactly that known duplicate post in
+    settings.SOCIAL_INTEGRITY_ACK_FILE (audited); the checker then no longer reports it, while any other duplicate still blocks.
   * `bio social-backup [--keep N]`, a daily maintenance hook, and `bio social-restore` keep and bring back dated copies of the ledger, the
     audit log and the owner's rule, theme and print files.
 """
@@ -51,6 +53,8 @@ class Problem(NamedTuple):
     kind: str                         # bad_json | not_object | missing_field | bad_time | unknown_event | bad_transition | duplicate_post | torn_tail | missing_newline | bad_encoding
     message: str
     draft_id: str | None = None
+    obs: str | None = None            # duplicate_post: the observation
+    drafts: tuple = ()                # duplicate_post: the posted drafts it is in
 
     def text(self) -> str:
         return f"{self.kind}" + (f" at line {self.line}" if self.line else "") + f": {self.message}"
@@ -82,8 +86,43 @@ def _obs_of(rec: dict) -> list:
     return [rec["obs_id"]] if rec.get("obs_id") is not None else []
 
 
-def check_integrity(ledger_path: Path | str) -> Report:
-    """Check the ledger file as it is on disk. A missing file is an empty, clean ledger."""
+def load_acknowledged(ack_file: Path | str | None = None) -> dict[str, list[str]]:
+    """{observation id (str): the sorted posted drafts the owner acknowledged as its known duplicate}; a missing or damaged file acknowledges nothing."""
+    try:
+        raw = json.loads(Path(ack_file or settings.SOCIAL_INTEGRITY_ACK_FILE).read_text(encoding="utf-8"))
+        entries = raw["duplicates"]
+        return {str(o): sorted(e["drafts"]) for o, e in entries.items() if isinstance(e, dict) and isinstance(e.get("drafts"), list)}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def accept_duplicate(report: Report, obs_id: str, reason: str, *, ack_file: Path | str | None = None, now: dt.datetime | None = None) -> dict:
+    """Record the owner's acknowledgement of the duplicate_post problem of `obs_id` in `report` (atomic write, audited). The acknowledgement
+    names the exact drafts: a further post of the same observation is a different duplicate and blocks again."""
+    if not reason.strip():
+        raise SocialError("--reason is required: say why the duplicate post is known and accepted")
+    found = next((p for p in report.problems if p.kind == "duplicate_post" and p.obs == str(obs_id)), None)
+    if found is None:
+        raise SocialError(f"the ledger has no duplicate_post problem for observation {obs_id}")
+    path = Path(ack_file or settings.SOCIAL_INTEGRITY_ACK_FILE)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        entries = doc["duplicates"] if isinstance(doc.get("duplicates"), dict) else {}
+    except (OSError, ValueError, AttributeError):
+        entries = {}
+    entry = {"drafts": sorted(found.drafts), "reason": reason.strip(), "at": (now or _now()).isoformat(timespec="seconds")}
+    entries[str(obs_id)] = entry
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"duplicates": entries}, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+    _audit("integrity_acknowledged", obs_id=str(obs_id), drafts=entry["drafts"], reason=entry["reason"])
+    return entry
+
+
+def check_integrity(ledger_path: Path | str, *, acknowledged: dict[str, list[str]] | None = None) -> Report:
+    """Check the ledger file as it is on disk. A missing file is an empty, clean ledger. `acknowledged` (default: the owner's
+    settings.SOCIAL_INTEGRITY_ACK_FILE) names duplicate posts that are known and accepted; exactly those are not reported."""
     path = Path(ledger_path)
     problems: list[Problem] = []
     if not path.is_file():
@@ -144,9 +183,11 @@ def check_integrity(ledger_path: Path | str) -> Report:
             for obs in obs_of_draft.get(draft_id, []):
                 if draft_id not in posted_by_obs.setdefault(obs, []):
                     posted_by_obs[obs].append(draft_id)
+    acked = load_acknowledged() if acknowledged is None else acknowledged
     for obs, drafts in posted_by_obs.items():
-        if len(drafts) > 1:
-            problems.append(Problem(0, "duplicate_post", f"observation {obs} is in {len(drafts)} posted drafts: {', '.join(drafts)}", drafts[-1]))
+        if len(drafts) > 1 and acked.get(str(obs)) != sorted(drafts):
+            problems.append(Problem(0, "duplicate_post", f"observation {obs} is in {len(drafts)} posted drafts: {', '.join(drafts)}; if this is known and "
+                                    f"accepted: `bio social-integrity --accept-duplicate {obs} --reason TEXT`", drafts[-1], str(obs), tuple(drafts)))
     if raw and not ends_with_newline and not any(p.kind == "torn_tail" for p in problems):
         problems.append(Problem(len(pieces), "missing_newline", "the last record has no newline, the next append would join it to its line"))
     return Report(path, count, problems)
@@ -167,11 +208,12 @@ def ledger_gate(ctx: dict) -> Verdict | None:
     report = check_integrity(ctx["ledger"].path)
     if report.ok:
         return None
-    reason = f"the ledger {report.path} is corrupt: {report.summary()}; run `bio social-integrity`"
+    reason = f"the ledger {report.path} is corrupt: {report.summary()}; posting is blocked; run `bio social-integrity`"
     try:
         from .social_rules import Audit
 
         Audit().log("ledger_corrupt", path=str(report.path), count=len(report.problems), problems=[p.text() for p in report.problems[:SHOWN_PROBLEMS]],
+                    kinds=sorted({p.kind for p in report.problems}), reason=report.summary(),
                     draft_id=ctx.get("draft_id"), manual=bool(ctx.get("manual")))
     except OSError:
         pass                                                   # the block does not depend on the audit line
@@ -382,6 +424,14 @@ def repair_tail(ledger_path: Path | str, *, now: dt.datetime | None = None) -> P
 def cmd_social_integrity(args: argparse.Namespace) -> int:
     path = Path(settings.SOCIAL_LEDGER)
     report = check_integrity(path)
+    if args.accept_duplicate is not None:
+        if args.repair_tail:
+            raise SocialError("--accept-duplicate and --repair-tail are separate steps; run them one at a time")
+        entry = accept_duplicate(report, args.accept_duplicate, args.reason or "")
+        print(f"accepted the duplicate post of observation {args.accept_duplicate} ({', '.join(entry['drafts'])}): {entry['reason']}")
+        report = check_integrity(path)
+        print(f"ledger {path}: {len(report.problems)} problems left")
+        return 0 if report.ok else 1
     print(f"ledger {path}: {report.lines} records, {len(report.problems)} problems")
     for p in report.problems:
         print(f"  {p.text()}")
@@ -433,6 +483,8 @@ ERRORS = (IntegrityError,)
 def add_parsers(sub) -> None:
     p = sub.add_parser("social-integrity", help="Check the posting ledger (valid lines, allowed state changes, no observation posted twice).")
     p.add_argument("--repair-tail", action="store_true", help="move a torn last line to <ledger>.torn-<time> (after a backup)")
+    p.add_argument("--accept-duplicate", metavar="OBS_ID", default=None, help="acknowledge the known duplicate post of this observation (needs --reason)")
+    p.add_argument("--reason", default=None, help="why the duplicate post is known and accepted (with --accept-duplicate)")
     p = sub.add_parser("social-backup", help="Copy the ledger, audit log, rules, themes and prints into the backup folder (dated; keeps the newest N).")
     p.add_argument("--keep", type=int, default=KEEP_DEFAULT, help=f"backups to keep (default {KEEP_DEFAULT})")
     p = sub.add_parser("social-restore", help="List backups, or show (default) / apply a restore from one.")

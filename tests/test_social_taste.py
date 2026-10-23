@@ -156,12 +156,18 @@ class TestSeasonalBoost:
         write_taxonomy({})
         assert order(tmp_path, [3, 1, 2], rules=rules_with(**self.ON)) == [3, 1, 2]
 
-    def test_seasonal_runs_after_variety_so_a_season_match_leads_even_when_its_genus_was_just_posted(self, tmp_path):
+    def test_variety_runs_last_so_a_recently_posted_genus_stays_demoted_even_in_season(self, tmp_path):
         write_taxonomy({1: entry("Amanita", "2020-10-23"), 2: entry("Boletus", "2020-04-01"), 9: entry("Amanita", "2020-04-01")})
         ledger = Ledger(tmp_path / "l.jsonl")
         posted(ledger, "d9", [9])
+        assert order(tmp_path, [2, 1], ledger=ledger, rules=rules_with(seasonal_boost=True)) == [2, 1]
+        assert [h.name for h in social_hooks.hooks("order")] == ["seasonal_boost", "variety"]
+
+    def test_positive_twin_seasonal_still_leads_among_genera_variety_does_not_demote(self, tmp_path):
+        write_taxonomy({1: entry("Russula", "2020-10-23"), 2: entry("Boletus", "2020-04-01"), 9: entry("Amanita", "2020-04-01")})
+        ledger = Ledger(tmp_path / "l.jsonl")
+        posted(ledger, "d9", [9])
         assert order(tmp_path, [2, 1], ledger=ledger, rules=rules_with(seasonal_boost=True)) == [1, 2]
-        assert [h.name for h in social_hooks.hooks("order")] == ["variety", "seasonal_boost"]
 
 
 class Cache:
