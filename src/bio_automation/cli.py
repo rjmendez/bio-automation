@@ -222,6 +222,21 @@ def build_parser() -> argparse.ArgumentParser:
                                   "files on its own -- no manual folder-browse or scheduled rescan needed).")
     p_stock_pub.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
 
+    p_inat_gallery = sub.add_parser(
+        "inat-gallery",
+        help="Hardlink the proposed, not yet submitted iNat upload copies into the gallery under inat-pending/<predicted group>/g<group>[_<Species>_p<share>]/ "
+             "(never a <year>/<year-month> folder: the Bluesky poster must not see them), then enqueue a gallery.reindex message.")
+    p_inat_gallery.add_argument("--queue", required=True, help="the proposed-observations queue json (inat_queue<TAG>.json)")
+    p_inat_gallery.add_argument("--suggestions", required=True, help="inat_suggestions<TAG>.json written by inat_suggest.py")
+    p_inat_gallery.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_inat_gallery.add_argument("--manifest", default=str(settings.CACHE_DIR / "state" / "inat_gallery_manifest.json"),
+                                help="the links this command made (only these are ever pruned)")
+    p_inat_gallery.add_argument("--min-share", type=float, default=0.5, help="vote share a species or iconic group needs to be named in a folder name")
+    p_inat_gallery.add_argument("--no-prune", action="store_true", help="keep links the plan no longer contains")
+    p_inat_gallery.add_argument("--dry-run", action="store_true", help="print what would be linked and touch nothing")
+    p_inat_gallery.add_argument("--no-queue", action="store_true", help="don't enqueue a gallery.reindex message")
+    p_inat_gallery.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
+
     p_social_index = sub.add_parser(
         "social-index",
         help="Map every gallery file to its iNat observation (from the audit and Stock-candidate csvs, each row checked against the title "
@@ -713,6 +728,33 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
             queue.close()
     print(json.dumps(result, indent=2))
     return 1 if result["failed"] or result["missing"] or result.get("refused") else 0      # skipped NEF/Enhanced-NR twins are not a failure
+
+
+def cmd_inat_gallery(args: argparse.Namespace) -> int:
+    import json
+
+    from . import inat_gallery
+
+    queue = json.load(open(args.queue, encoding="utf-8"))
+    suggestions = json.load(open(args.suggestions, encoding="utf-8"))
+    links, skipped = inat_gallery.plan(queue, suggestions, args.min_share)
+    if args.dry_run:
+        folders = sorted({rel.rsplit("/", 1)[0] for rel in links})
+        print(json.dumps({"would_link": len(links), "folders": len(folders), "queue_entries_without_a_copy": len(skipped)}, indent=2))
+        return 0
+    q = None
+    if not args.no_queue:
+        from .queue import Queue
+
+        q = Queue(Path(args.queue_db)) if args.queue_db else Queue()
+    try:
+        result = inat_gallery.apply(links, Path(args.gallery_dir), Path(args.manifest), queue=q, prune=not args.no_prune)
+    finally:
+        if q is not None:
+            q.close()
+    result["queue_entries_without_a_copy"] = len(skipped)
+    print(json.dumps(result, indent=2))
+    return 1 if result["refused"] else 0
 
 
 def _expand(patterns: list[str]) -> list[Path]:
@@ -1291,6 +1333,8 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
+    if args.command == "inat-gallery":
+        return cmd_inat_gallery(args)
     if args.command == "disk-guard":
         from . import disk_guard
 
