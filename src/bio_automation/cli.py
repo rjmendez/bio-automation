@@ -249,6 +249,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_qdrant.add_argument("--limit", type=int, default=None, help="only the first N gallery files (a trial run)")
     p_qdrant.add_argument("--dry-run", action="store_true", help="build and report everything, send nothing to Qdrant")
 
+    p_qinat = sub.add_parser(
+        "qdrant-inat-sync",
+        help="Bring ALL of the owner's iNat data (no photos) into Qdrant: one point per observation in `<prefix>observations` and one per "
+             "taxon of the observed tree in `<prefix>taxa`, incrementally (new/changed observations, changed points only).")
+    p_qinat.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_qinat.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_qinat.add_argument("--prefix", default=settings.QDRANT_INAT_PREFIX, help="collection name prefix (a trial run: --prefix zz_trial_ --limit 50)")
+    p_qinat.add_argument("--login", default=settings.INAT_LOGIN)
+    p_qinat.add_argument("--limit", type=int, default=None, help="only the lowest N observation ids (a trial run; use another --prefix)")
+    p_qinat.add_argument("--full", action="store_true", help="refetch every observation instead of the new and changed ones")
+    p_qinat.add_argument("--dry-run", action="store_true", help="build and report everything, send nothing to Qdrant")
+
     p_social_draft = sub.add_parser(
         "social-draft",
         help="Top up this month's unposted Bluesky drafts: observations with gallery photos in this month of any year, fetched live, "
@@ -903,7 +915,38 @@ def cmd_qdrant_sync(args: argparse.Namespace) -> int:
     return 0
 
 
-SOCIAL_COMMANDS = {"qdrant-sync": cmd_qdrant_sync, "darkroom-sync": cmd_darkroom_sync, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+def cmd_qdrant_inat_sync(args: argparse.Namespace) -> int:
+    import json
+    import os
+
+    from . import daclip, inat, qdrant_inat, qdrant_obs, social
+
+    session = []
+
+    def embed_image(path):                                            # DA-CLIP on the GPU, loaded once and only for files not in the cache
+        if not session:
+            session.append(daclip.load_session())
+        return daclip.embed_path(path, session[0])[0]
+
+    ua = os.environ.get("INAT_USER_AGENT") or inat.USER_AGENT_DEFAULT
+    lineage_cache = inat.TaxonLineageCache(settings.INAT_TAXON_CACHE, settings.INAT_TAXON_TTL_S)
+    _, embed_text = social.embedder()
+    client = None
+    if not args.dry_run:
+        url, key = qdrant_obs.qdrant_config()
+        client = qdrant_obs.Qdrant(url, key)
+    summary = qdrant_inat.sync(
+        cache_file=settings.QDRANT_INAT_FULL, state_file=settings.QDRANT_INAT_STATE, client=client, prefix=args.prefix, login=args.login,
+        get=lambda u: inat._default_get(u, ua), wait=inat._default_rate_limiter.wait, lineage_cache=lineage_cache,
+        fetch_lineages=lambda ids: inat.fetch_taxon_lineages(ids, user_agent=ua), embed_text=embed_text,
+        index=social.load_index(Path(args.index)), gallery_dir=Path(args.gallery_dir), work_dir=settings.DARKROOM_DIR, embed_image=embed_image,
+        prints=social.load_prints(), ledger_drafts=social.Ledger().drafts(), coverage_csv=settings.INAT_COVERAGE_CSV,
+        limit=args.limit, write=not args.dry_run, full=args.full)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
+
+
+SOCIAL_COMMANDS = {"qdrant-inat-sync": cmd_qdrant_inat_sync, "qdrant-sync": cmd_qdrant_sync, "darkroom-sync": cmd_darkroom_sync, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
                    "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,
@@ -1008,7 +1051,7 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
-    if args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync"):
+    if args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
         from .darkroom import DarkroomError
         from .qdrant_obs import QdrantError
         from .social import SocialError, VisionError
