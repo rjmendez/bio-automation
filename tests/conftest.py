@@ -42,6 +42,8 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SOCIAL_DIGEST_DIR", tmp_path / "no-prints" / "digest")
     monkeypatch.setattr(settings, "SOCIAL_BACKUP_DIR", tmp_path / "no-prints" / "backups")
     monkeypatch.setattr(settings, "SOCIAL_ENGAGEMENT_LOG", tmp_path / "no-prints" / "engagement.jsonl")
+    monkeypatch.setattr(settings, "GALLERY_TITLE_CACHE", tmp_path / "no-prints" / "titles_cache.json")
+    monkeypatch.setattr(settings, "GALLERY_OBS_INDEX", tmp_path / "no-prints" / "gallery_obs_index.json")
     monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "no-prints" / "ledger.jsonl")
     for name in list(os.environ):                                                                       # no rule is switched by the machine's environment
         if name.startswith("BIO_SOCIAL_RULE_"):
