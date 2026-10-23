@@ -212,14 +212,20 @@ def secret_scan_paths() -> list[Path]:
 
 
 def check_secret_scan(paths: list[Path] | None = None) -> Check:
-    """No token-shaped string (JWT, bearer/DPoP/Authorization value, PEM private key, JWK private member, api key) in the logs, audit, alerts,
-    drafts, digests or backups. Names the files only, never the match."""
-    found = secrets_guard.scan_paths(secret_scan_paths() if paths is None else paths)
+    """No token-shaped string in the logs, audit, alerts, drafts, digests or backups. A real secret shape (JWT, bearer/DPoP/Authorization value, PEM
+    private key, JWK private member, api key) FAILS (and is a warning in --deploy, see for_deploy); only the weak forms (a Cookie header value,
+    `password=...`, `?token=...`, which prose can match too) WARN. Reads are bounded (secrets_guard caps). Names the files only, never the match."""
+    res = secrets_guard.scan(secret_scan_paths() if paths is None else paths)
+    found = res.findings
+    cap = f" (scan capped at {res.files} files: not everything was read)" if res.capped else ""
     if found:
-        shown = "; ".join(f"{f.path} ({', '.join(f.kinds)})" for f in found[:5])
-        more = f" and {len(found) - 5} more" if len(found) > 5 else ""
-        return Check("secret-scan", FAIL, f"{len(found)} file(s) hold credential-like text: {shown}{more}. Remove or rotate; values are not shown")
-    return Check("secret-scan", OK, "no credential-like text in the logs, audit, alerts, drafts, digests or backups")
+        strong = [f for f in found if set(f.kinds) & secrets_guard.STRONG_KINDS]
+        shown = "; ".join(f"{f.path} ({', '.join(f.kinds)})" for f in (strong or found)[:5])
+        more = f" and {len(strong or found) - 5} more" if len(strong or found) > 5 else ""
+        if strong:
+            return Check("secret-scan", FAIL, f"{len(strong)} file(s) hold credential-like text: {shown}{more}. Remove or rotate; values are not shown{cap}")
+        return Check("secret-scan", WARN, f"{len(found)} file(s) hold text that looks like a cookie or key=value credential: {shown}{more}. Check and remove if real; values are not shown{cap}")
+    return Check("secret-scan", OK, "no credential-like text in the logs, audit, alerts, drafts, digests or backups" + cap)
 
 
 def check_gallery_index(now: dt.datetime) -> Check:
