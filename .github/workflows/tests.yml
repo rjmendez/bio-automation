@@ -69,7 +69,7 @@ jobs:
 
   tests:
     needs: gate
-    name: tests (public subset)
+    name: tests
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -162,3 +162,32 @@ jobs:
         run: >
           python -m pytest tests -q -p no:cacheprovider
           --ignore-glob="tests/test_*_live.py"
+
+  summary:
+    # The one job that reads both results. A skipped tests-private (no token) is NOT a pass: it ends in an error annotation and a summary line that says
+    # the private tests did not run, and a failed or cancelled test job fails this one. It stays green for a token-less run (a fork PR must be mergeable
+    # by a maintainer), so the branch protection should require `tests` AND `summary`, and the maintainer reads the annotation.
+    needs: [gate, tests, tests-private]
+    if: ${{ always() }}
+    name: tests-summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - shell: bash
+        env:
+          PUBLIC: ${{ needs.tests.result }}
+          PRIVATE: ${{ needs.tests-private.result }}
+        run: |
+          echo "tests=$PUBLIC tests-private=$PRIVATE" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$PUBLIC" != "success" ]; then
+            echo "::error title=tests did not pass::the public test job result is $PUBLIC"
+            exit 1
+          fi
+          if [ "$PRIVATE" = "failure" ] || [ "$PRIVATE" = "cancelled" ]; then
+            echo "::error title=tests-private did not pass::the private test job result is $PRIVATE"
+            exit 1
+          fi
+          if [ "$PRIVATE" != "success" ]; then
+            echo "::error title=PRIVATE TESTS DID NOT RUN::tests-private result is $PRIVATE (no BSKY_OAUTH_READ_TOKEN). Only the public subset was tested; run scripts/premerge.ps1 before merging."
+            echo "### NOT FULLY TESTED: tests-private $PRIVATE. Run scripts/premerge.ps1 before merging." >> "$GITHUB_STEP_SUMMARY"
+          fi

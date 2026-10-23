@@ -35,7 +35,8 @@ def unit_test_command(job, label):
 class TestWorkflowStructure:
     def test_jobs_and_the_secretless_public_job(self):
         wf = load()
-        assert list(wf["jobs"]) == ["gate", "tests", "tests-private"]
+        assert list(wf["jobs"]) == ["gate", "tests", "tests-private", "summary"]
+        assert wf["jobs"]["tests"]["name"] == "tests"          # a branch-protection rule that requires the check `tests` keeps matching
         assert wf["permissions"] == {"contents": "read"}
         assert wf["jobs"]["tests"]["needs"] == "gate" and "if" not in wf["jobs"]["tests"]       # the public job always runs
         assert wf["jobs"]["tests-private"]["if"] == "${{ needs.gate.outputs.have_token == 'true' }}"
@@ -109,3 +110,30 @@ class TestDegradedRun:
         assert note["if"] == "${{ always() }}"
         assert "::warning title=partial run::" in note["run"]
         assert "tests/test_social_cleanup.py" in note["run"] and "TestBskyBoundary" in note["run"]
+
+
+class TestSummaryJob:
+    def test_it_reads_both_results_runs_always_and_fails_on_a_failed_or_cancelled_job(self):
+        job = load()["jobs"]["summary"]
+        assert (job["needs"], job["if"], job["name"]) == (["gate", "tests", "tests-private"], "${{ always() }}", "tests-summary")
+        (step,) = job["steps"]
+        assert step["env"] == {"PUBLIC": "${{ needs.tests.result }}", "PRIVATE": "${{ needs.tests-private.result }}"}
+        run = step["run"]
+        assert 'if [ "$PUBLIC" != "success" ]; then' in run
+        assert 'if [ "$PRIVATE" = "failure" ] || [ "$PRIVATE" = "cancelled" ]; then' in run
+
+    def test_a_skipped_private_job_ends_in_an_error_annotation_not_a_silent_pass(self):
+        (step,) = load()["jobs"]["summary"]["steps"]
+        assert "::error title=PRIVATE TESTS DID NOT RUN::" in step["run"]
+        assert 'if [ "$PRIVATE" != "success" ]; then' in step["run"]
+
+    def test_the_summary_script_behaves_for_each_result(self, tmp_path):
+        import os, shutil, subprocess
+        bash = shutil.which("bash")
+        (step,) = load()["jobs"]["summary"]["steps"]
+        outcomes = {}
+        for public, private in (("success", "success"), ("success", "skipped"), ("failure", "skipped"), ("success", "failure")):
+            r = subprocess.run([bash, "-c", step["run"]], env={**os.environ, "PUBLIC": public, "PRIVATE": private, "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md")},
+                               capture_output=True, text=True)
+            outcomes[(public, private)] = (r.returncode, "PRIVATE TESTS DID NOT RUN" in r.stdout)
+        assert outcomes == {("success", "success"): (0, False), ("success", "skipped"): (0, True), ("failure", "skipped"): (1, False), ("success", "failure"): (1, False)}

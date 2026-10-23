@@ -669,6 +669,22 @@ class TestScriptDrift:
         c = world.run()["script-drift"]
         assert c.message.startswith(f"scheduled-task scripts drifted (missing in {world.scripts}: notify-to-inbox.ps1; differ from the repo: run-social-watch.ps1)")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="exclusive file handles are a Windows thing; the check's OSError branch is the same everywhere")
+    def test_a_locked_copy_warns_naming_the_file_instead_of_crashing_and_the_unlocked_twin_is_ok(self, world):
+        import ctypes
+        from ctypes import wintypes
+        create = ctypes.windll.kernel32.CreateFileW
+        create.restype = wintypes.HANDLE
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        handle = create(str(world.scripts / "run-social-post.ps1"), 0x80000000, 0, None, 3, 0, None)       # GENERIC_READ, share mode 0, OPEN_EXISTING
+        assert handle not in (None, wintypes.HANDLE(-1).value)
+        try:
+            c = world.run()["script-drift"]
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+        assert (c.level, c.message) == (WARN, "scheduled-task scripts drifted (unreadable (locked or access denied): run-social-post.ps1); run scripts\deploy_prod.ps1 or copy them")
+        assert world.run()["script-drift"].level == OK
+
     def test_the_rollback_script_and_unknown_files_are_ignored(self, world):
         (world.scripts / "run-social.ps1").write_text("the old single script, edited by hand", encoding="utf-8")
         (world.scripts / "other.ps1").write_text("not ours", encoding="utf-8")

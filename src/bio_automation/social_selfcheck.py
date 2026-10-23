@@ -362,15 +362,18 @@ def check_script_drift(repo_dir: Path | None = None, deployed_dir: Path | None =
     wanted = sorted(f for f in src.glob("*.ps1") if f.is_file() and f.name.lower() != ROLLBACK_SCRIPT)
     if not dst.is_dir():
         return Check("script-drift", WARN, f"scheduled-task script folder {dst} does not exist ({len(wanted)} repo scripts not deployed)")
-    missing, differ = [], []
+    missing, differ, unreadable = [], [], []
     for f in wanted:
         copy = dst / f.name
-        if not copy.is_file():
-            missing.append(f.name)
-        elif _sha256(copy) != _sha256(f):
-            differ.append(f.name)
-    if missing or differ:
-        parts = ([f"missing in {dst}: {', '.join(missing)}"] if missing else []) + ([f"differ from the repo: {', '.join(differ)}"] if differ else [])
+        try:
+            if not copy.is_file():
+                missing.append(f.name)
+            elif _sha256(copy) != _sha256(f):
+                differ.append(f.name)
+        except OSError:                                  # locked, or denied by an ACL: a warning that names the file, never a crash
+            unreadable.append(f.name)
+    if missing or differ or unreadable:
+        parts = ([f"missing in {dst}: {', '.join(missing)}"] if missing else []) + ([f"differ from the repo: {', '.join(differ)}"] if differ else [])             + ([f"unreadable (locked or access denied): {', '.join(unreadable)}"] if unreadable else [])
         return Check("script-drift", WARN, "scheduled-task scripts drifted (" + "; ".join(parts) + "); run scripts\\deploy_prod.ps1 or copy them")
     return Check("script-drift", OK, f"{len(wanted)} scheduled-task scripts in {dst} match the repo (sha256)")
 
