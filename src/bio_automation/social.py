@@ -567,7 +567,7 @@ def text_segments(obs: dict, prints_url: str | None = None) -> list[list[str]]:
         tags = list(all_tags)
         while True:
             out = ([["text", "\n".join(x for x in head if x) + "\n"], ["link", url, url]] + prints
-                   + [["text", "\nAlt text: local AI model, reviewed.\n"]] + [s for t in tags for s in (["tag", "#" + t, t], ["text", " "])][:-1])
+                   + [["text", "\n"]] + [s for t in tags for s in (["tag", "#" + t, t], ["text", " "])][:-1])
             text = segments_text(out)
             if len(text) <= TEXT_MAX_GRAPHEMES and len(text.encode("utf-8")) <= TEXT_MAX_BYTES:   # code points >= graphemes: a safe count
                 return out
@@ -722,13 +722,31 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
 
 # --------------------------------------------------------------------------------------------------- owner decisions
 
+REVIEW_CLAIM = "\nAlt text: local AI model, reviewed.\n"      # the line older drafts carry; a post nobody reviewed must not claim a review
+
+
+def strip_review_claim(segments: list[list[str]]) -> list[list[str]]:
+    """`segments` without the legacy "Alt text: local AI model, reviewed." line (the newline around it stays one newline)."""
+    return [[s[0], s[1].replace(REVIEW_CLAIM, "\n"), *s[2:]] if s[0] == "text" else s for s in segments]
+
+
+def _drop_review_claim(ddir: Path) -> None:
+    draft = load_draft(ddir)
+    clean = strip_review_claim(draft["text"])
+    if clean != draft["text"]:
+        draft["text"] = clean
+        (Path(ddir) / "draft.json").write_text(json.dumps(draft, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
 def approve(ledger: Ledger, drafts_dir: Path, draft_id: str) -> dict:
-    """Approve a drafted (or failed) draft, binding the approval to the hash of its files as they are now."""
+    """Approve a drafted (or failed) draft, binding the approval to the hash of its files as they are now. The legacy review-claim line is
+    removed from the draft first, so the hash covers the text that will be sent."""
     d = ledger.drafts().get(draft_id)
     if d is None:
         raise SocialError(f"no draft {draft_id!r} in {ledger.path}")
     if d["state"] not in ("drafted", "failed", "approved"):
         raise SocialError(f"draft {draft_id} is {d['state']}; only a drafted or failed draft can be approved")
+    _drop_review_claim(Path(drafts_dir) / draft_id)
     return ledger.append("approved", draft_id, obs_id=d["obs_id"], month=d["month"], hash=draft_hash(Path(drafts_dir) / draft_id))
 
 
@@ -840,53 +858,81 @@ def ledger_lock(ledger_path: Path | str) -> Iterator[None]:
 
 
 def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool = False, posts_per_day: int | None = None,
-              send: Callable[[dict], tuple[str, str]] = bsky_post) -> dict:
-    """Post the oldest approved draft of now's month. Dry-run (the default) returns what would be sent and records nothing.
-    Refuses while any post's outcome is unknown; does nothing once posts_per_day posts went out on now's local day.
+              send: Callable[[dict], tuple[str, str]] = bsky_post, manual: bool = False, draft_id: str | None = None,
+              auto_approve: bool | None = None) -> dict:
+    """Post one draft. Dry-run (the default) returns what would be sent and records nothing.
+
+    Scheduled runs (the default): the oldest approved draft of now's month; when none is approved and `auto_approve` (default
+    settings.SOCIAL_AUTO_APPROVE) is on, the oldest drafted draft of now's month is approved first and posted. They do nothing once
+    posts_per_day scheduled posts went out on now's local day.
+    Manual (`manual`, or `draft_id`, which posts that very draft whatever its month): not counted in the daily cap and not stopped by it;
+    the posted record carries manual=true. Either way a post whose outcome is unknown blocks everything until social-resolve.
 
     Live: "posting" is recorded before the send. A send that stopped before anything went out (NothingSent) records an "error"
     note and the draft stays approved for the next run; any other failure leaves it "posting" (outcome unknown -> social-resolve)."""
+    kw = dict(now=now, posts_per_day=posts_per_day, send=send, manual=manual or draft_id is not None, draft_id=draft_id,
+              auto_approve=settings.SOCIAL_AUTO_APPROVE if auto_approve is None else auto_approve)
     if not live:
-        return _post_next(ledger, drafts_dir, now=now, live=False, posts_per_day=posts_per_day, send=send)
+        return _post_next(ledger, drafts_dir, live=False, **kw)
     with ledger_lock(ledger.path):                                    # the checks, the "posting" record and the send are one step
-        return _post_next(ledger, drafts_dir, now=now, live=True, posts_per_day=posts_per_day, send=send)
+        return _post_next(ledger, drafts_dir, live=True, **kw)
 
 
 def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool, posts_per_day: int | None,
-               send: Callable[[dict], tuple[str, str]]) -> dict:
+               send: Callable[[dict], tuple[str, str]], manual: bool, draft_id: str | None, auto_approve: bool) -> dict:
     posts_per_day = settings.SOCIAL_POSTS_PER_DAY if posts_per_day is None else posts_per_day
     month = f"{now.year}-{now.month:02d}"
     drafts = ledger.drafts()
     stuck = [d for d, v in drafts.items() if v["state"] == "posting"]
     if stuck:
         raise SocialError(f"outcome unknown for {', '.join(stuck)}: check the profile, then `bio social-resolve` each one")
-    today = now.date().isoformat()
-    posted_today = [r for r in ledger.records() if r["event"] == "posted" and r["at"][:10] == today]
-    if len(posted_today) >= posts_per_day:
-        return {"status": "done for today", "posted_today": [r["draft_id"] for r in posted_today]}
-    ready = [(v["approved_seq"], d) for d, v in drafts.items() if v["state"] == "approved" and v["month"] == month]
-    if not ready:
-        return {"status": "nothing approved", "month": month}
-    draft_id = min(ready)[1]
+    if not manual:
+        today = now.date().isoformat()
+        posted_today = [r for r in ledger.records() if r["event"] == "posted" and r["at"][:10] == today and not r.get("manual")]
+        if len(posted_today) >= posts_per_day:
+            return {"status": "done for today", "posted_today": [r["draft_id"] for r in posted_today]}
+    if draft_id is not None:
+        d = drafts.get(draft_id)
+        if d is None:
+            raise SocialError(f"no draft {draft_id!r} in {ledger.path}")
+        if d["state"] not in ("drafted", "failed", "approved"):
+            raise SocialError(f"draft {draft_id} is {d['state']}; only a drafted, failed or approved draft can be posted")
+        needs_approval = d["state"] != "approved"
+    else:
+        ready = [(v["approved_seq"], d) for d, v in drafts.items() if v["state"] == "approved" and v["month"] == month]
+        if ready:
+            draft_id, needs_approval = min(ready)[1], False
+        else:
+            fresh = [d for d, v in drafts.items() if v["state"] == "drafted" and v["month"] == month]
+            if not (auto_approve and fresh):
+                return {"status": "nothing approved", "month": month}
+            draft_id, needs_approval = fresh[0], True
     ddir = Path(drafts_dir) / draft_id
-    if draft_hash(ddir) != drafts[draft_id]["approved_hash"]:
+    if needs_approval and live:
+        approve(ledger, drafts_dir, draft_id)
+        drafts = ledger.drafts()
+    elif not needs_approval and draft_hash(ddir) != drafts[draft_id]["approved_hash"]:
         raise SocialError(f"draft {draft_id} changed after it was approved: review it and approve it again")
+    dmonth = drafts[draft_id]["month"]
     draft = load_draft(ddir)
-    request = {"text": segments_text(draft["text"]), "langs": ["en"],
+    text = strip_review_claim(draft["text"]) if needs_approval else draft["text"]      # a dry-run shows what approval will leave
+    request = {"text": segments_text(text), "langs": ["en"],
                "images": [{"path": str(ddir / i["file"]), "alt": i["alt"], "width": i["width"], "height": i["height"]} for i in draft["images"]]}
     payload = {"draft_id": draft_id, "text": request["text"], "alts": [i["alt"] for i in draft["images"]],
-               "image_bytes": [(ddir / i["file"]).stat().st_size for i in draft["images"]]}
+               "image_bytes": [(ddir / i["file"]).stat().st_size for i in draft["images"]], "manual": manual,
+               "approved_by_this_run": needs_approval}
     if not live:
         return {"status": "dry-run", **payload}
-    ledger.append("posting", draft_id, obs_id=draft["obs_id"], month=month, now=now)
+    ledger.append("posting", draft_id, obs_id=draft["obs_id"], month=dmonth, now=now)
     try:
         uri, cid = send(request)
     except NothingSent as e:
-        ledger.append("approved", draft_id, obs_id=draft["obs_id"], month=month, hash=drafts[draft_id]["approved_hash"], restored=True, now=now)
-        ledger.append("error", draft_id, obs_id=draft["obs_id"], month=month, error=str(e)[:500], now=now)
+        ledger.append("approved", draft_id, obs_id=draft["obs_id"], month=dmonth, hash=drafts[draft_id]["approved_hash"], restored=True, now=now)
+        ledger.append("error", draft_id, obs_id=draft["obs_id"], month=dmonth, error=str(e)[:500], now=now)
         raise SocialError(f"nothing was posted ({e}); {draft_id} stays approved for the next run") from e
     except Exception as e:  # noqa: BLE001 -- the post may or may not exist now: the draft stays "posting" and blocks until resolved
         raise SocialError(f"posting {draft_id} failed with an unknown outcome ({type(e).__name__}: {e}); check the profile, then "
                           f"`bio social-resolve {draft_id} --posted-uri <at:// uri>` or `--not-posted`") from e
-    ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=month, uri=uri, cid=cid, now=now)
+    extra = {"manual": True} if manual else {}
+    ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=dmonth, uri=uri, cid=cid, now=now, **extra)
     return {"status": "posted", "uri": uri, **payload}
