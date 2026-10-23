@@ -281,3 +281,28 @@ def test_http_failure_is_one_clear_error(monkeypatch):
     monkeypatch.setattr(eng.urllib.request, "urlopen", urlopen)
     with pytest.raises(eng.EngagementError, match="the Bluesky AppView did not answer"):
         eng.http_get(eng.APPVIEW, [("uris", "x")])
+
+
+def test_read_snapshots_skips_a_torn_last_line_and_keeps_the_good_ones(tmp_path):
+    log = tmp_path / "torn.jsonl"
+    good = FIXTURE[:2]
+    log.write_text("".join(json.dumps(r) + "\n" for r in good) + '{"at": "2026-10-23T12:00:00-04:00", "uri": "at://x/app.bsky.fe', encoding="utf-8")
+    assert eng.read_snapshots(log) == good
+    # twin: the same file without the torn line reads identically, so the skip lost nothing else
+    log.write_text("".join(json.dumps(r) + "\n" for r in good), encoding="utf-8")
+    assert eng.read_snapshots(log) == good
+
+
+def test_read_snapshots_skips_non_object_and_incomplete_records(tmp_path):
+    log = tmp_path / "odd.jsonl"
+    log.write_text(json.dumps(FIXTURE[0]) + '\n[1, 2]\n{"likeCount": 3}\n\n"text"\n', encoding="utf-8")
+    assert eng.read_snapshots(log) == [FIXTURE[0]]
+
+
+def test_the_report_and_the_theme_aggregate_survive_a_torn_last_line(tmp_path, capsys):
+    log = tmp_path / "e.jsonl"
+    write_log(log, FIXTURE)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write('{"at": "2026-10-2')
+    got = eng.engagement_by_theme(30, log=log, now=NOW)
+    assert sorted(got) == ["fungi-friday", "single"] and got["fungi-friday"]["mean_score"] == 8.5

@@ -6,10 +6,17 @@ when asked (--notify, or settings.SOCIAL_ALERT_COMMAND is set) and the rule `ale
 `bio social-digest` writes one Markdown page per day to settings.SOCIAL_DIGEST_DIR.
 
 Alert kinds and levels (exit code: 0 none, 1 warnings, 2 errors):
-  error    post_failed, post_verify_failed, circuit_open, ledger_corrupt, expected_post_missing, run_silent, disk (C: under 15 GB)
-  warning  post_blocked, hook_error, paused, backup_failed, low_stock, queue_empty, disk (D: under 20 GB)
+  error    post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
+           ledger_corrupt (an audit event, or unreadable lines found in the ledger file itself), prep_failed (a prep_step with ok=false),
+           selfcheck_failed (a selfcheck event with level fail), expected_post_missing, run_silent, disk (C: under 15 GB)
+  warning  post_blocked, hook_error, paused, backup_failed, withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
+           draft_reject_spike (more than 10 draft_skipped by hooks in one run), low_stock, queue_empty, disk (D: under 20 GB)
 De-duplication: a key already in the alerts log less than 12 hours ago is not new. An alert that stands for ONE audit record (an event: post_failed,
 hook_error ...) is new only once, ever, so an old failure still inside the --since window is not announced again after 12 hours.
+An alert is LOGGED when it is new but NOTIFIED until a "notified" record exists for it (same windows): an alert the maintenance scan logged
+without a command is still sent by the next `social-alerts --notify`, and a failed notification is retried by the next scan.
+The alert command gets the message as UTF-8 bytes on stdin. It runs through Popen with stdout discarded and stderr in a temp file (never a pipe
+a grandchild could hold), and on a timeout the whole process tree is killed. Each result is audited: alert_sent, or alert_failed with the reason.
 LOW STOCK counts posts as unclaimed matching observations in the taxonomy cache // the theme's max_photos; "unclaimed" = in no draft that is
 not withdrawn. It is an estimate: the cache holds the observations seen so far, not the gallery index.
 Every function takes its inputs (paths, clock, runner) as arguments; the defaults come from settings when the command runs."""
@@ -17,16 +24,18 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Callable, NamedTuple
 
 from . import settings
-from .social_rules import Rules, load_rules
+from .social_rules import Audit, Rules, load_rules
 
 DEDUP_WINDOW = dt.timedelta(hours=12)
 LATE_AFTER = dt.timedelta(minutes=60)          # a slot's post is missing when the slot is this old
@@ -36,6 +45,10 @@ DISK_MIN_GB = (("C:\\", 15, "error"), ("D:\\", 20, "warning"))
 NOTIFY_TIMEOUT_S = 30
 ERROR_EVENTS = {"post_failed": "error", "post_verify_failed": "error", "circuit_open": "error", "ledger_corrupt": "error",
                 "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning"}
+WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
+WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
+DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
+HOOK_REJECT = re.compile(r"observation \d+: ")  # make_draft words a draft-hook reject "observation N: <reason>"; its other skips have no colon there
 PER_DAY_EVENTS = ("paused", "circuit_open")    # these repeat on every run: one alert a day
 LEVELS = {"warning": 1, "error": 2}
 
@@ -72,6 +85,23 @@ def read_jsonl(path: Path) -> list[dict]:
         if isinstance(rec, dict):
             out.append(rec)
     return out
+
+
+def count_unreadable_lines(path: Path) -> int:
+    """How many non-blank lines of a JSON-lines file are not a JSON object (a torn or garbled write)."""
+    path = Path(path)
+    if not path.is_file():
+        return 0
+    bad = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            ok = isinstance(json.loads(line), dict)
+        except ValueError:
+            ok = False
+        bad += not ok
+    return bad
 
 
 def parse_time(text, tz=None) -> dt.datetime | None:
@@ -168,13 +198,54 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
     # 1. events in the window
     for r in audit:
         kind, at = r.get("event"), parse_time(r.get("at"), tz)
-        if kind not in ERROR_EVENTS or at is None or not (now - since <= at <= now):
+        if at is None or not (now - since <= at <= now):
             continue
+        if kind == "prep_step" and r.get("ok") is False:                        # a prep step failed (preflight, index, sync, draft)
+            detail = r.get("error") or r.get("reason") or ""
+            add(Alert(f"prep_failed:{r.get('step')}:{r.get('at')}", "prep_failed", "error",
+                      f"prep step {r.get('step')} failed{': ' + str(detail)[:200] if detail else ''} ({r.get('at')})", sticky=True))
+            continue
+        if kind == "selfcheck" and r.get("level") == "fail":
+            problems = "; ".join(str(p) for p in (r.get("problems") or [])[:3])
+            add(Alert(f"selfcheck_failed:{r.get('at')}", "selfcheck_failed", "error",
+                      f"selfcheck failed{': ' + problems[:200] if problems else ''} ({r.get('at')})", sticky=True))
+            continue
+        if kind not in ERROR_EVENTS:
+            continue
+        level = ERROR_EVENTS[kind]
+        if kind == "post_verify_failed" and r.get("level") == "warn":           # the AppView had not indexed the post yet: unverified, not wrong
+            level = "warning"
         detail = r.get("reason") or r.get("error") or r.get("status") or ""
+        if not detail and r.get("problems"):
+            detail = "; ".join(str(p) for p in r["problems"][:3])
         who = r.get("draft_id") or r.get("name") or ""
         text = f"{kind}{' ' + str(who) if who else ''}{': ' + str(detail)[:200] if detail else ''} ({r.get('at')})"
         key = f"{kind}:{at.date().isoformat()}" if kind in PER_DAY_EVENTS else f"{kind}:{who}:{r.get('at')}"
-        add(Alert(key, kind, ERROR_EVENTS[kind], text, sticky=True))
+        add(Alert(key, kind, level, text, sticky=True))
+
+    # withdrawal spike: a live_recheck that withdraws many drafts is usually a false positive draining the stock (would_withdraw = a dry run)
+    withdrawn = [r for r in audit if r.get("event") in WITHDRAWAL_EVENTS and (t := parse_time(r.get("at"), tz)) is not None
+                 and now - dt.timedelta(hours=24) <= t <= now]
+    if len(withdrawn) > WITHDRAWAL_SPIKE:
+        add(Alert(f"withdrawal_spike:{now.date().isoformat()}", "withdrawal_spike", "warning",
+                  f"{len(withdrawn)} drafts withdrawn (or would be, in a dry run) in the last 24 h, more than {WITHDRAWAL_SPIKE}"))
+
+    # draft-reject spike: one prep run whose draft hooks reject most candidates burns the GPU on all of them
+    rejects: dict[str, int] = {}
+    for r in audit:
+        t = parse_time(r.get("at"), tz)
+        if r.get("event") == "draft_skipped" and t is not None and now - since <= t <= now and HOOK_REJECT.match(str(r.get("reason") or "")):
+            rejects[r.get("run") or "?"] = rejects.get(r.get("run") or "?", 0) + 1
+    for run_id, n in sorted(rejects.items()):
+        if n > DRAFT_REJECT_SPIKE:
+            add(Alert(f"draft_reject_spike:{run_id}", "draft_reject_spike", "warning",
+                      f"run {run_id}: {n} candidates rejected by draft hooks, more than {DRAFT_REJECT_SPIKE}", sticky=True))
+
+    # a torn or garbled ledger line: the poster refuses to run on it, and it may write no audit record of its own
+    bad_lines = count_unreadable_lines(ledger_path or settings.SOCIAL_LEDGER)
+    if bad_lines:
+        add(Alert(f"ledger_corrupt:file:{bad_lines}", "ledger_corrupt", "error",
+                  f"the ledger file has {bad_lines} unreadable line(s) (a torn or garbled write); posting stops until `bio social-integrity --repair-tail` or a manual fix"))
 
     drafts = _drafts(ledger)
     today = now.date()
@@ -272,14 +343,67 @@ def split_command(text: str) -> list[str]:
     return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
 
 
+def pending_notify(alerts: list[Alert], log: list[dict], now: dt.datetime) -> list[Alert]:
+    """The alerts with no "notified" record: none at all, or (for a non-sticky alert) none within DEDUP_WINDOW."""
+    done: dict[str, dt.datetime] = {}
+    for r in log:
+        if r.get("record") == "notified" and r.get("key") and (t := parse_time(r.get("at"), now.tzinfo)) is not None:
+            done[r["key"]] = max(t, done.get(r["key"], t))
+    return [a for a in alerts if (t := done.get(a.key)) is None or (not a.sticky and now - t >= DEDUP_WINDOW)]
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the notifier and everything it started (a hung script launching a hung child)."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=15, check=False)
+    else:
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def run_notifier(argv: list[str], *, input: bytes, timeout: float) -> subprocess.CompletedProcess:
+    """Run the alert command with `input` on stdin; wait at most `timeout` seconds IN TOTAL. stdout goes nowhere and stderr to a temp file, so a
+    grandchild that keeps them open cannot hold this call; on a timeout the whole process tree is killed and TimeoutExpired is raised."""
+    kw: dict = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {"start_new_session": True}
+    with tempfile.TemporaryFile() as errf:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errf, shell=False, **kw)
+        try:
+            try:
+                proc.stdin.write(input)
+                proc.stdin.close()
+            except OSError:
+                pass                                                              # the command did not read its stdin; its exit code decides
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                proc.wait(timeout=15)
+                raise
+        finally:
+            if proc.poll() is None:
+                _kill_tree(proc)
+        errf.seek(0)
+        err = errf.read().decode("utf-8", "replace")
+    return subprocess.CompletedProcess(argv, proc.returncode, "", err)
+
+
 def run_alerts(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), notify: bool = False, command: str | None = None,
-               rules: Rules | None = None, alerts_log: Path | None = None, runner=subprocess.run, **scan_args) -> dict:
+               rules: Rules | None = None, alerts_log: Path | None = None, runner=run_notifier, **scan_args) -> dict:
     """Scan, record the new alerts, notify. Returns {"alerts", "new", "notified", "notify_failed", "notes", "exit"}."""
     rules = rules or load_rules()
     alerts_log = Path(alerts_log or settings.SOCIAL_ALERTS_LOG)
     command = settings.SOCIAL_ALERT_COMMAND if command is None else command
     found, notes = scan(now, since=since, rules=rules, **scan_args)
-    fresh = new_alerts(found, read_jsonl(alerts_log), now)
+    prior = read_jsonl(alerts_log)
+    fresh = new_alerts(found, prior, now)
     stamp = now.isoformat(timespec="seconds")
     report = {"alerts": found, "new": fresh, "notified": [], "notify_failed": [], "notes": notes, "exit": exit_code(found)}
     for a in fresh:
@@ -292,21 +416,29 @@ def run_alerts(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24)
     if not command.strip():
         notes.append("--notify given but no alert command is set (BIO_SOCIAL_ALERT_COMMAND)")
         return report
-    for a in fresh:
+    audit = Audit(scan_args.get("audit_path") or settings.SOCIAL_AUDIT_LOG, now=lambda: now)
+    for a in pending_notify(found, read_jsonl(alerts_log), now):
         try:
             argv = split_command(command)
-            res = runner(argv, input=f"[{a.level}] {a.kind}: {a.message}\n", text=True, capture_output=True, timeout=NOTIFY_TIMEOUT_S, shell=False)
-            ok, error = res.returncode == 0, f"exit code {res.returncode}: {(res.stderr or '').strip()[:200]}"
+            res = runner(argv, input=f"[{a.level}] {a.kind}: {a.message}\n".encode("utf-8"), timeout=NOTIFY_TIMEOUT_S)
+            err = res.stderr.decode("utf-8", "replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
+            ok, error = res.returncode == 0, f"exit code {res.returncode}: {err.strip()[:200]}"
+        except subprocess.TimeoutExpired:
+            ok, error = False, f"timed out after {NOTIFY_TIMEOUT_S} s; the command and its child processes were killed"
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             ok, error = False, f"{type(e).__name__}: {e}"[:300]
         _append(alerts_log, {"at": stamp, "record": "notified" if ok else "notify_failed", "key": a.key, **({} if ok else {"error": error})})
+        try:
+            audit.log("alert_sent" if ok else "alert_failed", key=a.key, kind=a.kind, level=a.level, **({} if ok else {"reason": error}))
+        except OSError:
+            pass                                                                   # the alerts log above already has it
         (report["notified"] if ok else report["notify_failed"]).append(a)
     return report
 
 
 # --------------------------------------------------------------------------------------------------- the digest
 
-SKIP_EVENTS = ("post_skipped", "post_blocked", "post_failed", "withdrawn", "hook", "gate_rejected", "draft_skipped", "paused", "circuit_open",
+SKIP_EVENTS = ("post_skipped", "post_blocked", "post_failed", "withdrawn", "would_withdraw", "hook", "gate_rejected", "draft_skipped", "paused", "circuit_open",
                "post_verify_failed", "theme_short", "live_recheck_unavailable")
 
 

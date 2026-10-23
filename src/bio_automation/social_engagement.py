@@ -104,10 +104,19 @@ def snapshot(*, days: int = DEFAULT_DAYS, ledger: Ledger | None = None, log: Pat
 # --------------------------------------------------------------------------------------------------- aggregation
 
 def read_snapshots(log: Path | None = None) -> list[dict]:
+    """The snapshot lines (objects with a uri and an at); an undecodable or incomplete line is skipped, so a torn write never breaks a report."""
     log = Path(log or settings.SOCIAL_ENGAGEMENT_LOG)
     if not log.is_file():
         return []
-    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    out = []
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue                                  # a torn last line (the writer was killed mid-write) or a garbled one: skip it
+        if isinstance(rec, dict) and isinstance(rec.get("uri"), str) and isinstance(rec.get("at"), str):
+            out.append(rec)
+    return out
 
 
 def latest_per_post(snaps: list[dict]) -> list[dict]:

@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import sys
 import subprocess
 from pathlib import Path
 
@@ -381,8 +382,9 @@ def test_notify_runs_the_command_once_per_new_alert_with_the_message_on_stdin(en
     runner = RecordingRunner()
     rep = run(env, runner, notify=True, command='notify.exe --to "me"')
     assert [c[0] for c in runner.calls] == [["notify.exe", "--to", "me"]] * 2
-    assert [c[1]["input"] for c in runner.calls] == [f"[error] post_failed: {rep['new'][0].message}\n", f"[warning] backup_failed: {rep['new'][1].message}\n"]
-    assert all(c[1]["timeout"] == 30 and c[1]["shell"] is False for c in runner.calls)
+    assert [c[1]["input"] for c in runner.calls] == [f"[error] post_failed: {rep['new'][0].message}\n".encode("utf-8"),
+                                                         f"[warning] backup_failed: {rep['new'][1].message}\n".encode("utf-8")]
+    assert [c[1]["timeout"] for c in runner.calls] == [30, 30]
     assert [a.kind for a in rep["notified"]] == ["post_failed", "backup_failed"] and rep["notify_failed"] == []
     assert [r["record"] for r in social_alerts.read_jsonl(env.alerts)] == ["alert", "alert", "notified", "notified"]
     run(env, runner, notify=True, command="notify.exe")
@@ -427,7 +429,7 @@ def test_rule_alerts_off_reports_and_logs_but_does_not_notify(env):
 @pytest.mark.parametrize("runner,expected", [
     (RecordingRunner(returncode=3, stderr="bad token\n"), "exit code 3: bad token"),
     (RecordingRunner(raises=FileNotFoundError("no notify.exe")), "FileNotFoundError: no notify.exe"),
-    (RecordingRunner(raises=subprocess.TimeoutExpired("notify.exe", 30)), "TimeoutExpired: Command 'notify.exe' timed out after 30 seconds"),
+    (RecordingRunner(raises=subprocess.TimeoutExpired("notify.exe", 30)), "timed out after 30 s; the command and its child processes were killed"),
 ])
 def test_a_failing_command_is_recorded_and_never_raised(env, runner, expected):
     env.add_audit({"at": at(12, 6), "event": "post_failed", "draft_id": "b"})
@@ -438,12 +440,27 @@ def test_a_failing_command_is_recorded_and_never_raised(env, runner, expected):
     assert rows[1]["key"] == rows[0]["key"]
 
 
-def test_a_failed_notification_is_not_retried_for_an_already_logged_alert(env):
+def test_a_failed_notification_is_retried_by_the_next_scan_and_then_not_again(env):
     env.add_audit({"at": at(12, 6), "event": "post_failed", "draft_id": "b"})
     run(env, RecordingRunner(returncode=1), notify=True, command="notify.exe")
+    retry = RecordingRunner()
+    rep = run(env, retry, notify=True, command="notify.exe")
+    assert len(retry.calls) == 1 and [a.kind for a in rep["notified"]] == ["post_failed"] and rep["new"] == []
+    again = RecordingRunner()
+    run(env, again, notify=True, command="notify.exe")
+    assert again.calls == []
+    assert [r["record"] for r in social_alerts.read_jsonl(env.alerts)] == ["alert", "notify_failed", "notified"]
+
+
+def test_an_alert_logged_without_a_command_is_sent_by_the_next_notify_run(env):
+    """The 03:00 maintenance scan logs alerts with no command; the watch task's --notify scan must still deliver them."""
+    env.add_audit({"at": at(12, 6), "event": "post_failed", "draft_id": "b"})
+    silent = RecordingRunner()
+    run(env, silent, command="")
+    assert silent.calls == [] and [r["record"] for r in social_alerts.read_jsonl(env.alerts)] == ["alert"]
     runner = RecordingRunner()
-    run(env, runner, notify=True, command="notify.exe")
-    assert runner.calls == []
+    rep = run(env, runner, notify=True, command="notify.exe")
+    assert len(runner.calls) == 1 and rep["new"] == [] and [a.kind for a in rep["notified"]] == ["post_failed"]
 
 
 def test_split_command_keeps_windows_backslashes():
@@ -640,3 +657,208 @@ def test_the_maintenance_hook_records_alerts_while_the_rule_is_on(tmp_path, monk
     assert social_alerts.read_jsonl(settings.SOCIAL_ALERTS_LOG) == []
     social_hooks.run("maintenance", {**ctx, "rules": rules_with()}, rules=rules_with(), audit=Audit())
     assert [r["kind"] for r in social_alerts.read_jsonl(settings.SOCIAL_ALERTS_LOG) if r["record"] == "alert"].count("queue_empty") == 1
+
+
+# --------------------------------------------------------------------------------------------------- new alert kinds
+
+def prep_rec(h, m, **kw):
+    return {"at": at(h, m), "event": "prep_step", "step": "social-draft", "seconds": 5.0, **kw}
+
+
+def test_a_failed_prep_step_is_an_error_alert_and_a_good_one_is_not(env):
+    env.add_audit(prep_rec(3, 5, ok=True))
+    assert env.kinds() == []
+    env.add_audit(prep_rec(3, 9, ok=False, error="Ollama unreachable"))
+    alerts, _ = env.scan()
+    assert [(a.kind, a.level, a.key) for a in alerts] == [("prep_failed", "error", f"prep_failed:social-draft:{at(3, 9)}")]
+    assert alerts[0].message == f"prep step social-draft failed: Ollama unreachable ({at(3, 9)})"
+
+
+def test_a_selfcheck_with_level_fail_is_an_error_alert_and_warn_or_ok_are_not(env):
+    for n, level in enumerate(("ok", "warn")):
+        env.add_audit({"at": at(3, n), "event": "selfcheck", "level": level, "problems": []})
+    assert env.kinds() == []
+    env.add_audit({"at": at(3, 9), "event": "selfcheck", "level": "fail", "problems": ["rules: broken", "ledger: torn"]})
+    alerts, _ = env.scan()
+    assert [(a.kind, a.level) for a in alerts] == [("selfcheck_failed", "error")]
+    assert alerts[0].message == f"selfcheck failed: rules: broken; ledger: torn ({at(3, 9)})"
+
+
+def withdrawals(env, n, event="withdrawn", start_hour=9):
+    for i in range(n):
+        env.add_audit({"at": at(start_hour, i), "event": event, "draft_id": f"w{start_hour}-{i}", "reason": "casual now"})
+
+
+def test_withdrawal_spike_edge_is_more_than_three_in_24_hours(env):
+    withdrawals(env, 3)
+    assert env.kinds() == []
+    withdrawals(env, 1, start_hour=10)
+    alerts, _ = env.scan()
+    assert [(a.kind, a.level, a.key) for a in alerts] == [("withdrawal_spike", "warning", "withdrawal_spike:2026-10-23")]
+    assert alerts[0].message == "4 drafts withdrawn (or would be, in a dry run) in the last 24 h, more than 3"
+
+
+def test_would_withdraw_counts_toward_the_spike_and_a_mix_adds_up(env):
+    withdrawals(env, 2, "withdrawn")
+    withdrawals(env, 2, "would_withdraw", start_hour=10)
+    assert env.kinds() == ["withdrawal_spike"]
+    # twin: the same four, but one is an unrelated event
+    env.set_audit([r for r in social_alerts.read_jsonl(env.audit) if r["event"] != "would_withdraw"])
+    assert env.kinds() == []
+
+
+def test_withdrawals_older_than_24_hours_do_not_count(env):
+    for i in range(4):
+        env.add_audit({"at": at(13, 59, day=22), "event": "withdrawn", "draft_id": f"w{i}"})
+    assert env.kinds(since=dt.timedelta(days=3)) == []
+    for i in range(4):
+        env.add_audit({"at": at(14, 0, day=22), "event": "withdrawn", "draft_id": f"x{i}"})
+    assert env.kinds(since=dt.timedelta(days=3)) == ["withdrawal_spike"]
+
+
+def rejects(env, run_id, n, reason="observation {i}: image is 800 px, under the floor", start=0):
+    for i in range(start, start + n):
+        env.add_audit({"at": at(3, i % 60), "run": run_id, "event": "draft_skipped", "obs_id": i, "reason": reason.format(i=i)})
+
+
+def test_draft_reject_spike_edge_is_more_than_ten_hook_rejects_in_one_run(env):
+    rejects(env, "r1", 10)
+    assert env.kinds() == []
+    rejects(env, "r1", 1, start=10)
+    alerts, _ = env.scan()
+    assert [(a.kind, a.level, a.key) for a in alerts] == [("draft_reject_spike", "warning", "draft_reject_spike:r1")]
+    assert alerts[0].message == "run r1: 11 candidates rejected by draft hooks, more than 10"
+
+
+def test_draft_rejects_are_counted_per_run_and_only_hook_rejects_count(env):
+    rejects(env, "r1", 6)
+    rejects(env, "r2", 6, start=100)
+    rejects(env, "r3", 20, reason="observation {i} is casual")                    # not a hook reject: no colon after the number
+    assert env.kinds() == []
+    rejects(env, "r1", 5, start=200)
+    assert env.kinds() == ["draft_reject_spike"]
+
+
+def test_a_torn_ledger_line_is_an_error_alert_even_without_an_audit_record(env):
+    assert env.kinds() == []
+    with open(env.ledger, "a", encoding="utf-8") as f:
+        f.write('{"at": "2026-10-23T14:00:00-04:00", "event": "post')               # a cut-off write, no newline
+    alerts, _ = env.scan()
+    assert [(a.kind, a.level, a.key) for a in alerts] == [("ledger_corrupt", "error", "ledger_corrupt:file:1")]
+    assert "1 unreadable line(s)" in alerts[0].message
+    assert social_alerts.exit_code(alerts) == 2
+
+
+def test_count_unreadable_lines_ignores_blank_lines_and_a_missing_file(tmp_path):
+    p = tmp_path / "l.jsonl"
+    assert social_alerts.count_unreadable_lines(p) == 0
+    p.write_text('{"a": 1}\n\n[1, 2]\nnot json\n{"b": 2}\n', encoding="utf-8")
+    assert social_alerts.count_unreadable_lines(p) == 2                            # a JSON array is not a record, "not json" is not JSON
+
+
+def test_an_unverified_post_is_a_warning_and_a_wrong_one_an_error(env):
+    env.add_audit({"at": at(12, 6), "event": "post_verify_failed", "draft_id": "b", "level": "warn",
+                   "problems": ["the AppView does not have the post after 10 attempts"]})
+    alerts, _ = env.scan()
+    assert [(a.kind, a.level) for a in alerts] == [("post_verify_failed", "warning")]
+    assert "the AppView does not have the post after 10 attempts" in alerts[0].message
+    env.add_audit({"at": at(12, 7), "event": "post_verify_failed", "draft_id": "b", "level": "error", "problems": ["text differs"]})
+    env.add_audit({"at": at(12, 8), "event": "post_verify_failed", "draft_id": "b", "problems": ["old record without a level"]})
+    assert sorted(a.level for a in env.scan()[0]) == ["error", "error", "warning"]
+
+
+def test_the_digest_lists_would_withdraw_among_the_skips():
+    text = social_alerts.digest_text(dt.date(2026, 10, 23), audit=[{"at": at(9, 0), "event": "would_withdraw", "draft_id": "d1", "reason": "casual now"}],
+                                     ledger=[], alerts_log=[], rules=rules_with(), pool=None, pool_note="x")
+    assert "- 09:00 would_withdraw d1: casual now" in text
+
+
+# --------------------------------------------------------------------------------------------------- run_notifier, for real
+
+def pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, pid)                                    # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        k32.GetExitCodeProcess(h, ctypes.byref(code))
+        k32.CloseHandle(h)
+        return code.value == 259                                                   # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def child_script(tmp_path: Path, body: str) -> list[str]:
+    script = tmp_path / "notifier.py"
+    script.write_text(body, encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_run_notifier_feeds_stdin_as_utf8_bytes_and_reports_exit_code_and_stderr(tmp_path):
+    out = tmp_path / "got.bin"
+    argv = child_script(tmp_path, "import sys\nopen(sys.argv[1], 'wb').write(sys.stdin.buffer.read())\nsys.stderr.write('bad token')\nsys.exit(3)\n") + [str(out)]
+    msg = "[error] post_failed: café 日本 \U0001F344\n"
+    res = social_alerts.run_notifier(argv, input=msg.encode("utf-8"), timeout=30)
+    assert out.read_bytes() == msg.encode("utf-8")
+    assert (res.returncode, res.stderr) == (3, "bad token")
+
+
+def test_run_notifier_success_has_exit_code_zero(tmp_path):
+    res = social_alerts.run_notifier(child_script(tmp_path, "import sys\nsys.stdin.buffer.read()\n"), input=b"x\n", timeout=30)
+    assert (res.returncode, res.stderr) == (0, "")
+
+
+def test_run_notifier_timeout_is_a_real_bound_and_kills_the_child_and_its_grandchild(tmp_path):
+    import time
+    pidfile = tmp_path / "grandchild.pid"
+    body = ("import subprocess, sys, time\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"        # inherits stdout and stderr
+            "open(sys.argv[1], 'w').write(str(g.pid))\n"
+            "time.sleep(120)\n")
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        social_alerts.run_notifier(child_script(tmp_path, body) + [str(pidfile)], input=b"x\n", timeout=4)
+    assert time.monotonic() - started < 25
+    grandchild = int(pidfile.read_text())
+    deadline = time.monotonic() + 10
+    while pid_alive(grandchild) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert not pid_alive(grandchild)
+
+
+def test_run_notifier_returns_at_once_when_a_grandchild_outlives_a_finished_command(tmp_path):
+    import time
+    pidfile = tmp_path / "late.pid"
+    body = ("import subprocess, sys\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'])\n"
+            "open(sys.argv[1], 'w').write(str(g.pid))\n")                                            # exits at once, grandchild keeps running
+    started = time.monotonic()
+    res = social_alerts.run_notifier(child_script(tmp_path, body) + [str(pidfile)], input=b"x\n", timeout=30)
+    assert res.returncode == 0 and time.monotonic() - started < 6
+    deadline = time.monotonic() + 15
+    while pid_alive(int(pidfile.read_text())) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert not pid_alive(int(pidfile.read_text()))
+
+
+def test_alert_sent_and_alert_failed_are_audited(env):
+    env.add_audit({"at": at(12, 6), "event": "post_failed", "draft_id": "b"})
+    run(env, RecordingRunner(returncode=2, stderr="no inbox\n"), notify=True, command="notify.exe")
+    run(env, RecordingRunner(), notify=True, command="notify.exe")
+    rows = [r for r in social_alerts.read_jsonl(env.audit) if r["event"] in ("alert_sent", "alert_failed")]
+    assert [(r["event"], r["kind"], r["level"], r.get("reason")) for r in rows] == [
+        ("alert_failed", "post_failed", "error", "exit code 2: no inbox"), ("alert_sent", "post_failed", "error", None)]
+
+
+def test_a_message_with_characters_outside_the_locale_code_page_reaches_the_command_as_utf8(env):
+    env.add_audit({"at": at(12, 6), "event": "post_failed", "draft_id": "b", "error": "caf\u00e9 \u65e5\u672c \U0001F344"})
+    runner = RecordingRunner()
+    rep = run(env, runner, notify=True, command="notify.exe")
+    assert runner.calls[0][1]["input"] == f"[error] post_failed: {rep['new'][0].message}\n".encode("utf-8")
+    assert "caf\u00e9 \u65e5\u672c \U0001F344" in runner.calls[0][1]["input"].decode("utf-8")
+    assert [a.kind for a in rep["notified"]] == ["post_failed"] and rep["notify_failed"] == []
