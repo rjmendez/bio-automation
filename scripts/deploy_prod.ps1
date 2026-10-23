@@ -35,7 +35,8 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'      # git writes progress to stderr; success is judged by $LASTEXITCODE, not by stderr
-$plan = $WhatIfPreference
+$plan = [bool]$WhatIfPreference
+$WhatIfPreference = $false               # the plan is handled by hand below; leaving it set would make every cmdlet (Add-Content, module imports) only pretend
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $work = Join-Path $TmpRoot "deploy-$stamp"
 $basetemp = Join-Path $TmpRoot "pytest-deploy-$stamp"
@@ -50,7 +51,7 @@ function Log([string]$msg) {
     } catch { Write-Host "(deploy log not writable: $($_.Exception.Message))" }
 }
 
-function Git { & git -C $ProdDir @args 2>&1 | ForEach-Object { "$_" } }
+function Invoke-Git { & git -C $ProdDir @args 2>&1 | ForEach-Object { "$_" } }
 
 function Cleanup {
     foreach ($p in @($work, $basetemp)) {
@@ -73,28 +74,28 @@ $c = Get-PSDrive -Name 'C' -ErrorAction SilentlyContinue
 if ($c -and ($c.Free / 1GB) -lt $MinFreeGbC) { Fail ("C: has {0:N1} GB free, below {1:N0} (the NAS pipeline pauses there)" -f ($c.Free / 1GB), $MinFreeGbC) }
 
 # 1. fetch and show what would change
-$fetch = Git fetch -q $Remote
+$fetch = Invoke-Git fetch -q $Remote
 if ($LASTEXITCODE -ne 0) { Fail "git fetch $Remote failed: $($fetch -join ' ')" }
-$prev = (Git rev-parse HEAD | Select-Object -First 1).Trim()
-$target = (Git rev-parse "$Remote/$Branch" | Select-Object -First 1).Trim()
-$current = (Git rev-parse --abbrev-ref HEAD | Select-Object -First 1).Trim()
+$prev = (Invoke-Git rev-parse HEAD | Select-Object -First 1).Trim()
+$target = (Invoke-Git rev-parse "$Remote/$Branch" | Select-Object -First 1).Trim()
+$current = (Invoke-Git rev-parse --abbrev-ref HEAD | Select-Object -First 1).Trim()
 Log "prod head $prev on '$current'; $Remote/$Branch is $target"
 if ($prev -eq $target) {
     Log "nothing to deploy: prod already is $Remote/$Branch"
 }
 else {
     Log "commits to deploy ($prev..$target):"
-    Git log --oneline "$prev..$target" | ForEach-Object { Log "  $_" }
+    Invoke-Git log --oneline "$prev..$target" | ForEach-Object { Log "  $_" }
     Log 'diffstat:'
-    Git diff --stat "$prev..$target" | ForEach-Object { Log "  $_" }
+    Invoke-Git diff --stat "$prev..$target" | ForEach-Object { Log "  $_" }
 }
 
 # 2. preconditions
 $problems = @()
 if ($current -ne $Branch -and -not $AllowOtherBranch) { $problems += "prod tree is on '$current', not '$Branch' (-AllowOtherBranch to deploy anyway)" }
-$dirty = @(Git status --porcelain --untracked-files=no)
+$dirty = @(Invoke-Git status --porcelain --untracked-files=no)
 if ($dirty.Count -gt 0) { $problems += "prod tree has uncommitted changes to tracked files: $($dirty -join '; ')" }
-Git merge-base --is-ancestor $prev $target | Out-Null
+Invoke-Git merge-base --is-ancestor $prev $target | Out-Null
 if ($LASTEXITCODE -ne 0) { $problems += "$Remote/$Branch is not a fast-forward of the prod head (diverged or behind); nothing will be merged" }
 
 if ($plan) {
@@ -118,12 +119,17 @@ if ($problems.Count -gt 0) { Fail ($problems -join ' | ') }
 if ($prev -ne $target -and -not $SkipTests) {
     New-Item -ItemType Directory -Force -Path $work | Out-Null
     $tar = Join-Path $work 'src.tar'
-    Git archive --format=tar -o $tar $target | Out-Null
+    Invoke-Git archive --format=tar -o $tar $target | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "git archive $target failed" }
     $tree = Join-Path $work 'tree'
     New-Item -ItemType Directory -Force -Path $tree | Out-Null
-    & tar -xf $tar -C $tree
-    if ($LASTEXITCODE -ne 0) { Fail 'could not unpack the export' }
+    $tarExe = Join-Path $env:SystemRoot 'System32\tar.exe'          # not Git's GNU tar: it reads D:\... as host:path
+    if (-not (Test-Path -LiteralPath $tarExe)) { $tarExe = 'tar' }
+    Push-Location $tree
+    & $tarExe -xf '..\src.tar'
+    $rc = $LASTEXITCODE
+    Pop-Location
+    if ($rc -ne 0) { Fail 'could not unpack the export' }
     Remove-Item -LiteralPath $tar -Force
 
     $oldPath = $env:PYTHONPATH
@@ -147,7 +153,7 @@ if ($prev -ne $target -and -not $SkipTests) {
 # 4. fast-forward the prod tree
 $rolledBack = $false
 if ($prev -ne $target) {
-    $merge = Git merge --ff-only $target
+    $merge = Invoke-Git merge --ff-only $target
     if ($LASTEXITCODE -ne 0) { Fail "git merge --ff-only failed: $($merge -join ' ')" }
     Log "prod fast-forwarded to $target"
 }
@@ -166,7 +172,7 @@ finally { $env:PYTHONPATH = $oldPath }
 if ($rc -ge 2 -or $null -eq $rc) {
     Log "selfcheck failed (exit $rc)"
     if ($prev -ne $target) {
-        $reset = Git reset --hard $prev
+        $reset = Invoke-Git reset --hard $prev
         if ($LASTEXITCODE -ne 0) { Fail "ROLLBACK FAILED, prod is at $target and needs a hand: $($reset -join ' ')" }
         Log "rolled back: prod reset to $prev"
         $rolledBack = $true
@@ -174,6 +180,6 @@ if ($rc -ge 2 -or $null -eq $rc) {
     Fail ('selfcheck failed after the deploy' + $(if ($rolledBack) { '; rolled back' } else { '; nothing was merged' }))
 }
 if ($rc -eq 1) { Log 'selfcheck passed with warnings (see above)' }
-Log "DEPLOY OK: prod is at $(Git rev-parse HEAD | Select-Object -First 1)"
+Log "DEPLOY OK: prod is at $(Invoke-Git rev-parse HEAD | Select-Object -First 1)"
 Cleanup
 exit 0
