@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from bio_automation import settings, social_alerts, social_hooks, themes
+from bio_automation import settings, social_alerts, social_hooks, sync_marker, themes
 from bio_automation.social_alerts import Alert, AlertsError
 from test_social import rules_with
 
@@ -51,6 +51,9 @@ class Env:
         self.log = self.dir / "social.log"
         self.taxonomy = self.dir / "obs_taxonomy.json"
         self.alerts = self.dir / "alerts.jsonl"
+        self.marker = self.dir / "qdrant_sync_marker.json"
+        for sync in sync_marker.NAMES:
+            sync_marker.record(sync, path=self.marker, now=NOW)
         self.set_audit([*YESTERDAY, {"at": at(8, 16), "event": "posted", "draft_id": "a"}, {"at": at(12, 5), "event": "posted", "draft_id": "b"}])
         self.set_ledger([{"at": at(8, 16), "event": "posted", "draft_id": "a", "obs_id": 1},
                          {"at": at(12, 5), "event": "posted", "draft_id": "b", "obs_id": 2},
@@ -68,10 +71,17 @@ class Env:
     def scan(self, now=NOW, rules=None, free=None, **kw):
         free = free or {"C:\\": 100 * GB, "D:\\": 100 * GB}
         return social_alerts.scan(now, audit_path=self.audit, ledger_path=self.ledger, rules=rules or rules_with(), slots=SLOTS,
-                                  pause_file=self.pause, log_file=self.log, taxonomy_file=self.taxonomy, disk_free=lambda root: free[root], **kw)
+                                  pause_file=self.pause, log_file=self.log, taxonomy_file=self.taxonomy, qdrant_marker=self.marker, disk_free=lambda root: free[root], **kw)
 
     def kinds(self, **kw):
         return [a.kind for a in self.scan(**kw)[0]]
+
+
+@pytest.fixture(autouse=True)
+def fresh_qdrant_marker():
+    """run_alerts reads the marker named by settings (conftest points it into tmp_path): both syncs wrote at NOW unless a test says otherwise."""
+    for sync in sync_marker.NAMES:
+        sync_marker.record(sync, now=NOW)
 
 
 @pytest.fixture

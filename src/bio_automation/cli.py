@@ -1127,7 +1127,35 @@ def cmd_qdrant_inat_sync(args: argparse.Namespace) -> int:
     return 0
 
 
-SOCIAL_COMMANDS = {"qdrant-inat-sync": cmd_qdrant_inat_sync, "qdrant-sync": cmd_qdrant_sync, "darkroom-sync": cmd_darkroom_sync, "social-themes": cmd_social_themes, "social-rules": cmd_social_rules, "social-audit": cmd_social_audit, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+def _recorded(name: str, fn):
+    """Wrap a Qdrant sync command: a real run that wrote is recorded in the sync marker and audited (qdrant_sync); a crash is audited as
+    qdrant_sync_failed (a warning in social-alerts) and still propagates to the caller."""
+    def run(args: argparse.Namespace) -> int:
+        from . import sync_marker
+        from .social_rules import Audit
+
+        def audit(event: str, **fields) -> None:
+            try:
+                Audit().log(event, command=name, **fields)
+            except OSError:
+                pass
+
+        try:
+            code = fn(args)
+        except Exception as e:  # noqa: BLE001 -- audited, then re-raised unchanged
+            if not args.dry_run:
+                audit("qdrant_sync_failed", error=f"{type(e).__name__}: {e}"[:300])
+            raise
+        if code == 0 and not args.dry_run and not args.limit:      # a --limit trial writes only some points: it is not a fresh index
+            sync_marker.record(name)
+            audit("qdrant_sync")
+        elif code != 0:
+            audit("qdrant_sync_failed", error=f"exit code {code}")
+        return code
+    return run
+
+
+SOCIAL_COMMANDS = {"qdrant-inat-sync": _recorded("qdrant-inat-sync", cmd_qdrant_inat_sync), "qdrant-sync": _recorded("qdrant-sync", cmd_qdrant_sync), "darkroom-sync": cmd_darkroom_sync, "social-themes": cmd_social_themes, "social-rules": cmd_social_rules, "social-audit": cmd_social_audit, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
                    "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,

@@ -12,12 +12,12 @@ from pathlib import Path
 import pytest
 from test_social import NOW, drafted, rules_with, write_draft
 
-from bio_automation import cli, settings, social, social_hooks, social_selfcheck
+from bio_automation import cli, settings, social, social_hooks, social_selfcheck, sync_marker
 from bio_automation.social import Ledger
 from bio_automation.social_rules import Audit
 from bio_automation.social_selfcheck import FAIL, OK, WARN, GB
 
-NAMES = ["rules", "extensions", "themes", "ledger", "audit", "bluesky-session", "gallery-index", "taxonomy", "approved-drafts", "pending-quality", "pause",
+NAMES = ["rules", "extensions", "themes", "ledger", "audit", "bluesky-session", "gallery-index", "qdrant-sync", "taxonomy", "approved-drafts", "pending-quality", "pause",
          "disk-system", "disk-data"]
 
 
@@ -44,6 +44,9 @@ class World:
         self.taxonomy.write_text(json.dumps({"1": {}, "2": {}}), encoding="utf-8")
         drafted_ledger, _ = drafted(tmp_path, 2)
         self.ledger = drafted_ledger
+        monkeypatch.setattr(settings, "QDRANT_SYNC_MARKER", tmp_path / "qdrant_sync_marker.json")
+        for sync in sync_marker.NAMES:
+            sync_marker.record(sync, now=NOW)
 
     def set_index(self, files, age_days):
         self.index.write_text(json.dumps({"files": files, "unresolved": {}}), encoding="utf-8")
