@@ -1,8 +1,16 @@
 """bio-sr2x-v1: the owner's own 2x crop-upscale model (TinySR2x), trained on real
-Stock-ready photos, AWS g4dn.xlarge, 10,684 steps. Held-out measurement (80 images,
-never trained on): +5.01 dB PSNR vs plain bicubic. Topaz's ghqv2 measured -5 dB vs
-bicubic on the same kind of real-frame test (tools/topaz_lab), so this is not an
-incremental tweak -- it is the one 2x model in this codebase shown to help at all.
+Stock-ready photos, AWS g4dn.xlarge.
+
+STATUS: the "+5.01 dB PSNR vs bicubic" number measured for the first checkpoint was
+produced by a training/deploy domain mismatch (synthetic blur+noise degradation on
+the LR side) and does NOT describe a model safe to ship -- that checkpoint shipped
+softer than bicubic on real undegraded crops in production. A corrected retrain
+(plain-bicubic-only degradation, tools/sr_train/degrade.py) is in flight; no ONNX
+file backs this module's _MODEL_DIR until that retrain clears BOTH
+tools/sr_train/validate_real.py gates (PSNR AND deployment_sharpness_check) on real
+held-out data, re-measured, not assumed. Topaz's ghqv2 still measures WORSE than
+bicubic on the same kind of real-frame test (tools/topaz_lab) -- that comparison
+stands regardless of this model's own status.
 
 No GAN/adversarial loss in training (see tools/sr_train/model.py docstring): it does
 not invent detail, so it stays safe for iNat-adjacent crops, not just Stock sale copies.

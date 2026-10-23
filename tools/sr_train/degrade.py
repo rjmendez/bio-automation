@@ -1,37 +1,48 @@
 """Self-supervised LR/HR pair synthesis for the crop-upscale track.
 
-LR = plain bicubic downsample of HR, nothing else. This was NOT the first version:
-an earlier revision added synthetic blur + heavy gaussian noise + random re-JPEG,
-modeled on real-world blind-SR degradation (Real-ESRGAN/BSRGAN style, meant for
-restoring already-degraded photos). That model scored +5 dB vs bicubic on its own
-held-out *synthetically degraded* eval -- but when wired into topaz.enhance() and
-fed a genuine small crop (native resolution, not synthetically degraded), it came
-out SOFTER than plain bicubic (Laplacian variance 1.4 vs bicubic's 4.9): trained to
-expect "input is always blurry and noisy, sharpen while upscaling", it treated a
-real sharp crop as noise to suppress.
+History of two failures, in opposite directions:
+  v1: blur(random, up to sigma 2.2) + heavy gaussian noise + random re-JPEG on the
+      LR side. Modeled on real-world blind-SR degradation (Real-ESRGAN/BSRGAN
+      style, meant for restoring already-degraded photos). Scored +5 dB vs bicubic
+      on its own held-out *synthetically degraded* eval, but wired into
+      topaz.enhance() and fed a genuine small crop (native resolution, not
+      synthetically degraded), it came out SOFTER than plain bicubic (Laplacian
+      variance 1.4 vs bicubic's 4.9): trained to expect "input is always blurry
+      and noisy", it treated a real sharp crop as noise to suppress.
+  v2: plain bicubic downsample, nothing else (the obvious fix for v1). FAILED
+      gate 1 outright: model PSNR 50.35 dB vs bicubic's 50.51 dB, a near-tie
+      (wins 18/40). Bicubic-downsample-then-bicubic-upsample is itself nearly
+      lossless for natural images -- there was almost no real information gap
+      left for a tiny model to close, so it learned nothing worth shipping.
 
-The deployment input (a real, already-sharp, already-native-resolution small crop)
-is not a degraded photo -- it is just smaller. That is the classic bicubic-SR
-setup (SRCNN/EDSR-style), not the blind real-world-restoration setup. Matching the
-degradation to the deployment distribution matters more than making it "realistic"
-in the abstract.
+v3 (current): a single FIXED mild blur (sigma 0.5, not v1's randomized 0-2.2
+range), no noise, no JPEG. This models realistic optical softness (lens
+diffraction, a slightly-off focus plane) -- something a real small crop
+genuinely has a little of -- without inventing the sensor noise Topaz's own
+noise-detector already measured as negligible on these frames (see
+reference-topaz-measurements), and without the wide randomization that taught
+v1 to expect much heavier degradation than deployment ever provides. This gives
+the model a small, real, consistent gap to close -- the middle ground between
+v1 (too much, wrong kind) and v2 (none at all).
 """
 from __future__ import annotations
 
 import random
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
+
+BLUR_SIGMA = 0.5  # fixed, not randomized -- see module docstring
 
 
 def degrade_hr_to_lr(hr: np.ndarray, rng: random.Random) -> np.ndarray:
     """*hr* is [H, W, 3] uint8 RGB, H and W even. Returns [H/2, W/2, 3] uint8 RGB:
-    a plain bicubic 2x downsample, matching what a real native-resolution small
-    crop actually looks like (sharp at its own scale, not artificially degraded).
-    *rng* is accepted for call-site compatibility (dataset/training code seeds and
-    passes it) even though this function is currently deterministic given *hr*.
+    a fixed-sigma gaussian blur (realistic optical softness) then a bicubic 2x
+    downsample. *rng* is accepted for call-site compatibility (dataset/training
+    code seeds and passes it) even though this function is currently
+    deterministic given *hr* -- BLUR_SIGMA is fixed, not sampled.
     """
-    img = Image.fromarray(hr)
+    img = Image.fromarray(hr).filter(ImageFilter.GaussianBlur(BLUR_SIGMA))
     lr = img.resize((hr.shape[1] // 2, hr.shape[0] // 2), Image.BICUBIC)
     return np.asarray(lr, dtype=np.uint8)
 

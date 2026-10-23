@@ -33,6 +33,13 @@ trap finish EXIT
   pip install --quiet --upgrade pip
   pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128
   pip install --quiet numpy Pillow
+  # piq (for LPIPS/DISTS) declares its own torch/torchvision version constraints;
+  # installing it normally silently downgrades torch to a CPU wheel to satisfy
+  # them (measured today, locally: same CPU-wheel failure mode as the cuDNN bug
+  # above, from a different cause). --no-deps keeps it from ever touching torch;
+  # torchvision is pinned to the matching cu128 build explicitly instead.
+  pip install --quiet --no-deps piq
+  pip install --quiet --no-deps torchvision --index-url https://download.pytorch.org/whl/cu128
 
   echo "=== $(date -u) GPU check ==="
   nvidia-smi
