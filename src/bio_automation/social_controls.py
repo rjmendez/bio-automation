@@ -2,6 +2,9 @@
 
 Pause: `bio social-pause [--reason TEXT]` writes settings.SOCIAL_PAUSE_FILE; while it exists every scheduled post is blocked (a manual post is
 not: the pause is for the automation). `bio social-resume` removes it. A pause file that cannot be read still pauses (fail closed).
+Remote pause (off by default): set BIO_SOCIAL_PAUSE_SYNC_FILE to a file in a synced folder; creating it from any device (any content; its first
+line is the reason) pauses, deleting it resumes, and `social-pause --sync` / `social-resume` write / remove it from here. Only the pre_send hook
+blocks: prep (drafting) and the watch/alert scans keep running while paused, because they publish nothing.
 Breaker: from the audit log, the scheduled posts that ended in post_failed since the last posted or breaker_reset record; at N (the rule's number)
 scheduled posts are blocked until `bio social-breaker --reset` or a successful post (a manual one counts). It also closes itself: once
 settings.SOCIAL_BREAKER_COOLDOWN_H hours have passed since the last failure (or the last probe), ONE live scheduled post is let through as a probe
@@ -38,18 +41,46 @@ def _now() -> dt.datetime:
 
 # --------------------------------------------------------------------------------------------------- the pause switch
 
-def read_pause(path: Path | None = None) -> dict | None:
-    """None when not paused, else {"at", "reason"}; a file that is not readable JSON still pauses, with `unreadable` set."""
-    path = Path(path or settings.SOCIAL_PAUSE_FILE)
-    if not path.exists():
-        return None
+_SETTINGS = object()
+
+
+def _read_marker(path: Path, *, sync: bool) -> dict:
+    """{"at", "reason", "source", ["unreadable"]} of a marker that exists. The local file is JSON; the synced one may also be an empty file or
+    plain text (what a phone's file app creates): any content pauses, its first line is the reason. Unreadable content still pauses."""
+    source = "sync" if sync else "local"
     try:
-        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+        raw = path.read_text(encoding="utf-8-sig")
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            if not sync:
+                raise
+            return {"at": None, "reason": (raw.strip().splitlines() or [""])[0][:200], "source": source}
         if not isinstance(doc, dict):
+            if sync:
+                return {"at": None, "reason": "", "source": source}
             raise ValueError("not a JSON object")
     except (OSError, ValueError) as e:                          # JSONDecodeError and UnicodeDecodeError are ValueErrors
-        return {"at": None, "reason": f"{path} is unreadable ({type(e).__name__}: {e}); remove it with `bio social-resume`", "unreadable": True}
-    return {"at": doc.get("at"), "reason": str(doc.get("reason") or "")}
+        return {"at": None, "source": source, "unreadable": True,
+                "reason": f"{path} is unreadable ({type(e).__name__}: {e}); remove it with `bio social-resume`"}
+    return {"at": doc.get("at"), "reason": str(doc.get("reason") or ""), "source": source}
+
+
+def sync_marker_path(sync_path=_SETTINGS) -> Path | None:
+    path = settings.SOCIAL_PAUSE_SYNC_FILE if sync_path is _SETTINGS else sync_path
+    return Path(path) if path else None
+
+
+def read_pause(path: Path | None = None, sync_path=_SETTINGS) -> dict | None:
+    """None when not paused, else {"at", "reason", "source": "local" | "sync"}; the local file wins when both exist. A marker that is not readable
+    still pauses, with `unreadable` set. The synced marker counts only when settings.SOCIAL_PAUSE_SYNC_FILE (or `sync_path`) is configured."""
+    path = Path(path or settings.SOCIAL_PAUSE_FILE)
+    if path.exists():
+        return _read_marker(path, sync=False)
+    remote = sync_marker_path(sync_path)
+    if remote is not None and remote.exists():
+        return _read_marker(remote, sync=True)
+    return None
 
 
 def pause_hook(ctx: dict) -> Verdict | None:
@@ -63,32 +94,40 @@ def pause_hook(ctx: dict) -> Verdict | None:
     reason = f"posting is paused{since}{why}; `bio social-resume` lifts it"
     with contextlib.suppress(OSError):
         Audit().log("paused", action="blocked", draft_id=ctx.get("draft_id"), reason=state["reason"], since=state.get("at"),
-                    unreadable=bool(state.get("unreadable")), live=ctx.get("live"))
+                    unreadable=bool(state.get("unreadable")), source=state.get("source"), live=ctx.get("live"))
     return Verdict("block", reason)
 
 
 def cmd_social_pause(args) -> int:
     path = Path(settings.SOCIAL_PAUSE_FILE)
+    remote = sync_marker_path()
+    if args.sync and remote is None:
+        raise ControlsError("--sync needs BIO_SOCIAL_PAUSE_SYNC_FILE (the synced pause marker) to be set")
     if path.exists() and not args.force:
         state = read_pause(path)
         raise ControlsError(f"already paused ({state['reason'] or 'no reason given'}{', since ' + state['at'] if state['at'] else ''}); "
                             "`bio social-resume` first, or use --force to replace the pause")
     at = _now().isoformat(timespec="seconds")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"at": at, "reason": args.reason or ""}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    Audit().log("paused", action="set", reason=args.reason or "", forced=bool(args.force))
-    print(f"paused: {path}" + (f" ({args.reason})" if args.reason else ""))
+    body = json.dumps({"at": at, "reason": args.reason or ""}, ensure_ascii=False, indent=2) + "\n"
+    written = [path] + ([remote] if args.sync else [])
+    for target in written:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    Audit().log("paused", action="set", reason=args.reason or "", forced=bool(args.force), files=[str(t) for t in written])
+    print(f"paused: {', '.join(str(t) for t in written)}" + (f" ({args.reason})" if args.reason else ""))
     return 0
 
 
 def cmd_social_resume(args) -> int:
-    path = Path(settings.SOCIAL_PAUSE_FILE)
-    if not path.exists():
+    """Removes the local marker and, when configured, the synced one (a remote pause that survived a resume would leave the posts blocked)."""
+    targets = [p for p in (Path(settings.SOCIAL_PAUSE_FILE), sync_marker_path()) if p is not None and p.exists()]
+    if not targets:
         print("not paused")
         return 0
-    path.unlink()
-    Audit().log("paused", action="cleared")
-    print(f"resumed: {path} removed")
+    for p in targets:
+        p.unlink()
+    Audit().log("paused", action="cleared", files=[str(p) for p in targets])
+    print("resumed: " + ", ".join(f"{p} removed" for p in targets))
     return 0
 
 
@@ -218,7 +257,8 @@ def add_parsers(sub) -> None:
     p = sub.add_parser("social-pause", help="Pause every scheduled Bluesky post (manual posts still work) until `bio social-resume`.")
     p.add_argument("--reason", default="", help="why, shown when a run is blocked")
     p.add_argument("--force", action="store_true", help="replace an existing pause")
-    sub.add_parser("social-resume", help="Lift the pause: scheduled posts go out again.")
+    p.add_argument("--sync", action="store_true", help="also write the synced marker (BIO_SOCIAL_PAUSE_SYNC_FILE) so other devices see the pause")
+    sub.add_parser("social-resume", help="Lift the pause (the local marker and the synced one): scheduled posts go out again.")
     p = sub.add_parser("social-breaker", help="Show the circuit breaker (failed scheduled posts in a row); --reset closes it.")
     p.add_argument("--reset", action="store_true", help="forget the failures so far (audited)")
 

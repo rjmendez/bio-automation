@@ -128,6 +128,12 @@ SOCIAL_RULES_FILE = env_path("BIO_SOCIAL_RULES_FILE", SOCIAL_DIR / "rules.toml")
 SOCIAL_AUDIT_LOG = env_path("BIO_SOCIAL_AUDIT_LOG", CACHE_DIR / "state" / "social_audit.jsonl")
 SOCIAL_BREAKER_COOLDOWN_H = float(env("BIO_SOCIAL_BREAKER_COOLDOWN_H", 6))                  # an open circuit breaker allows one probe post after this many hours
 SOCIAL_PAUSE_FILE = env_path("BIO_SOCIAL_PAUSE_FILE", SOCIAL_DIR / "PAUSED")                    # while it exists no scheduled post goes out (pause_switch rule)
+# A second pause marker on a synced path (Syncthing, the NAS, a cloud folder) so the owner can pause from a phone without a shell: while that file
+# exists, with any content, scheduled posts are blocked exactly as for SOCIAL_PAUSE_FILE. OFF by default (empty = not configured).
+SOCIAL_PAUSE_SYNC_FILE = Path(env("BIO_SOCIAL_PAUSE_SYNC_FILE", "")) if env("BIO_SOCIAL_PAUSE_SYNC_FILE", "").strip() else None
+# A second pause marker on a synced path (Syncthing, the NAS, a cloud folder) so the owner can pause from a phone without a shell: while that file
+# exists, with any content, scheduled posts are blocked exactly as for SOCIAL_PAUSE_FILE. OFF by default (empty = not configured).
+SOCIAL_PAUSE_SYNC_FILE = Path(env("BIO_SOCIAL_PAUSE_SYNC_FILE", "")) if env("BIO_SOCIAL_PAUSE_SYNC_FILE", "").strip() else None
 SOCIAL_ALERTS_LOG = env_path("BIO_SOCIAL_ALERTS_LOG", CACHE_DIR / "state" / "social_alerts.jsonl")
 SOCIAL_ALERT_COMMAND = env("BIO_SOCIAL_ALERT_COMMAND", "")                                         # optional: run with each alert's text; empty = log only
 SOCIAL_DIGEST_DIR = env_path("BIO_SOCIAL_DIGEST_DIR", SOCIAL_DIR / "digest")
@@ -177,6 +183,8 @@ VISION_MODEL_ENV = "BIO_VISION_MODEL"
 EMBED_MODEL_ENV = "BIO_EMBED_MODEL"                                 # else the pool's "embed" role (the owner's alt-text style examples)
 SOCIAL_STYLE_PROFILE = env_path("BIO_SOCIAL_STYLE_PROFILE", CACHE_DIR / "state" / "bsky_style_profile.json")
 BSKY_APPVIEW = env("BIO_BSKY_APPVIEW", "https://public.api.bsky.app")   # public, unauthenticated reads
+BSKY_AUDIT_APPVIEW = env("BIO_BSKY_AUDIT_APPVIEW", "https://api.bsky.app")      # social-audit-live: unauthenticated reads of what is public
+BSKY_AUDIT_APPVIEW = env("BIO_BSKY_AUDIT_APPVIEW", "https://api.bsky.app")      # social-audit-live: unauthenticated reads of what is public
 PLC_URL = env("BIO_PLC_URL", "https://plc.directory")
 MODEL_POOL_FILE = env_path("BIO_MODEL_POOL", HOME / ".loci" / "backends.toml")
 VISION_IMAGE_EDGE = int(env("BIO_VISION_IMAGE_EDGE", 1024))       # long edge of the copy the vision model sees
