@@ -112,7 +112,7 @@ def test_default_floors_come_from_settings_and_extra_paths_take_the_data_floor(m
     floors = disk_guard.default_floors(extra={"out": Path("F:/out")})
     assert [(f.label, f.min_gb) for f in floors] == [("system", 11.0), ("data", 33.0), ("out", 33.0)]
     assert floors[1].path == Path(settings.CACHE_DIR)
-    assert disk_guard.output_floors("F:/o", 35) == [floors[0], Floor("output", Path("F:/o"), 35)]
+    assert disk_guard.output_floors("F:/o", 35) == [Floor("output", Path("F:/o"), 35)]      # the output drive only: a low C: must not stop a stage that writes to F:
 
 
 def test_free_bytes_measures_the_nearest_existing_parent(tmp_path):
@@ -286,3 +286,51 @@ def test_a_live_post_with_room_goes_on_to_post(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_maintenance", lambda *a, **k: None)
     assert cli.cmd_social_post(post_args()) == 0
     assert calls == [1]
+
+
+def test_a_stage_waits_for_its_output_drive_only_and_a_low_system_drive_does_not_stop_it():
+    disks, events = Disks([2.0], [30.0]), []             # C: at 2 GB (under any floor), the output drive at 30 GB
+    got = disk_guard.wait_for_output(DATA, 20.0, who="stage", audit=lambda event, **f: events.append({"event": event, **f}), free=disks.free, sleep=disks.sleep,
+                                     clock=disks.clock, say=lambda m: None)
+    assert (got, events, disks.sleeps) == (True, [], [])
+
+
+def test_a_stage_whose_output_drive_is_short_waits_at_most_the_stage_limit_then_gives_up(monkeypatch):
+    monkeypatch.setattr(settings, "DISK_GUARD_STAGE_MAX_WAIT_S", 100)
+    disks, events = Disks([30.0], [5.0]), []
+    got = disk_guard.wait_for_output(DATA, 20.0, who="stage", audit=lambda event, **f: events.append({"event": event, **f}), free=disks.free, sleep=disks.sleep,
+                                     clock=disks.clock, poll_s=60, say=lambda m: None)
+    assert got is False
+    assert events[1] == {"event": "disk_timeout", "who": "stage", "waited_s": 100.0,
+                         "short": [{"drive": "output", "path": str(DATA), "free_gb": 5.0, "need_gb": 21.0}]}
+
+
+def test_the_stage_wait_is_finite_by_default():
+    assert settings.DISK_GUARD_STAGE_MAX_WAIT_S == 21600
+
+
+def test_a_drive_that_cannot_be_read_inside_the_wait_loop_keeps_the_wait_going_and_is_reported_once():
+    readings = iter([OSError("offline"), OSError("offline"), 30 * GB])
+
+    def free(path):
+        r = next(readings)
+        if isinstance(r, Exception):
+            raise r
+        return r
+    events, slept = [], []
+    got = disk_guard.wait_for_room([Floor("data", DATA, 20.0)], who="w", audit=lambda event, **f: events.append({"event": event, **f}), free=free,
+                                   sleep=slept.append, clock=lambda: 0.0, poll_s=60, margin_gb=1, say=lambda m: None)
+    assert got is True
+    assert [e["event"] for e in events] == ["disk_pause", "disk_resume"]
+    assert events[0]["short"] == [{"drive": "data", "path": str(DATA), "free_gb": 0.0, "need_gb": 20.0, "error": "OSError: offline"}]
+    assert slept == [60, 60]
+
+
+def test_describe_names_an_unreadable_drive():
+    assert disk_guard.describe([{"drive": "data", "path": "D:/x", "free_gb": 0.0, "need_gb": 20.0, "error": "OSError: offline"}]) ==         "data D:/x cannot be read (OSError: offline), needs 20"
+
+
+def test_the_daypin_script_has_no_control_bytes_and_uses_the_settings_scratch_dir():
+    src = (Path(__file__).resolve().parents[1] / "pipeline" / "stages" / "test_daypin.py").read_bytes()
+    assert [b for b in src if b < 0x20 and b not in (9, 10, 13)] == []
+    assert b"settings.scratch_dir()" in src and b"D:\bio-cache" not in src

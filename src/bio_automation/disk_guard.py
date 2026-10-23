@@ -60,22 +60,37 @@ def default_floors(*, system_gb: float | None = None, data_gb: float | None = No
 
 
 def output_floors(out: str | Path, min_gb: float) -> list[Floor]:
-    """The system drive at its settings floor plus the drive of a stage's output folder at that stage's own floor (its BIO_MIN_FREE_GB)."""
-    return [default_floors()[0], Floor("output", Path(out), min_gb)]
+    """ONLY the drive of a stage's output folder at that stage's own floor (its BIO_MIN_FREE_GB). The stages that use it (render_all, render_selected,
+    topaz_enhance) write next to nothing to C:, so a low C: must not stop them (it did, for ever, under the old system-drive floor); C: is watched by
+    the workers that do write there (guard_for_write) and by social-selfcheck."""
+    return [Floor("output", Path(out), min_gb)]
+
+
+def wait_for_output(out: str | Path, min_gb: float, *, who: str, say: Callable[[str], None] | None = None, **kw) -> bool:
+    """The one call a pipeline stage makes before writing: wait (events to DISK_GUARD_LOG) for the output drive only, at most
+    settings.DISK_GUARD_STAGE_MAX_WAIT_S (never for ever); False when that ran out, so the stage reports STOP and ends."""
+    kw.setdefault("audit", log_event)
+    kw.setdefault("max_wait_s", settings.DISK_GUARD_STAGE_MAX_WAIT_S)
+    return wait_for_room(output_floors(out, min_gb), who=who, say=say, **kw)
 
 
 def shortfalls(floors: list[Floor], free: Callable[[Path], int] = free_bytes, *, margin_gb: float = 0.0) -> list[dict]:
     """The floors not met (free < min + margin), each as {drive, path, free_gb, need_gb}."""
     out = []
     for f in floors:
-        have = free(f.path) / GB
+        try:
+            have = free(f.path) / GB
+        except OSError as e:      # the drive is offline or the path went away: unknown space counts as short (fail closed) and the wait goes on
+            out.append({"drive": f.label, "path": str(f.path), "free_gb": 0.0, "need_gb": f.min_gb + margin_gb, "error": f"{type(e).__name__}: {e}"[:200]})
+            continue
         if have < f.min_gb + margin_gb:
             out.append({"drive": f.label, "path": str(f.path), "free_gb": round(have, 1), "need_gb": f.min_gb + margin_gb})
     return out
 
 
 def describe(short: list[dict]) -> str:
-    return "; ".join(f"{s['drive']} {s['path']} has {s['free_gb']:.1f} GB free, needs {s['need_gb']:g}" for s in short)
+    return "; ".join((f"{s['drive']} {s['path']} cannot be read ({s['error']}), needs {s['need_gb']:g}" if "error" in s
+                      else f"{s['drive']} {s['path']} has {s['free_gb']:.1f} GB free, needs {s['need_gb']:g}") for s in short)
 
 
 def log_event(event: str, **fields) -> dict:

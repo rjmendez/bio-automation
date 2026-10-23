@@ -208,6 +208,7 @@ DISK_GUARD_DATA_MIN_GB = env_float("BIO_DISK_GUARD_DATA_MIN_GB", 20)        # th
 DISK_GUARD_POLL_S = env_float("BIO_DISK_GUARD_POLL_S", 60)
 DISK_GUARD_RESUME_MARGIN_GB = env_float("BIO_DISK_GUARD_RESUME_MARGIN_GB", 1)   # resume only at floor + margin, so a drive at the edge does not flap
 DISK_GUARD_MAX_WAIT_S = env_float("BIO_DISK_GUARD_MAX_WAIT_S", 0)           # 0 = a daemon worker waits as long as it takes; a scheduled run sets its own limit
+DISK_GUARD_STAGE_MAX_WAIT_S = env_float("BIO_DISK_GUARD_STAGE_MAX_WAIT_S", 21600)   # a pipeline stage (render_all, render_selected, topaz_enhance) waits this long for its OUTPUT drive, then stops with STOP
 DISK_GUARD_LOG = env_path("BIO_DISK_GUARD_LOG", CACHE_DIR / "state" / "disk_guard.jsonl")   # pause/resume events of workers that have no audit log of their own
 SCRATCH_DIR = env_path("BIO_SCRATCH_DIR", CACHE_DIR / "tmp")               # every temp file the package makes goes here (D:), never %TEMP% on C:
 

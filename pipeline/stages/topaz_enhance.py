@@ -63,7 +63,7 @@ def main():
                 failed += 1
                 continue
 
-            if not disk_guard.wait_for_room(disk_guard.output_floors(OUT, MIN_FREE_GB), who='topaz_enhance', audit=disk_guard.log_event, say=log):
+            if not disk_guard.wait_for_output(OUT, MIN_FREE_GB, who='topaz_enhance', say=log):
                 free = shutil.disk_usage(OUT).free / 1e9
                 log(f'STOP: only {free:.0f} GB free (limit {MIN_FREE_GB:.0f}); '
                     f'{len(todo) - i + 1} frames left')
