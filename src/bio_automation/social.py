@@ -365,6 +365,10 @@ class Ledger:
             if r["event"] in NOTES:
                 d["last_error"] = r
                 continue
+            if r["event"] == "drafted":            # a (re)draft under this id (after a withdrawal): its observations, day and theme are the latest record's
+                d.update(obs_id=r.get("obs_id"), month=r.get("month"), drafted_at=r["at"], approved_hash=None, obs_ids=r.get("obs_ids"),
+                         for_date=r.get("for_date"), theme=r.get("theme"))
+                d.pop("approved_seq", None)
             d["state"], d["last"], d["seq"] = r["event"], r, seq       # seq: ledger position (timestamps tie within a second)
             if r["event"] == "approved":
                 d["approved_hash"] = r.get("hash")
