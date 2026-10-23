@@ -17,7 +17,7 @@ from bio_automation.social import Ledger
 from bio_automation.social_rules import Audit
 from bio_automation.social_selfcheck import FAIL, OK, WARN, GB
 
-NAMES = ["rules", "extensions", "themes", "ledger", "audit", "bluesky-session", "gallery-index", "taxonomy", "approved-drafts", "pending-quality", "pause",
+NAMES = ["rules", "extensions", "themes", "ledger", "audit", "secret-scan", "bluesky-session", "gallery-index", "taxonomy", "approved-drafts", "pending-quality", "pause",
          "disk-system", "disk-data"]
 
 

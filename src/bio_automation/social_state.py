@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import NamedTuple
 
-from . import settings
+from . import secrets_guard, settings
 from .social import NOTES, STATES, SocialError, ledger_lock
 from .social_hooks import Verdict
 
@@ -302,6 +302,11 @@ def make_backup(root: Path | None = None, *, sources: dict[str, Path] | None = N
     root = Path(root or settings.SOCIAL_BACKUP_DIR)
     sources = backup_sources() if sources is None else sources
     now = now or _now()
+    protected = (settings.BSKY_OAUTH_DIR, settings.BSKY_CLEANUP_OAUTH_DIR)
+    for name, src in sources.items():                          # OAuth key material is never copied into a backup (it has its own key backup, see docs)
+        if secrets_guard.is_key_material(Path(src), protected):
+            _audit("backup_failed", error=f"refused: {name} is OAuth key material", root=str(root))
+            raise SocialError(f"refusing to back up {name} ({src}): OAuth key material and sessions are never copied into a backup folder")
     if keep is not None and keep < 1:
         raise SocialError(f"--keep must be at least 1, got {keep}")
     tmp = root / f".tmp-{_stamp(now)}-{os.getpid()}"
