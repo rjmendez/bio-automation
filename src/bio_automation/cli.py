@@ -239,6 +239,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_darkroom.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
     p_darkroom.add_argument("--dry-run", action="store_true", help="match and report, but write neither prints.csv nor the review csv")
 
+    p_qdrant = sub.add_parser(
+        "qdrant-sync",
+        help="Upsert one point per gallery image into the Qdrant collection BIO_QDRANT_COLLECTION (own collection, refuses an alias or a "
+             "collection it did not create): the DA-CLIP image vector, a text vector of the metadata, and the iNat + Stock payload.")
+    p_qdrant.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_qdrant.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_qdrant.add_argument("--collection", default=settings.QDRANT_COLLECTION)
+    p_qdrant.add_argument("--limit", type=int, default=None, help="only the first N gallery files (a trial run)")
+    p_qdrant.add_argument("--dry-run", action="store_true", help="build and report everything, send nothing to Qdrant")
+
     p_social_draft = sub.add_parser(
         "social-draft",
         help="Top up this month's unposted Bluesky drafts: observations with gallery photos in this month of any year, fetched live, "
@@ -866,7 +876,34 @@ def cmd_darkroom_sync(args: argparse.Namespace) -> int:
     return 0
 
 
-SOCIAL_COMMANDS = {"darkroom-sync": cmd_darkroom_sync, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+def cmd_qdrant_sync(args: argparse.Namespace) -> int:
+    import json
+
+    from . import daclip, darkroom, inat, qdrant_obs, social
+
+    session = []
+
+    def embed_image(path):                                            # DA-CLIP on the GPU, loaded once and only for files not in the cache
+        if not session:
+            session.append(daclip.load_session())
+        return daclip.embed_path(path, session[0])[0]
+
+    _, embed_text = social.embedder()
+    url, key = qdrant_obs.qdrant_config()
+    summary = qdrant_obs.sync(
+        index=social.load_index(Path(args.index)), gallery_dir=Path(args.gallery_dir), client=qdrant_obs.Qdrant(url, key),
+        collection=args.collection, work_dir=settings.DARKROOM_DIR, embed_image=embed_image, embed_text=embed_text,
+        fetch=inat.fetch_inat_observations, lineage_cache=inat.TaxonLineageCache(settings.INAT_TAXON_CACHE, settings.INAT_TAXON_TTL_S),
+        candidates=["D:/bio-cache/photos/stock_candidates_*.csv", "F:/bio-automation-data/nas_pipeline/candidates/*.csv",
+                    str(settings.RESULTS_DIR / "nas_pipeline" / "candidates" / "*.csv"),
+                    str(settings.RESULTS_DIR / "nas_pipeline" / "candidates-gaps" / "*.csv")],
+        prints=social.load_prints(), ledger_drafts=social.Ledger().drafts(), inat_cache=settings.QDRANT_INAT_CACHE,
+        limit=args.limit, write=not args.dry_run)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
+
+
+SOCIAL_COMMANDS = {"qdrant-sync": cmd_qdrant_sync, "darkroom-sync": cmd_darkroom_sync, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
                    "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,
@@ -971,13 +1008,14 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
-    if args.command.startswith("social-") or args.command == "darkroom-sync":
+    if args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync"):
         from .darkroom import DarkroomError
-        from .social import SocialError
+        from .qdrant_obs import QdrantError
+        from .social import SocialError, VisionError
 
         try:
             return SOCIAL_COMMANDS[args.command](args)
-        except (SocialError, DarkroomError) as e:          # the message says what to do; a traceback would only bury it
+        except (SocialError, DarkroomError, QdrantError, VisionError) as e:        # the message says what to do; a traceback would only bury it
             print(f"bio {args.command}: {e}", file=sys.stderr)
             return 1
     if args.command == "build-keywords":
