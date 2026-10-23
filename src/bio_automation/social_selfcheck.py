@@ -15,6 +15,7 @@ cache, the drafts) is a warning at worst: a good deploy is not rolled back for t
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib
 import inspect
 import json
@@ -298,6 +299,41 @@ def check_pause() -> Check:
     return Check("pause", OK, "info: posting is not paused")
 
 
+ROLLBACK_SCRIPT = "run-social.ps1"           # the old single script: deployed by hand, never refreshed from the repo, never compared
+
+
+def repo_scripts_dir() -> Path:
+    """scripts/windows of the tree this package runs from (src/bio_automation/ -> two levels up)."""
+    return Path(__file__).resolve().parents[2] / "scripts" / "windows"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_script_drift(repo_dir: Path | None = None, deployed_dir: Path | None = None) -> Check:
+    """The scheduled tasks run the copies in settings.SOCIAL_SCRIPTS_DIR, not the repo files. Warn when a repo scripts/windows/*.ps1 is missing
+    there or differs byte for byte (scripts/deploy_prod.ps1 refreshes them); run-social.ps1 is not compared. Never a failure: the post goes on."""
+    src = Path(repo_dir) if repo_dir is not None else repo_scripts_dir()
+    dst = Path(deployed_dir) if deployed_dir is not None else Path(settings.SOCIAL_SCRIPTS_DIR)
+    if not src.is_dir():
+        return Check("script-drift", WARN, f"cannot compare the scheduled-task scripts: no {src} next to this package")
+    wanted = sorted(f for f in src.glob("*.ps1") if f.is_file() and f.name.lower() != ROLLBACK_SCRIPT)
+    if not dst.is_dir():
+        return Check("script-drift", WARN, f"scheduled-task script folder {dst} does not exist ({len(wanted)} repo scripts not deployed)")
+    missing, differ = [], []
+    for f in wanted:
+        copy = dst / f.name
+        if not copy.is_file():
+            missing.append(f.name)
+        elif _sha256(copy) != _sha256(f):
+            differ.append(f.name)
+    if missing or differ:
+        parts = ([f"missing in {dst}: {', '.join(missing)}"] if missing else []) + ([f"differ from the repo: {', '.join(differ)}"] if differ else [])
+        return Check("script-drift", WARN, "scheduled-task scripts drifted (" + "; ".join(parts) + "); run scripts\\deploy_prod.ps1 or copy them")
+    return Check("script-drift", OK, f"{len(wanted)} scheduled-task scripts in {dst} match the repo (sha256)")
+
+
 def default_drives() -> dict[str, Path]:
     system = Path(os.environ.get("SystemDrive", "C:") + "\\") if os.name == "nt" else Path("/")
     return {"system": system, "data": Path(settings.CACHE_DIR)}
@@ -368,7 +404,9 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
                free: Callable[[Path], int] | None = None, whoami: Callable[[], dict] | None = None,
                inat_probe: Callable[[], int] | None = None, deploy: bool = False) -> list[Check]:
     """deploy: "rules" and "themes" check the built-in defaults (the code), the owner's files get their own checks (rules-file, themes-file)
-    and the CLI import is checked; for_deploy() then lets only the code-dependent checks fail."""
+    and the CLI import is checked; for_deploy() then lets only the code-dependent checks fail. The script-drift check is left out of --deploy:
+    deploy_prod.ps1 refreshes the scripts right after an accepted selfcheck, so the comparison would warn on every deploy that changed one
+    (the script verifies the hashes itself after copying)."""
     now = now or dt.datetime.now(settings.LOCAL_TZ)
     rules_check, rules = check_rules("rules", builtin=True) if deploy else check_rules()
     extra = []
@@ -377,7 +415,7 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
         extra = [file_check, check_themes("themes-file")]
         rules = file_rules
     checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
-              check_approved_drafts(), check_pending_quality(rules), check_pause(), *check_disks(drives or default_drives(), free or _free_bytes)]
+              check_approved_drafts(), check_pending_quality(rules), check_pause(), *([] if deploy else [check_script_drift()]), *check_disks(drives or default_drives(), free or _free_bytes)]
     if online:
         checks += [check_bsky_online(whoami or default_whoami), check_inat_online(inat_probe or default_inat_probe)]
     return checks
