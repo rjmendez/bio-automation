@@ -1,6 +1,6 @@
 """Alerts and the daily digest for the Bluesky posting workflow (rule: alerts).
 
-A PULL model: nothing here sits in the posting path. `bio social-alerts` reads the audit log, the ledger, the pause file, the social.log mtime,
+A PULL model: nothing here sits in the posting path. `bio social-alerts` reads the audit log, the ledger, the pause file, the [post]/[prep] lines of social.log,
 the theme taxonomy cache and the disks, decides what needs the owner's attention, appends each NEW alert to settings.SOCIAL_ALERTS_LOG and,
 when asked (--notify, or settings.SOCIAL_ALERT_COMMAND is set) and the rule `alerts` is on, runs the alert command once per new alert.
 `bio social-digest` writes one Markdown page per day to settings.SOCIAL_DIGEST_DIR.
@@ -49,6 +49,8 @@ WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
 WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
 DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
 HOOK_REJECT = re.compile(r"observation \d+: ")  # make_draft words a draft-hook reject "observation N: <reason>"; its other skips have no colon there
+LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d) \[(?:post|prep)\]")   # a line the post or prep script wrote itself (not the watch script's, not python's output)
+LOG_TAIL_BYTES = 2_000_000                     # only the end of social.log is read
 PER_DAY_EVENTS = ("paused", "circuit_open")    # these repeat on every run: one alert a day
 LEVELS = {"warning": 1, "error": 2}
 
@@ -102,6 +104,27 @@ def count_unreadable_lines(path: Path) -> int:
             ok = False
         bad += not ok
     return bad
+
+
+def tagged_log_times(path: Path, tz) -> list[dt.datetime]:
+    """The times of the '[post]' and '[prep]' lines at the end of social.log. The watch script writes '[watch]' lines into the same file on every
+    scan, so the file's mtime says nothing about whether a post or prep run happened."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - LOG_TAIL_BYTES))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        m = LOG_LINE.match(line)
+        if m:
+            try:
+                out.append(dt.datetime.fromisoformat(m.group(1)).replace(tzinfo=tz))
+            except ValueError:
+                continue
+    return out
 
 
 def parse_time(text, tz=None) -> dt.datetime | None:
@@ -273,19 +296,18 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
                   f"cap not reached, an eligible draft is waiting"))
 
     # 3. a run left no trace
-    try:
-        log_at = dt.datetime.fromtimestamp(log_file.stat().st_mtime, tz)
-    except OSError:
-        log_at = None
-    for i, s in enumerate(slots):
-        start = dt.datetime.combine(today, s, tzinfo=tz)
-        end = dt.datetime.combine(today, slots[i + 1], tzinfo=tz) if i + 1 < len(slots) else start + dt.timedelta(days=1)
-        if now < start + SILENT_AFTER or start < now - since:
-            continue
-        seen = any((t := parse_time(r.get("at"), tz)) is not None and start <= t < end for r in audit) or (log_at is not None and start <= log_at < end)
-        if not seen:
-            add(Alert(f"run_silent:{today.isoformat()}:{s.strftime('%H:%M')}", "run_silent", "error",
-                      f"the {s.strftime('%H:%M')} run left no audit record and no social.log write by {now.strftime('%H:%M')}"))
+    log_times = tagged_log_times(log_file, tz)
+    for day in (today - dt.timedelta(days=1), today):                  # yesterday's late slots are still checked after midnight
+        for i, s in enumerate(slots):
+            start = dt.datetime.combine(day, s, tzinfo=tz)
+            end = dt.datetime.combine(day, slots[i + 1], tzinfo=tz) if i + 1 < len(slots) else start + dt.timedelta(days=1)
+            if now < start + SILENT_AFTER or start < now - since:
+                continue
+            seen = (any((t := parse_time(r.get("at"), tz)) is not None and start <= t < end for r in audit)
+                    or any(start <= t < end for t in log_times))
+            if not seen:
+                add(Alert(f"run_silent:{day.isoformat()}:{s.strftime('%H:%M')}", "run_silent", "error",
+                          f"the {s.strftime('%H:%M')} run left no audit record and no [post]/[prep] line in social.log by {now.strftime('%H:%M')}"))
 
     # 4. stock
     pool, why = _load_pool(taxonomy_file or settings.OBS_TAXONOMY_FILE, themes_file, drafts)

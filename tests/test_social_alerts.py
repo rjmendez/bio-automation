@@ -37,6 +37,9 @@ def lentry(order="Agaricales", grade="research", kingdom="Fungi"):
                       "lineage": [{"rank": "kingdom", "name": kingdom}, {"rank": "order", "name": order}]}, "grade": grade, "fetched": 1.0}
 
 
+YESTERDAY = [{"at": at(h, 5, day=22), "event": "draft_run"} for h in (8, 12, 20)]       # yesterday's three runs left a trace: only today's slots are under test
+
+
 class Env:
     """The files a scan reads, under tmp_path, with a quiet default: two posts today, a draft waiting, runs at 08:xx and 12:xx."""
 
@@ -48,7 +51,7 @@ class Env:
         self.log = self.dir / "social.log"
         self.taxonomy = self.dir / "obs_taxonomy.json"
         self.alerts = self.dir / "alerts.jsonl"
-        self.set_audit([{"at": at(8, 16), "event": "posted", "draft_id": "a"}, {"at": at(12, 5), "event": "posted", "draft_id": "b"}])
+        self.set_audit([*YESTERDAY, {"at": at(8, 16), "event": "posted", "draft_id": "a"}, {"at": at(12, 5), "event": "posted", "draft_id": "b"}])
         self.set_ledger([{"at": at(8, 16), "event": "posted", "draft_id": "a", "obs_id": 1},
                          {"at": at(12, 5), "event": "posted", "draft_id": "b", "obs_id": 2},
                          {"at": at(7, 0), "event": "drafted", "draft_id": "c", "obs_id": 3, "month": "2026-10"}])
@@ -128,7 +131,7 @@ def test_a_since_window_shorter_than_the_event_age_hides_it(env):
 
 def missing_env(env):
     env.set_ledger([{"at": at(7, 0), "event": "drafted", "draft_id": "c", "obs_id": 3, "month": "2026-10"}])
-    env.set_audit([{"at": at(8, 1), "event": "post_skipped"}, {"at": at(12, 1), "event": "post_skipped"}])      # runs happened, nothing posted
+    env.set_audit([*YESTERDAY, {"at": at(8, 1), "event": "post_skipped"}, {"at": at(12, 1), "event": "post_skipped"}])      # runs happened, nothing posted
 
 
 def test_expected_post_missing_when_two_slots_passed_and_nothing_posted(env):
@@ -195,7 +198,7 @@ def test_a_themed_draft_for_another_day_is_not_eligible_while_theme_day_only_is_
 # --------------------------------------------------------------------------------------------------- scan: silent runs
 
 def silent_env(env):
-    env.set_audit([])
+    env.set_audit(YESTERDAY)
     env.set_ledger([{"at": at(7, 0), "event": "drafted", "draft_id": "c", "obs_id": 3, "month": "2026-10"}])
     return dt.datetime(2026, 10, 23, 8, 31, tzinfo=TZ)
 
@@ -204,7 +207,7 @@ def test_a_run_with_no_audit_record_and_no_log_write_is_silent(env):
     now = silent_env(env)
     alerts, _ = env.scan(now=now)
     assert [(a.kind, a.level, a.key) for a in alerts] == [("run_silent", "error", "run_silent:2026-10-23:08:00")]
-    assert alerts[0].message == "the 08:00 run left no audit record and no social.log write by 08:31"
+    assert alerts[0].message == "the 08:00 run left no audit record and no [post]/[prep] line in social.log by 08:31"
 
 
 def test_silent_run_edge_is_thirty_minutes(env):
@@ -225,15 +228,40 @@ def test_silent_run_twin_a_record_before_the_slot_does_not_count(env):
     assert env.kinds(now=now) == ["run_silent"]
 
 
-def test_silent_run_twin_social_log_written_in_the_slot(env):
+def test_silent_run_twin_a_post_line_in_social_log_in_the_slot(env):
     now = silent_env(env)
-    env.log.write_text("run", encoding="utf-8")
-    stamp = dt.datetime(2026, 10, 23, 8, 10, tzinfo=TZ).timestamp()
-    os.utime(env.log, (stamp, stamp))
+    env.log.write_text("2026-10-23T08:00:03 [post] run start (pid 1, user x)\n", encoding="utf-8")
     assert env.kinds(now=now) == []
-    old = dt.datetime(2026, 10, 22, 20, 10, tzinfo=TZ).timestamp()
-    os.utime(env.log, (old, old))
+    env.log.write_text("2026-10-22T20:00:03 [post] run start (pid 1, user x)\n", encoding="utf-8")
     assert env.kinds(now=now) == ["run_silent"]
+
+
+def test_a_prep_line_counts_too(env):
+    now = silent_env(env)
+    env.log.write_text("2026-10-23T08:02:00 [prep] run start (pid 1, user x)\n", encoding="utf-8")
+    assert env.kinds(now=now) == []
+
+
+def test_the_watch_scripts_own_log_lines_and_the_files_mtime_do_not_hide_a_silent_run(env):
+    now = silent_env(env)
+    env.log.write_text("2026-10-23T08:20:00 [watch] run start, step alerts (pid 1, user x)\nsome python output line\n", encoding="utf-8")
+    stamp = dt.datetime(2026, 10, 23, 8, 20, tzinfo=TZ).timestamp()
+    os.utime(env.log, (stamp, stamp))
+    assert env.kinds(now=now) == ["run_silent"]
+
+
+def test_a_silent_late_slot_of_yesterday_is_found_after_midnight(env):
+    env.set_audit([*YESTERDAY, {"at": at(8, 5, day=23), "event": "draft_run"}, {"at": at(12, 5, day=23), "event": "draft_run"}])
+    env.set_ledger([{"at": at(7, 0, day=23), "event": "drafted", "draft_id": "c", "obs_id": 3, "month": "2026-10"}])
+    alerts, _ = env.scan(now=dt.datetime(2026, 10, 24, 0, 10, tzinfo=TZ))
+    assert [(a.kind, a.key) for a in alerts if a.kind == "run_silent"] == [("run_silent", "run_silent:2026-10-23:20:00")]
+
+
+def test_yesterdays_late_slot_is_quiet_when_it_ran(env):
+    env.set_audit([{"at": at(8, 5, day=23), "event": "draft_run"}, {"at": at(12, 5, day=23), "event": "draft_run"},
+                   {"at": at(20, 3, day=23), "event": "draft_run"}])
+    env.set_ledger([{"at": at(7, 0, day=23), "event": "drafted", "draft_id": "c", "obs_id": 3, "month": "2026-10"}])
+    assert "run_silent" not in env.kinds(now=dt.datetime(2026, 10, 24, 0, 10, tzinfo=TZ))
 
 
 def test_a_later_slots_run_does_not_hide_an_earlier_silent_one(env):
