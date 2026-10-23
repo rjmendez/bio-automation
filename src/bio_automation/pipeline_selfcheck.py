@@ -87,7 +87,7 @@ def check_imports(ops_dir: Path | str | None = None, *, python: str | None = Non
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).resolve().parent.parent), str(ops)])
     try:
-        done = runner([python or sys.executable, "-I", "-c", "import sys; sys.path[:0] = [p for p in sys.argv[1:]]; import nas_pipeline, pipeline_upkeep",
+        done = runner([python or sys.executable, "-c", "import sys; sys.path[:0] = [p for p in sys.argv[1:]]; import nas_pipeline, pipeline_upkeep",
                        *env["PYTHONPATH"].split(os.pathsep)], capture_output=True, text=True, timeout=timeout_s, env=env, cwd=str(ops))
     except subprocess.TimeoutExpired:
         return Check("imports", FAIL, f"importing nas_pipeline from {ops} did not finish in {timeout_s:g} s")
