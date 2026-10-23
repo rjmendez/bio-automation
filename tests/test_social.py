@@ -1595,7 +1595,8 @@ class TestWithdrawalCap:
         ledger, drafts = drafted(tmp_path, 1)
         social_hooks.register("floor", "pre_send", lambda ctx: social_hooks.Verdict("withdraw", "too small"))
         result = social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend(), rules=rules_with(), audit=Audit(tmp_path / "a.jsonl"))
-        assert result == {"status": "nothing approved", "month": "2026-10", "withdrawn": ["2026-10-obs1"]}
+        assert result == {"status": "nothing approved", "month": "2026-10", "withdrawn": ["2026-10-obs1"], "withdrawn_count": 1,
+                          "withdrawn_reasons": {"2026-10-obs1": "too small"}}
         (rec,) = [r for r in ledger.records() if r["event"] == "withdrawn"]
         assert (rec["hook"], rec["reason"]) == ("floor", "too small")
         assert ledger.withdrawal_counts() == {1: (1, "too small")}
