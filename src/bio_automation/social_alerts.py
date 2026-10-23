@@ -6,10 +6,10 @@ when asked (--notify, or settings.SOCIAL_ALERT_COMMAND is set) and the rule `ale
 `bio social-digest` writes one Markdown page per day to settings.SOCIAL_DIGEST_DIR.
 
 Alert kinds and levels (exit code: 0 none, 1 warnings, 2 errors):
-  error    draft_stalled (a draft whose sends keep sending nothing: skipped for the day, later marked failed; the alert names it), post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
+  error    live_audit_problem (a public post fails the privacy gates; social-audit-live, weekly; the alert names post URIs, never the text), draft_stalled (a draft whose sends keep sending nothing: skipped for the day, later marked failed; the alert names it), post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
            ledger_corrupt (an audit event, or unreadable lines found in the ledger file itself), prep_failed (a prep_step with ok=false),
            selfcheck_failed (a selfcheck event with level fail), expected_post_missing, run_silent, disk (C: under 15 GB)
-  warning  live_recheck_unavailable (iNat could not be asked right before a send; three in one run block the send), post_blocked, hook_error, paused, backup_failed, withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
+  warning  live_recheck_unavailable (iNat could not be asked right before a send; three in one run block the send), post_blocked, hook_error, paused, backup_failed, backup_offsite_failed (the off-drive copy), restore_check_failed (social-restore-check), qdrant_sync_failed, qdrant_stale (a Qdrant sync never recorded or older than QDRANT_STALE_DAYS), withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
            draft_reject_spike (more than 10 draft_skipped by hooks in one run), low_stock, queue_empty, disk (D: under 20 GB)
 De-duplication: a key already in the alerts log less than 12 hours ago is not new. An alert that stands for ONE audit record (an event: post_failed,
 hook_error ...) is new only once, ever, so an old failure still inside the --since window is not announced again after 12 hours.
@@ -35,25 +35,29 @@ import time
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import settings
+from . import secrets_guard, settings
+from . import social_controls
 from .social_rules import Audit, Rules, load_rules
 
 DEDUP_WINDOW = dt.timedelta(hours=12)
 LATE_AFTER = dt.timedelta(minutes=60)          # a slot's post is missing when the slot is this old
 SILENT_AFTER = dt.timedelta(minutes=30)        # a slot's run left no trace when the slot is this old
 LOW_STOCK_POSTS = 10
-DISK_MIN_GB = (("C:\\", 15, "error"), ("D:\\", 20, "warning"))
+DISK_MIN_GB = (("C:\\", settings.SOCIAL_PREP_MIN_FREE_C_GB, "error"), ("D:\\", settings.SOCIAL_PREP_MIN_FREE_D_GB, "warning"))   # the same floors social-prep pauses at
 NOTIFY_TIMEOUT_S = 30
 NOTIFY_BUDGET_S = 90                           # all the notifications of one scan together: the rest wait for the next scan (the task has a 20 minute limit)
 ERROR_EVENTS = {"post_failed": "error", "post_verify_failed": "error", "circuit_open": "error", "ledger_corrupt": "error",
-                "draft_stalled": "error", "live_recheck_unavailable": "warning", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning"}
+                "draft_stalled": "error", "live_recheck_unavailable": "warning", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning",
+                "disk_pause": "warning", "disk_timeout": "error",
+                "backup_offsite_failed": "warning", "restore_check_failed": "warning", "qdrant_sync_failed": "warning",
+                "live_audit_problem": "error", "live_audit_failed": "warning"}      # disk_guard: disk_pause = a worker waiting for disk space (resumes by itself), disk_timeout = one that gave up
 WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
 WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
 DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
 HOOK_REJECT = re.compile(r"observation \d+: ")  # make_draft words a draft-hook reject "observation N: <reason>"; its other skips have no colon there
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d) \[(?:post|prep)\]")   # a line the post or prep script wrote itself (not the watch script's, not python's output)
 LOG_TAIL_BYTES = 2_000_000                     # only the end of social.log is read
-PER_DAY_EVENTS = ("paused", "circuit_open")    # these repeat on every run: one alert a day
+PER_DAY_EVENTS = ("paused", "circuit_open", "disk_pause")    # these repeat on every run: one alert a day
 LEVELS = {"warning": 1, "error": 2}
 
 
@@ -203,8 +207,8 @@ def _load_pool(taxonomy_file: Path, themes_file, drafts: dict[str, dict]) -> tup
 # --------------------------------------------------------------------------------------------------- the scan
 
 def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audit_path: Path | None = None, ledger_path: Path | None = None,
-         rules: Rules | None = None, slots: list[dt.time] | None = None, pause_file: Path | None = None, log_file: Path | None = None,
-         taxonomy_file: Path | None = None, themes_file: Path | None = None,
+         rules: Rules | None = None, slots: list[dt.time] | None = None, pause_file: Path | None = None, pause_sync_file=social_controls._SETTINGS, log_file: Path | None = None,
+         taxonomy_file: Path | None = None, themes_file: Path | None = None, qdrant_marker: Path | None = None, qdrant_stale_days: float | None = None,
          disk_free: Callable[[str], int] = lambda p: shutil.disk_usage(p).free) -> tuple[list[Alert], list[str]]:
     """(alerts, notes). Notes say what could not be checked (a missing cache, an unreadable disk); they are not alerts."""
     rules = rules or load_rules()
@@ -243,7 +247,7 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
         detail = r.get("reason") or r.get("error") or r.get("status") or ""
         if not detail and r.get("problems"):
             detail = "; ".join(str(p) for p in r["problems"][:3])
-        who = r.get("draft_id") or r.get("name") or ""
+        who = r.get("draft_id") or r.get("name") or r.get("who") or ""
         text = f"{kind}{' ' + str(who) if who else ''}{': ' + str(detail)[:200] if detail else ''} ({r.get('at')})"
         key = (f"{kind}:{at.date().isoformat()}" if kind in PER_DAY_EVENTS else
                f"{kind}:{who}:{at.date().isoformat()}:{r.get('action')}" if kind == "draft_stalled" else f"{kind}:{who}:{r.get('at')}")      # a stalled draft: once a day each
@@ -279,7 +283,7 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
     manual_ids = {r.get("draft_id") for r in audit if r.get("event") == "posted" and r.get("manual")}
     scheduled = [r for r in ledger if r.get("event") == "posted" and str(r.get("at", ""))[:10] == today.isoformat()
                  and not r.get("manual") and r.get("draft_id") not in manual_ids]
-    paused = pause_file.exists() and rules.on("pause_switch")
+    paused = social_controls.read_pause(pause_file, pause_sync_file) is not None and rules.on("pause_switch")
 
     def eligible(d: dict) -> bool:
         if d.get("state") not in ("drafted", "approved"):
@@ -323,6 +327,12 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
     if not any(d.get("state") in ("drafted", "approved") for d in drafts.values()):
         add(Alert(f"queue_empty:{today.isoformat()}", "queue_empty", "warning", "no drafted or approved draft is left to post"))
 
+    # 4b. the Qdrant indexes: a sync that never ran or has not written for days leaves search answering from old data
+    from . import sync_marker
+
+    for name, message in sync_marker.stale(now, path=qdrant_marker, max_days=qdrant_stale_days):
+        add(Alert(f"qdrant_stale:{name}:{today.isoformat()}", "qdrant_stale", "warning", message))
+
     # 5. disks
     for root, gb, level in DISK_MIN_GB:
         try:
@@ -331,7 +341,7 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
             notes.append(f"disk {root} not checked: {e}")
             continue
         if free < gb:
-            add(Alert(f"disk:{root[0]}", "disk", level, f"{root} has {free:.1f} GB free, under {gb} GB"))
+            add(Alert(f"disk:{root[0]}", "disk", level, f"{root} has {free:.1f} GB free, under {gb:g} GB"))
     return sorted(alerts.values(), key=lambda a: (-LEVELS[a.level], a.key)), notes
 
 
@@ -359,7 +369,7 @@ def new_alerts(alerts: list[Alert], log: list[dict], now: dt.datetime) -> list[A
 def _append(path: Path, rec: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(rec, sort_keys=True, ensure_ascii=False) + "\n")
+        f.write(json.dumps(secrets_guard.redact(rec), sort_keys=True, ensure_ascii=False) + "\n")
 
 
 def split_command(text: str) -> list[str]:
@@ -398,7 +408,7 @@ def run_notifier(argv: list[str], *, input: bytes, timeout: float) -> subprocess
     """Run the alert command with `input` on stdin; wait at most `timeout` seconds IN TOTAL. stdout goes nowhere and stderr to a temp file, so a
     grandchild that keeps them open cannot hold this call; on a timeout the whole process tree is killed and TimeoutExpired is raised."""
     kw: dict = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {"start_new_session": True}
-    with tempfile.TemporaryFile() as errf:
+    with tempfile.TemporaryFile(dir=settings.scratch_dir()) as errf:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errf, shell=False, **kw)
         try:
             try:

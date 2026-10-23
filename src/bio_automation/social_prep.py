@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import settings
+from . import disk_guard, settings
 
 STEPS = ("social-index", "darkroom-sync", "social-draft")
 
@@ -27,12 +27,16 @@ def free_gb(path: str) -> float:
 
 
 def preflight(free: Callable[[str], float] = free_gb) -> str | None:
-    """None when there is room to work, else the one-line reason to stop."""
+    """None when there is room to work, else the one-line reason to stop (one reading, no waiting: run_prep does the pausing)."""
     for drive, need in (("C:\\", settings.SOCIAL_PREP_MIN_FREE_C_GB), ("D:\\", settings.SOCIAL_PREP_MIN_FREE_D_GB)):
         have = free(drive)
         if have < need:
             return f"{drive[:2]} has {have:.1f} GB free, social-prep needs {need:g} GB"
     return None
+
+
+def prep_floors() -> list[disk_guard.Floor]:
+    return [disk_guard.Floor("C:", Path("C:\\"), settings.SOCIAL_PREP_MIN_FREE_C_GB), disk_guard.Floor("D:", Path("D:\\"), settings.SOCIAL_PREP_MIN_FREE_D_GB)]
 
 
 def _split(value: str) -> list[str]:
@@ -58,10 +62,17 @@ def default_steps(args: argparse.Namespace) -> dict[str, Callable[[], int]]:
 
 
 def run_prep(steps: dict[str, Callable[[], int]], *, audit, free: Callable[[str], float] = free_gb,
-             clock: Callable[[], float] = time.monotonic, say: Callable[[str], None] = print) -> int:
-    """Run preflight and then every step; return 0 when all succeeded, else 1. A step fails by returning non-zero or by raising."""
+             clock: Callable[[], float] = time.monotonic, say: Callable[[str], None] = print,
+             wait_s: float = 0.0, sleep: Callable[[float], None] = time.sleep) -> int:
+    """Run preflight and then every step; return 0 when all succeeded, else 1. A step fails by returning non-zero or by raising.
+    wait_s > 0: a drive under its floor PAUSES the run (disk_pause / disk_resume audit events, disk_guard.wait_for_room) for up to wait_s seconds
+    instead of stopping it; it stops with the reason only when the wait runs out. 0 (the default of this function) stops at once."""
     t0 = clock()
     reason = preflight(free)
+    if reason and wait_s > 0:
+        got_room = disk_guard.wait_for_room(prep_floors(), who="social-prep", audit=audit.log, free=lambda p: int(free(str(p)) * disk_guard.GB),
+                                            sleep=sleep, clock=clock, max_wait_s=wait_s, say=say)
+        reason = None if got_room else preflight(free)
     audit.log("prep_step", step="preflight", seconds=round(clock() - t0, 1), ok=reason is None, **({"reason": reason} if reason else {}))
     if reason:
         say(f"bio social-prep: stopped, {reason}")
@@ -97,7 +108,7 @@ def add_parsers(sub) -> None:
 def cmd_social_prep(args: argparse.Namespace) -> int:
     from .social_rules import Audit
 
-    return run_prep(default_steps(args), audit=Audit(), free=free_gb)
+    return run_prep(default_steps(args), audit=Audit(), free=free_gb, wait_s=settings.SOCIAL_PREP_MAX_WAIT_S)
 
 
 COMMANDS = {"social-prep": cmd_social_prep}

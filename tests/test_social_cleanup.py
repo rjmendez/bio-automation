@@ -10,7 +10,8 @@ import pytest
 
 from bsky_oauth import BatchInterrupted, NothingSent
 
-from bio_automation import social_cleanup
+from bio_automation import cli, social_cleanup
+from bio_automation.social_rules import Audit
 from bio_automation.social import SocialError
 
 BOT = "Turdus migratorius - American Robin\n\nQuality grade: research\n2025-05-28\nWarning! AI generated alt text."
@@ -99,52 +100,177 @@ def still_there(_uri):
     return True
 
 
+@pytest.fixture
+def audit(tmp_path):
+    return Audit(tmp_path / "audit.jsonl", run="r1")
+
+
+def audit_events(audit, name):
+    return [r for r in audit.records() if r["event"] == name]
+
+
 class TestRun:
-    def test_wrong_confirmation_or_an_edited_plan_is_refused_and_the_right_one_runs(self, tmp_path):
+    def test_wrong_confirmation_or_an_edited_plan_is_refused_and_the_right_one_runs(self, tmp_path, audit):
         path, pid, uris = plan_file(tmp_path, 2)
         acct = RecordingAccount([{}])
         with pytest.raises(SocialError, match=r"--confirm 'nope' does not match plan " + pid):
-            social_cleanup.run_plan(path, "nope", account=acct, exists=gone)
+            social_cleanup.run_plan(path, "nope", confirm_count=2, account=acct, exists=gone, audit=audit)
         assert acct.calls == []
         edited = json.loads(path.read_text())
         edited["delete"].append({"uri": f"at://{DID}/app.bsky.feed.post/99"})
         bad = tmp_path / "edited.json"
         bad.write_text(json.dumps(edited))
         with pytest.raises(SocialError, match=r"was edited after it was built"):
-            social_cleanup.run_plan(bad, pid, account=acct, exists=gone)
+            social_cleanup.run_plan(bad, pid, confirm_count=2, account=acct, exists=gone, audit=audit)
         assert acct.calls == []
-        report = social_cleanup.run_plan(path, pid, account=acct, exists=gone)
-        assert report == {"plan_id": pid, "already_done": 0, "deleted": 2, "failed": 0, "stopped": None, "remaining": 0}
+        report = social_cleanup.run_plan(path, pid, confirm_count=2, account=acct, exists=gone, audit=audit)
+        assert report == {"plan_id": pid, "dry_run": False, "already_done": 0, "deleted": 2, "failed": 0, "stopped": None, "remaining": 0}
         assert acct.calls == [uris]
 
-    def test_batches_ledger_and_resume(self, tmp_path):
+    def test_batches_ledger_and_resume(self, tmp_path, audit):
         path, pid, uris = plan_file(tmp_path, 5)
         acct = RecordingAccount([{}, {"_omit": [uris[3]], uris[2]: {"status": "rate_limited", "error": "Rate Limit Exceeded"}}])
-        first = social_cleanup.run_plan(path, pid, account=acct, exists=gone, chunk=2)
+        first = social_cleanup.run_plan(path, pid, confirm_count=5, account=acct, exists=gone, chunk=2, audit=audit)
         assert acct.calls == [uris[:2], uris[2:4]]
         assert (first["deleted"], first["stopped"], first["remaining"]) == (2, "rate limited: rerun later to continue", 3)
         assert [(r["uri"], r["status"]) for r in ledger(path)] == [(uris[0], "deleted"), (uris[1], "deleted"), (uris[2], "rate_limited")]
         again = RecordingAccount([{}, {}])
-        second = social_cleanup.run_plan(path, pid, account=again, exists=gone, chunk=2)
+        second = social_cleanup.run_plan(path, pid, confirm_count=5, account=again, exists=gone, chunk=2, audit=audit)
         assert again.calls == [uris[2:4], uris[4:]]
         assert (second["already_done"], second["deleted"], second["remaining"], second["stopped"]) == (2, 3, 0, None)
 
-    def test_a_failed_delete_counts_as_done_only_when_the_record_is_gone(self, tmp_path):
+    def test_a_failed_delete_counts_as_done_only_when_the_record_is_gone(self, tmp_path, audit):
         path, pid, uris = plan_file(tmp_path, 2)
         failing = {u: {"status": "failed", "error": "Could not locate record"} for u in uris}
-        r1 = social_cleanup.run_plan(path, pid, account=RecordingAccount([failing]), exists=still_there)
+        r1 = social_cleanup.run_plan(path, pid, confirm_count=2, account=RecordingAccount([failing]), exists=still_there, audit=audit)
         assert (r1["deleted"], r1["failed"], r1["remaining"]) == (0, 2, 2)
-        r2 = social_cleanup.run_plan(path, pid, account=RecordingAccount([failing]), exists=gone)
+        r2 = social_cleanup.run_plan(path, pid, confirm_count=2, account=RecordingAccount([failing]), exists=gone, audit=audit)
         assert (r2["deleted"], r2["failed"], r2["remaining"]) == (2, 0, 0)
 
-    def test_lost_session_stops_and_an_interrupted_batch_keeps_what_was_done(self, tmp_path):
+    def test_lost_session_stops_and_an_interrupted_batch_keeps_what_was_done(self, tmp_path, audit):
         path, pid, uris = plan_file(tmp_path, 3)
-        r = social_cleanup.run_plan(path, pid, account=RecordingAccount([NothingSent("refresh refused")]), exists=gone)
+        r = social_cleanup.run_plan(path, pid, confirm_count=3, account=RecordingAccount([NothingSent("refresh refused")]), exists=gone, audit=audit)
         assert (r["stopped"], r["remaining"]) == ("nothing sent: refresh refused", 3)
         partial = BatchInterrupted([{"uri": uris[0], "status": "deleted"}], "socket hang up")
-        r = social_cleanup.run_plan(path, pid, account=RecordingAccount([partial]), exists=gone)
+        r = social_cleanup.run_plan(path, pid, confirm_count=3, account=RecordingAccount([partial]), exists=gone, audit=audit)
         assert r["stopped"].startswith("interrupted: socket hang up") and r["remaining"] == 2
         assert [x["uri"] for x in ledger(path) if x["status"] == "deleted"] == [uris[0]]
+
+
+class RaisingAccount:
+    """Any use of the account is a test failure: a dry run and a refused run must never reach it."""
+
+    def delete_many(self, uris, *, pause_ms):
+        raise AssertionError(f"delete_many called with {uris}")
+
+
+class TestDryRunAndCount:
+    def test_without_confirmation_it_is_a_dry_run_that_deletes_nothing_and_writes_no_ledger(self, tmp_path, audit):
+        path, pid, uris = plan_file(tmp_path, 3)
+        report = social_cleanup.run_plan(path, account=RaisingAccount(), audit=audit)
+        assert report == {"plan_id": pid, "dry_run": True, "plan_size": 3, "already_done": 0, "would_delete": 3, "deleted": 0, "failed": 0,
+                          "stopped": None, "remaining": 3}
+        assert not path.with_suffix(".ledger.jsonl").exists()
+        assert [(r["would_delete"], r["already_done"]) for r in audit_events(audit, "cleanup_dry_run")] == [(3, 0)]
+        assert audit_events(audit, "cleanup_delete") == []
+
+    def test_a_dry_run_after_a_partial_run_counts_only_what_is_left(self, tmp_path, audit):
+        path, pid, uris = plan_file(tmp_path, 3)
+        social_cleanup.run_plan(path, pid, confirm_count=3, account=RecordingAccount([{"_omit": uris[1:]}]), exists=gone, audit=audit)
+        report = social_cleanup.run_plan(path, account=RaisingAccount(), audit=audit)
+        assert (report["dry_run"], report["already_done"], report["would_delete"], report["plan_size"]) == (True, 1, 2, 3)
+
+    @pytest.mark.parametrize("count", [2, 4, 0, -3])
+    def test_a_count_that_is_not_the_plan_size_is_refused_before_anything_is_sent(self, tmp_path, audit, count):
+        path, pid, _ = plan_file(tmp_path, 3)
+        with pytest.raises(SocialError, match=rf"--confirm-count {count} does not match the plan, which deletes 3 posts"):
+            social_cleanup.run_plan(path, pid, confirm_count=count, account=RaisingAccount(), exists=gone, audit=audit)
+        assert not path.with_suffix(".ledger.jsonl").exists()
+        assert audit_events(audit, "cleanup_start") == []
+
+    def test_the_right_count_runs(self, tmp_path, audit):                      # positive twin of the refusals above
+        path, pid, uris = plan_file(tmp_path, 3)
+        acct = RecordingAccount([{}])
+        report = social_cleanup.run_plan(path, pid, confirm_count=3, account=acct, exists=gone, audit=audit)
+        assert (report["deleted"], acct.calls) == (3, [uris])
+
+    @pytest.mark.parametrize("with_id,count", [(True, None), (False, 3)])
+    def test_only_one_of_the_two_confirmations_is_refused(self, tmp_path, audit, with_id, count):
+        path, pid, _ = plan_file(tmp_path, 3)
+        with pytest.raises(SocialError, match="needs both --confirm <plan id> and --confirm-count"):
+            social_cleanup.run_plan(path, pid if with_id else None, confirm_count=count, account=RaisingAccount(), audit=audit)
+
+    def test_a_uri_of_another_account_or_collection_is_refused_for_a_plan_with_a_did(self, tmp_path, audit):
+        uris = [f"at://{DID}/app.bsky.feed.post/1", "at://did:plc:other/app.bsky.feed.post/2"]
+        plan = {"kind": "bsky_cleanup_plan", "pds": "https://pds.example", "did": DID, "plan_id": social_cleanup.plan_id(uris),
+                "delete": [{"uri": u} for u in uris], "keep": []}
+        path = tmp_path / "foreign.json"
+        path.write_text(json.dumps(plan))
+        with pytest.raises(SocialError, match=r"1 URI\(s\) of the plan are not app.bsky.feed.post records of the plan's account \(first: at://did:plc:other"):
+            social_cleanup.run_plan(path, plan["plan_id"], confirm_count=2, account=RaisingAccount(), exists=gone, audit=audit)
+        liked = [f"at://{DID}/app.bsky.feed.like/1"]
+        plan.update(delete=[{"uri": u} for u in liked], plan_id=social_cleanup.plan_id(liked))
+        path.write_text(json.dumps(plan))
+        with pytest.raises(SocialError, match="not app.bsky.feed.post records"):
+            social_cleanup.run_plan(path, plan["plan_id"], confirm_count=1, account=RaisingAccount(), exists=gone, audit=audit)
+        own = [f"at://{DID}/app.bsky.feed.post/1"]                                  # twin: the plan's own post passes the guard
+        plan.update(delete=[{"uri": u} for u in own], plan_id=social_cleanup.plan_id(own))
+        path.write_text(json.dumps(plan))
+        assert social_cleanup.run_plan(path, plan["plan_id"], confirm_count=1, account=RecordingAccount([{}]), exists=gone, audit=audit)["deleted"] == 1
+
+
+class TestAudit:
+    def test_every_deletion_result_is_an_audit_record_with_the_uri_and_no_text(self, tmp_path, audit):
+        path, pid, uris = plan_file(tmp_path, 3)
+        acct = RecordingAccount([{uris[1]: {"status": "failed", "error": "Could not locate record"}}])
+        social_cleanup.run_plan(path, pid, confirm_count=3, account=acct, exists=still_there, audit=audit)
+        assert [(r["uri"], r["status"], r.get("error"), r["plan_id"]) for r in audit_events(audit, "cleanup_delete")] == [
+            (uris[0], "deleted", None, pid), (uris[1], "failed", "Could not locate record", pid), (uris[2], "deleted", None, pid)]
+        [start] = audit_events(audit, "cleanup_start")
+        assert (start["plan_size"], start["todo"], start["already_done"]) == (3, 3, 0)
+        [end] = audit_events(audit, "cleanup_end")
+        assert (end["deleted"], end["failed"], end["remaining"], end["stopped"]) == (2, 1, 1, None)
+        assert [r["event"] for r in audit.records()] == ["cleanup_start", "cleanup_delete", "cleanup_delete", "cleanup_delete", "cleanup_end"]
+
+    def test_a_resumed_run_audits_only_the_new_deletions(self, tmp_path, audit):
+        path, pid, uris = plan_file(tmp_path, 3)
+        social_cleanup.run_plan(path, pid, confirm_count=3, account=RecordingAccount([{"_omit": uris[1:]}]), exists=gone, audit=audit)
+        social_cleanup.run_plan(path, pid, confirm_count=3, account=RecordingAccount([{}]), exists=gone, audit=audit)
+        assert [r["uri"] for r in audit_events(audit, "cleanup_delete")] == uris          # each URI once, in order, across both runs
+        assert [r["already_done"] for r in audit_events(audit, "cleanup_start")] == [0, 1]
+
+    def test_an_interrupted_run_still_writes_its_end_record(self, tmp_path, audit):
+        path, pid, uris = plan_file(tmp_path, 3)
+        partial = BatchInterrupted([{"uri": uris[0], "status": "deleted"}], "socket hang up")
+        social_cleanup.run_plan(path, pid, confirm_count=3, account=RecordingAccount([partial]), exists=gone, audit=audit)
+        [end] = audit_events(audit, "cleanup_end")
+        assert (end["deleted"], end["remaining"], end["stopped"].startswith("interrupted: socket hang up")) == (1, 2, True)
+
+    def test_an_unwritable_audit_log_stops_the_run_before_the_first_delete(self, tmp_path):
+        path, pid, _ = plan_file(tmp_path, 2)
+        blocked = tmp_path / "audit-is-a-dir"
+        blocked.mkdir()
+        with pytest.raises(OSError, match="audit-is-a-dir"):
+            social_cleanup.run_plan(path, pid, confirm_count=2, account=RaisingAccount(), exists=gone, audit=Audit(blocked))
+        assert not path.with_suffix(".ledger.jsonl").exists()
+
+
+class TestCli:
+    def run(self, monkeypatch, *argv):
+        monkeypatch.setattr("sys.argv", ["bio", *argv])
+        return cli.main()
+
+    def test_no_confirmation_is_a_dry_run_exit_0_and_prints_the_confirm_command(self, tmp_path, monkeypatch, capsys):
+        path, pid, _ = plan_file(tmp_path, 3)
+        assert self.run(monkeypatch, "social-cleanup-run", str(path)) == 0
+        out, err = capsys.readouterr()
+        assert json.loads(out)["would_delete"] == 3
+        assert err == f"dry run: nothing deleted. To delete: --confirm {pid} --confirm-count 3\n"
+
+    def test_a_wrong_count_exits_1_with_the_message(self, tmp_path, monkeypatch, capsys):
+        path, pid, _ = plan_file(tmp_path, 3)
+        assert self.run(monkeypatch, "social-cleanup-run", str(path), "--confirm", pid, "--confirm-count", "9") == 1
+        assert capsys.readouterr().err.startswith("bio social-cleanup-run: --confirm-count 9 does not match the plan, which deletes 3 posts")
 
 
 class TestRecordExists:

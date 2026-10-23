@@ -10,12 +10,14 @@
     3. export origin/<branch> to a temporary folder under D:\bio-cache\tmp (git archive; the prod tree is not touched), run
        scripts\check_test_honesty.py and the targeted social tests there, basetemp on D:
     4. git merge --ff-only in the prod tree
-    5. run `bio social-selfcheck` from the prod tree (PYTHONPATH=<prod>\src, the editable install may point elsewhere);
+    5. run `bio pipeline-selfcheck --deploy` (queue schema, worker module imports, -OpsDir import check) and `bio social-selfcheck` from the prod tree (PYTHONPATH=<prod>\src, the editable install may point elsewhere);
        `social-selfcheck --deploy` is accepted only with exit code 0 or 1 AND its final summary line `selfcheck: ok` / `selfcheck: warn`;
        exit code >= 2, a crash (a traceback has no summary line) or a missing line -> git reset --hard to the previous head and exit 1
     6. after an accepted selfcheck, copy scripts\windows\*.ps1 of the prod tree to -ScriptsDest (default F:\services\bio-social); the old single
        script run-social.ps1 is never overwritten (it is the rollback). register-social-tasks.ps1 is copied but NOT run: registering or switching the
-       scheduled tasks stays a manual step.
+       scheduled tasks stays a manual step. The copy runs on every accepted deploy, also when there is nothing to merge, so drift heals; each file is
+       logged as new / DRIFTED / unchanged, and a SHA-256 comparison afterwards logs a WARNING for any file that still differs (the same rule as the
+       script-drift check of `bio social-selfcheck`).
   -WhatIf prints the plan (it still fetches, which only updates origin/* refs) and changes nothing else.
 
   Windows PowerShell 5.1 and PowerShell 7 both run it.
@@ -35,6 +37,7 @@ param(
     [string]$ScriptsDest = 'F:\services\bio-social',      # where scripts\windows\*.ps1 are copied after a good deploy; '' copies nothing (use it for a rehearsal)
     [string]$LogFile = 'D:\bio-cache\logs\deploy.log',
     [double]$MinFreeGbC = 15,
+    [string]$OpsDir = $env:BIO_OPS_DIR,                    # the ops repo checkout (nas_pipeline.py); when set, pipeline-selfcheck also import-checks it
     [switch]$AllowOtherBranch,
     [switch]$SkipTests
 )
@@ -76,8 +79,25 @@ function Copy-SocialScripts([string]$From, [string]$To) {
     Log "scheduled-task scripts: $srcDir -> $To"
     foreach ($f in @(Get-ChildItem -LiteralPath $srcDir -Filter '*.ps1' -File)) {
         if ($f.Name -ieq 'run-social.ps1') { Log "  kept $($f.Name): the old single script is the rollback, never overwritten"; continue }
-        try { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $To $f.Name) -Force -ErrorAction Stop; Log "  copied $($f.Name)" }
+        $dest = Join-Path $To $f.Name
+        $state = if (-not (Test-Path -LiteralPath $dest)) { 'new' } elseif ((Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash) { 'DRIFTED' } else { 'unchanged' }
+        try { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force -ErrorAction Stop; Log "  copied $($f.Name) ($state)" }
         catch { Log "WARNING: could not copy $($f.Name): $($_.Exception.Message)" }
+    }
+    # Verify by hash what is there now: the same comparison `bio social-selfcheck` makes (check script-drift).
+    $bad = @(Compare-SocialScripts $From $To)
+    if ($bad.Count -gt 0) { Log ("WARNING: scheduled-task scripts still differ from the repo after the copy: " + ($bad -join ', ')) }
+    else { Log 'scheduled-task scripts verified: every copy matches the repo (sha256)' }
+}
+
+# Names of scripts\windows\*.ps1 of $From (run-social.ps1 excluded) that are missing or differ by SHA-256 in $To. Same rule as social_selfcheck.check_script_drift.
+function Compare-SocialScripts([string]$From, [string]$To) {
+    $srcDir = Join-Path $From 'scripts\windows'
+    foreach ($f in @(Get-ChildItem -LiteralPath $srcDir -Filter '*.ps1' -File)) {
+        if ($f.Name -ieq 'run-social.ps1') { continue }
+        $dest = Join-Path $To $f.Name
+        if (-not (Test-Path -LiteralPath $dest)) { "$($f.Name) (missing)"; continue }
+        if ((Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash) { "$($f.Name) (differs)" }
     }
 }
 
@@ -128,7 +148,13 @@ if ($plan) {
         }
         Log "  2. git -C $ProdDir merge --ff-only $Remote/$Branch   (prod live-reloads from here)"
         Log "  3. PYTHONPATH=$ProdDir\src $Python -m bio_automation.cli social-selfcheck --deploy   (exit >= 2, a crash or no summary line -> git reset --hard $prev, exit 1)"
+        Log "  3b. the same with pipeline-selfcheck --deploy$(if ($OpsDir) { " --ops-dir $OpsDir" })   (queue schema, worker imports; the same rollback)"
         Log "  4. copy $ProdDir\scripts\windows\*.ps1 to '$ScriptsDest' (never run-social.ps1)"
+    }
+    if ($ScriptsDest -and (Test-Path -LiteralPath $ScriptsDest)) {
+        $drift = @(Compare-SocialScripts $ProdDir $ScriptsDest)
+        if ($drift.Count -gt 0) { Log ("  scheduled-task scripts that differ from the prod tree now (a deploy would refresh them): " + ($drift -join ', ')) }
+        else { Log '  scheduled-task scripts: no drift from the prod tree' }
     }
     Log "log file: $LogFile"
     exit 0
@@ -179,31 +205,43 @@ if ($prev -ne $target) {
     Log "prod fast-forwarded to $target"
 }
 
-# 5. self-check from the prod tree; roll back unless it exits 0 or 1 AND prints its summary line
+# 5. self-checks from the prod tree; roll back unless each exits 0 or 1 AND prints its summary line
 # A python crash (an import error in the new code) exits 1 with a traceback: that is NOT "passed with warnings". Only rc 0/1 with the final
 # line `selfcheck: ok` (rc 0) or `selfcheck: warn` (rc 1) is accepted; rc >= 2, no rc, or a missing/mismatching summary line rolls back.
-$oldPath = $env:PYTHONPATH
-$env:PYTHONPATH = Join-Path $ProdDir 'src'
-$rc = $null
-$out = @()
-try {
-    Log 'social-selfcheck --deploy from the prod tree'
-    $out = @(& $Python -m bio_automation.cli social-selfcheck --deploy 2>&1 | ForEach-Object { "$_" })
-    $rc = $LASTEXITCODE
-    $out | ForEach-Object { Log "  $_" }
+# Two gates: social-selfcheck (the Bluesky run) and pipeline-selfcheck (the NAS pipeline workers: the modules they import, the queue schema).
+# $OpsDir (optional) also import-checks the ops repo's nas_pipeline.py against the deployed package, so a bad merge is rolled back here
+# instead of putting the live-reloading workers into a restart loop.
+function Invoke-Selfcheck([string]$Name, [string[]]$CliArgs) {
+    $oldPath = $env:PYTHONPATH
+    $env:PYTHONPATH = Join-Path $ProdDir 'src'
+    $rc = $null
+    $out = @()
+    try {
+        Log "$Name from the prod tree"
+        $out = @(& $Python -m bio_automation.cli @CliArgs 2>&1 | ForEach-Object { "$_" })
+        $rc = $LASTEXITCODE
+        $out | ForEach-Object { Log "  $_" }
+    }
+    catch { Log "$Name could not run: $($_.Exception.Message)" }
+    finally { $env:PYTHONPATH = $oldPath }
+    $summary = ''
+    $lines = @($out | Where-Object { $_.Trim() -ne '' })
+    if ($lines.Count -gt 0) { $summary = $lines[$lines.Count - 1].Trim() }
+    $accepted = $false
+    if ($rc -eq 0 -and $summary -eq 'selfcheck: ok') { $accepted = $true }
+    elseif ($rc -eq 1 -and $summary -eq 'selfcheck: warn') { $accepted = $true }
+    if (-not $accepted) { Log "$Name not accepted (exit $rc, final line '$summary'); a crash or a missing summary line counts as a failure" }
+    return [pscustomobject]@{ Accepted = $accepted; Rc = $rc }
 }
-catch { Log "selfcheck could not run: $($_.Exception.Message)" }
-finally { $env:PYTHONPATH = $oldPath }
 
-$summary = ''
-$lines = @($out | Where-Object { $_.Trim() -ne '' })
-if ($lines.Count -gt 0) { $summary = $lines[$lines.Count - 1].Trim() }
-$accepted = $false
-if ($rc -eq 0 -and $summary -eq 'selfcheck: ok') { $accepted = $true }
-elseif ($rc -eq 1 -and $summary -eq 'selfcheck: warn') { $accepted = $true }
+$pipelineArgs = @('pipeline-selfcheck', '--deploy')
+if ($OpsDir) { $pipelineArgs += @('--ops-dir', $OpsDir) }
+$social = Invoke-Selfcheck 'social-selfcheck --deploy' @('social-selfcheck', '--deploy')
+$pipeline = Invoke-Selfcheck 'pipeline-selfcheck --deploy' $pipelineArgs
+$accepted = $social.Accepted -and $pipeline.Accepted
+$rc = if ($social.Rc -eq 1 -or $pipeline.Rc -eq 1) { 1 } else { 0 }
 
 if (-not $accepted) {
-    Log "selfcheck not accepted (exit $rc, final line '$summary'); a crash or a missing summary line counts as a failure"
     if ($prev -ne $target) {
         $reset = Invoke-Git reset --hard $prev
         if ($LASTEXITCODE -ne 0) { Fail "ROLLBACK FAILED, prod is at $target and needs a hand: $($reset -join ' ')" }

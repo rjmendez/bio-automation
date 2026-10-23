@@ -26,3 +26,11 @@ build/
 *.sqlite3
 *.egg-info/
 tmp/
+
+# OAuth key material and sessions
+oauth/
+oauth-cleanup/
+*.jwk.json
+sessions.json
+states.json
+*.pem

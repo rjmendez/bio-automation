@@ -12,12 +12,12 @@ from pathlib import Path
 import pytest
 from test_social import NOW, drafted, rules_with, write_draft
 
-from bio_automation import cli, settings, social, social_hooks, social_selfcheck
+from bio_automation import cli, settings, social, social_hooks, social_selfcheck, sync_marker
 from bio_automation.social import Ledger
 from bio_automation.social_rules import Audit
 from bio_automation.social_selfcheck import FAIL, OK, WARN, GB
 
-NAMES = ["rules", "extensions", "themes", "ledger", "audit", "bluesky-session", "gallery-index", "taxonomy", "approved-drafts", "pending-quality", "pause",
+NAMES = ["rules", "extensions", "themes", "ledger", "audit", "secret-scan", "bluesky-session", "gallery-index", "qdrant-sync", "taxonomy", "approved-drafts", "pending-quality", "pause", "script-drift",
          "disk-system", "disk-data"]
 
 
@@ -38,12 +38,20 @@ class World:
                             ("SOCIAL_PAUSE_FILE", tmp_path / "PAUSED"), ("CACHE_DIR", tmp_path / "cache")):
             monkeypatch.setattr(settings, name, value)
         monkeypatch.setenv("BIO_SOCIAL_RULE_LOWER_QUALITY_PHOTOS", "200")        # the synthetic drafts have 300 px photos
+        self.scripts = tmp_path / "deployed-scripts"                 # a healthy deployed folder: byte copies of the repo's scheduled-task scripts
+        self.scripts.mkdir()
+        for f in social_selfcheck.repo_scripts_dir().glob("*.ps1"):
+            (self.scripts / f.name).write_bytes(f.read_bytes())
+        monkeypatch.setattr(settings, "SOCIAL_SCRIPTS_DIR", self.scripts)
         self.oauth.mkdir()
         (self.oauth / "account.json").write_text(json.dumps({"did": "did:plc:x", "handle": "me.example"}), encoding="utf-8")
         self.set_index({"a/1.jpg": 1, "a/2.jpg": 2, "a/3.jpg": 3}, age_days=1)
         self.taxonomy.write_text(json.dumps({"1": {}, "2": {}}), encoding="utf-8")
         drafted_ledger, _ = drafted(tmp_path, 2)
         self.ledger = drafted_ledger
+        monkeypatch.setattr(settings, "QDRANT_SYNC_MARKER", tmp_path / "qdrant_sync_marker.json")
+        for sync in sync_marker.NAMES:
+            sync_marker.record(sync, now=NOW)
 
     def set_index(self, files, age_days):
         self.index.write_text(json.dumps({"files": files, "unresolved": {}}), encoding="utf-8")
@@ -254,6 +262,24 @@ class TestAuditSessionPause:
         (world.tmp / "PAUSED").write_text("", encoding="utf-8")
         c = world.run()["pause"]
         assert c.level == OK and c.message == f"info: posting is PAUSED ({world.tmp / 'PAUSED'} exists)"
+
+
+    def test_a_remote_pause_marker_is_reported_and_an_unreachable_folder_or_a_disabled_rule_warns(self, world):
+        remote = world.tmp / "synced" / "PAUSE-BIO"
+        world.mp.setattr(settings, "SOCIAL_PAUSE_SYNC_FILE", remote)
+        c = world.run()["pause"]
+        assert (c.level, c.message) == (WARN, f"the synced pause folder {remote.parent} is not reachable, so a remote pause cannot be seen")
+        remote.parent.mkdir()
+        assert world.run()["pause"].message == "info: posting is not paused"                # twin: reachable folder, no marker
+        remote.write_text("", encoding="utf-8")
+        c = world.run()["pause"]
+        assert (c.level, c.message) == (OK, f"info: posting is PAUSED ({remote} exists)")
+
+    def test_a_pause_marker_with_the_rule_off_warns_that_nothing_is_paused(self, world):
+        (world.tmp / "PAUSED").write_text("", encoding="utf-8")
+        world.mp.setenv("BIO_SOCIAL_RULE_PAUSE_SWITCH", "off")
+        c = world.run()["pause"]
+        assert c.level == WARN and c.message == f"a pause marker exists ({world.tmp / 'PAUSED'}) but the rule pause_switch is OFF, so posting is NOT paused"
 
 
 # ----------------------------------------------------------------------------------------------------------------------- caches
@@ -595,7 +621,7 @@ class TestDeployMode:
     def test_the_deploy_checks_are_the_normal_ones_plus_cli_and_the_two_file_checks(self, world):
         (normal, _), (deploy, _) = self.both(world)
         assert list(normal) == NAMES
-        assert list(deploy) == ["rules", "extensions", "cli", "themes", "rules-file", "themes-file", *NAMES[3:]]
+        assert list(deploy) == ["rules", "extensions", "cli", "themes", "rules-file", "themes-file", *[n for n in NAMES[3:] if n != "script-drift"]]
 
     def test_the_command_prints_the_summary_line_last_and_exits_1_for_environmental_trouble(self, world, plenty_of_disk, monkeypatch, capsys):
         (world.oauth / "account.json").unlink()
@@ -609,3 +635,89 @@ class TestDeployMode:
     def test_deploy_with_json_still_ends_with_the_summary_line(self, world, plenty_of_disk, monkeypatch, capsys):
         code, out = command(monkeypatch, capsys, "--deploy", "--json")
         assert (code, out.out.splitlines()[-1]) == (0, "selfcheck: ok")
+
+
+# ----------------------------------------------------------------------------------------------------------------------- script drift
+
+class TestScriptDrift:
+    def repo_names(self):
+        return sorted(f.name for f in social_selfcheck.repo_scripts_dir().glob("*.ps1"))
+
+    def test_the_repo_has_the_scheduled_task_scripts_the_check_compares(self):
+        assert self.repo_names() == ["notify-to-inbox.ps1", "register-social-tasks.ps1", "run-qdrant-sync.ps1", "run-social-post.ps1", "run-social-prep.ps1", "run-social-watch.ps1"]
+
+    def test_identical_copies_are_ok_and_the_message_counts_them(self, world):
+        c = world.run()["script-drift"]
+        assert (c.level, c.message) == (OK, f"6 scheduled-task scripts in {world.scripts} match the repo (sha256)")
+
+    def test_a_changed_copy_warns_and_names_the_file(self, world):
+        with open(world.scripts / "run-social-post.ps1", "ab") as f:
+            f.write(b"# local edit\n")
+        c = world.run()["script-drift"]
+        assert c.level == WARN
+        assert c.message == (f"scheduled-task scripts drifted (differ from the repo: run-social-post.ps1); run scripts\\deploy_prod.ps1 or copy them")
+
+    def test_a_missing_copy_warns_and_names_the_file(self, world):
+        (world.scripts / "register-social-tasks.ps1").unlink()
+        c = world.run()["script-drift"]
+        assert c.level == WARN
+        assert c.message == (f"scheduled-task scripts drifted (missing in {world.scripts}: register-social-tasks.ps1); run scripts\\deploy_prod.ps1 or copy them")
+
+    def test_missing_and_changed_are_both_reported(self, world):
+        (world.scripts / "notify-to-inbox.ps1").unlink()
+        (world.scripts / "run-social-watch.ps1").write_bytes(b"x")
+        c = world.run()["script-drift"]
+        assert c.message.startswith(f"scheduled-task scripts drifted (missing in {world.scripts}: notify-to-inbox.ps1; differ from the repo: run-social-watch.ps1)")
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="exclusive file handles are a Windows thing; the check's OSError branch is the same everywhere")
+    def test_a_locked_copy_warns_naming_the_file_instead_of_crashing_and_the_unlocked_twin_is_ok(self, world):
+        import ctypes
+        from ctypes import wintypes
+        create = ctypes.windll.kernel32.CreateFileW
+        create.restype = wintypes.HANDLE
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        handle = create(str(world.scripts / "run-social-post.ps1"), 0x80000000, 0, None, 3, 0, None)       # GENERIC_READ, share mode 0, OPEN_EXISTING
+        assert handle not in (None, wintypes.HANDLE(-1).value)
+        try:
+            c = world.run()["script-drift"]
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+        assert (c.level, c.message) == (WARN, "scheduled-task scripts drifted (unreadable (locked or access denied): run-social-post.ps1); run scripts\\deploy_prod.ps1 or copy them")
+        assert world.run()["script-drift"].level == OK
+
+    def test_the_rollback_script_and_unknown_files_are_ignored(self, world):
+        (world.scripts / "run-social.ps1").write_text("the old single script, edited by hand", encoding="utf-8")
+        (world.scripts / "other.ps1").write_text("not ours", encoding="utf-8")
+        assert world.run()["script-drift"].level == OK
+
+    def test_a_repo_copy_named_run_social_is_not_demanded_in_the_deployed_folder(self, tmp_path):
+        repo, dst = tmp_path / "repo", tmp_path / "dst"
+        repo.mkdir(), dst.mkdir()
+        (repo / "run-social.ps1").write_text("a", encoding="utf-8")
+        (repo / "a.ps1").write_text("b", encoding="utf-8")
+        (dst / "a.ps1").write_text("b", encoding="utf-8")
+        assert social_selfcheck.check_script_drift(repo, dst) == social_selfcheck.Check("script-drift", OK, f"1 scheduled-task scripts in {dst} match the repo (sha256)")
+
+    def test_a_missing_deployed_folder_warns(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.ps1").write_text("b", encoding="utf-8")
+        c = social_selfcheck.check_script_drift(repo, tmp_path / "nowhere")
+        assert (c.level, c.message) == (WARN, f"scheduled-task script folder {tmp_path / 'nowhere'} does not exist (1 repo scripts not deployed)")
+
+    def test_a_missing_repo_folder_warns(self, tmp_path):
+        c = social_selfcheck.check_script_drift(tmp_path / "norepo", tmp_path)
+        assert c.level == WARN and c.message == f"cannot compare the scheduled-task scripts: no {tmp_path / 'norepo'} next to this package"
+
+    def test_drift_is_never_a_failure_so_the_exit_code_is_1(self, world):
+        (world.scripts / "run-social-post.ps1").write_bytes(b"x")
+        out = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW,
+                                         audit=Audit(world.tmp / "sc-audit.jsonl"))
+        assert (out["level"], out["exit"]) == ("warn", 1)
+        assert [c["name"] for c in out["checks"] if c["level"] != OK] == ["script-drift"]
+
+    def test_deploy_mode_does_not_run_the_check(self, world):
+        (world.scripts / "run-social-post.ps1").write_bytes(b"x")
+        out = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW, deploy=True,
+                                         audit=Audit(world.tmp / "sc-audit.jsonl"))
+        assert "script-drift" not in [c["name"] for c in out["checks"]]

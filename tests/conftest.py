@@ -37,11 +37,14 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "INAT_SNAPSHOT", tmp_path / "no-prints" / "inat_observations.json")      # nor the owner's real iNat snapshot and photos
     monkeypatch.setattr(settings, "INAT_PHOTO_CACHE", tmp_path / "no-prints" / "inat_photos")
     monkeypatch.setattr(settings, "SOCIAL_PAUSE_FILE", tmp_path / "no-prints" / "PAUSED")                   # nor the pause switch, alerts, digests, backups, engagement
+    monkeypatch.setattr(settings, "SOCIAL_PAUSE_SYNC_FILE", None)                                            # the remote pause marker is off unless a test sets it
     monkeypatch.setattr(settings, "SOCIAL_ALERTS_LOG", tmp_path / "no-prints" / "alerts.jsonl")
     monkeypatch.setattr(settings, "SOCIAL_ALERT_COMMAND", "")
     monkeypatch.setattr(settings, "SOCIAL_DIGEST_DIR", tmp_path / "no-prints" / "digest")
     monkeypatch.setattr(settings, "SOCIAL_INTEGRITY_ACK_FILE", tmp_path / "no-prints" / "integrity_ack.json")
     monkeypatch.setattr(settings, "SOCIAL_BACKUP_DIR", tmp_path / "no-prints" / "backups")
+    monkeypatch.setattr(settings, "SOCIAL_BACKUP_OFFSITE_DIR", "")
+    monkeypatch.setattr(settings, "QDRANT_SYNC_MARKER", tmp_path / "no-prints" / "qdrant_sync_marker.json")
     monkeypatch.setattr(settings, "SOCIAL_ENGAGEMENT_LOG", tmp_path / "no-prints" / "engagement.jsonl")
     monkeypatch.setattr(settings, "GALLERY_TITLE_CACHE", tmp_path / "no-prints" / "titles_cache.json")
     monkeypatch.setattr(settings, "GALLERY_OBS_INDEX", tmp_path / "no-prints" / "gallery_obs_index.json")
@@ -79,3 +82,12 @@ def library_callers_do_not_load_the_real_gates(request, monkeypatch):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_gates: the test runs the library entry points with the real social extensions loaded")
+
+
+@pytest.fixture(autouse=True)
+def private_scratch_and_disk_guard_log(tmp_path, monkeypatch):
+    """No test writes scratch files or disk-guard events to the machine-wide folders on D: (settings.SCRATCH_DIR, settings.DISK_GUARD_LOG)."""
+    from bio_automation import settings
+
+    monkeypatch.setattr(settings, "SCRATCH_DIR", tmp_path / "scratch")
+    monkeypatch.setattr(settings, "DISK_GUARD_LOG", tmp_path / "state" / "disk_guard.jsonl")
