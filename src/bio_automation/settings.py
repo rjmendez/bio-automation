@@ -40,6 +40,10 @@ SYNC_DIR = env_path("BIO_SYNC_DIR", r"D:\nikon_stack_sync")             # where 
 
 # --- state
 QUEUE_DB = env_path("BIO_QUEUE_DB", CACHE_DIR / "state" / "queue.sqlite3")
+# the NAS pipeline workers (nas_pipeline.py in the ops repo): their records, logs (logs/), heartbeats (heartbeats/) and crash-loop state
+NAS_PIPELINE_DIR = env_path("BIO_NAS_PIPELINE_DIR", RESULTS_DIR / "nas_pipeline")
+# retries: a message that fails (or whose worker dies) is delivered at most this many times, then dead-lettered (queue.py)
+QUEUE_MAX_ATTEMPTS = int(env("BIO_QUEUE_MAX_ATTEMPTS", 4))
 STOCK_FLOOR = env_path("BIO_STOCK_FLOOR", PHOTOS_CACHE / "stock_floor.json")
 INAT_PHOTO_CACHE = env_path("BIO_INAT_PHOTO_CACHE", PHOTOS_CACHE / "inat_photos")
 

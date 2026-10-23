@@ -639,3 +639,20 @@ class TestMigrationFromVersion3:
             assert q.counts() == {"failed": 1} and q.dead_count() == 0
             assert q.requeue_failed(error_contains="boom") == 1
             assert q.claim(["t"], worker_id="w", max_attempts=5).attempts == 3
+
+
+class TestClaimsAndExpire:
+    def test_claims_lists_who_holds_what(self, q):
+        mid = q.publish("t", {})
+        q.claim(["t"], worker_id="nas-tag-42", lease_s=30.0)
+        q.publish("t", {})
+        assert q.claims() == [{"id": mid, "topic": "t", "claimed_by": "nas-tag-42", "claimed_at": 1000.0, "lease_until": 1030.0, "attempts": 1}]
+
+    def test_expire_claim_frees_the_message_for_the_reaper_but_only_for_its_holder(self, q):
+        mid = q.publish("t", {})
+        q.claim(["t"], worker_id="nas-tag-42", lease_s=3600.0)
+        assert q.expire_claim(mid, "someone-else") is False
+        assert q.reap_expired(max_attempts=3) == []
+        assert q.expire_claim(mid, "nas-tag-42") is True
+        assert q.reap_expired(max_attempts=3) == [(mid, "requeued")]
+        assert q.claim(["t"], worker_id="w2").attempts == 2

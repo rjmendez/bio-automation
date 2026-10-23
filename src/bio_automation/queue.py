@@ -63,7 +63,7 @@ MIGRATIONS = (
     # the status CHECK of `messages` cannot be altered in place and workers on older code still read that table.
     """
     ALTER TABLE messages ADD COLUMN not_before REAL;
-    CREATE TABLE dead_letter (
+    CREATE TABLE IF NOT EXISTS dead_letter (
         id INTEGER PRIMARY KEY,
         topic TEXT NOT NULL,
         payload TEXT NOT NULL,
@@ -107,10 +107,20 @@ class Message:
 
 
 class Queue:
-    def __init__(self, path: Path | str = DEFAULT_DB, clock: Callable[[], float] = time.time):
+    def __init__(self, path: Path | str = DEFAULT_DB, clock: Callable[[], float] = time.time, *, readonly: bool = False):
+        """readonly: open an existing database for reading only -- no migration, no directory created, no pragma written (a selfcheck must not
+        change the schema of the database the workers use). introspection works on any schema version; everything that writes raises."""
         self.path = Path(path)
         self._clock = clock
         self._lock = threading.RLock()
+        self.readonly = readonly
+        if readonly:
+            if not self.path.is_file():
+                raise QueueError(f"queue database {self.path} does not exist")
+            self._db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False, isolation_level=None)
+            self._db.row_factory = sqlite3.Row
+            self._db.execute("PRAGMA busy_timeout=5000")
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
@@ -143,7 +153,12 @@ class Queue:
                 try:
                     for statement in MIGRATIONS[version].split(";"):
                         if statement.strip():
-                            self._db.execute(statement)
+                            try:
+                                self._db.execute(statement)
+                            except sqlite3.OperationalError as e:
+                                # a database taken back to an older user_version (a rollback: `PRAGMA user_version=3`) still has the column
+                                if "duplicate column name" not in str(e):
+                                    raise
                     self._db.execute(f"PRAGMA user_version={version + 1}")
                     self._db.execute("COMMIT")
                 except BaseException:
@@ -302,6 +317,19 @@ class Queue:
                 raise
         return out
 
+    def claims(self) -> list[dict[str, Any]]:
+        """Every claimed message: id, topic, claimed_by, claimed_at, lease_until, attempts -- what is 'running' right now, by whom."""
+        with self._lock:
+            rows = self._db.execute("SELECT id, topic, claimed_by, claimed_at, lease_until, attempts FROM messages WHERE status='claimed' ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def expire_claim(self, message_id: int, worker_id: str) -> bool:
+        """End the lease of a claim held by `worker_id` now (its process is gone), so reap_expired()/claim() hand the message on without waiting out
+        the rest of the lease. False when that worker no longer holds it."""
+        with self._lock:
+            return self._db.execute("UPDATE messages SET lease_until=? WHERE id=? AND status='claimed' AND claimed_by=?",
+                                    (self._clock() - 1.0, message_id, worker_id)).rowcount == 1
+
     def requeue_dead(self, topic: str | None = None, *, reason_contains: str | None = None) -> int:
         """Move dead-lettered messages (in `topic`, whose reason or last error contains `reason_contains`, case-insensitive) back to pending
         with their attempts reset to 0, under their old ids. Returns how many."""
@@ -400,12 +428,15 @@ class Queue:
         expired, and the age in seconds of the oldest claimed message and of the oldest pending message that is claimable now (None when none)."""
         now = self._clock()
         with self._lock:
+            migrated = self.schema_version() >= len(MIGRATIONS)          # a read-only handle may see a database no worker has migrated yet
             oldest_claimed = self._db.execute("SELECT MIN(claimed_at) FROM messages WHERE status='claimed'").fetchone()[0]
-            oldest_pending = self._db.execute("SELECT MIN(created) FROM messages WHERE status='pending' AND (not_before IS NULL OR not_before <= ?)",
-                                              (now,)).fetchone()[0]
-            retrying = self._db.execute("SELECT COUNT(*) FROM messages WHERE status='pending' AND not_before > ?", (now,)).fetchone()[0]
+            oldest_pending = self._db.execute(
+                "SELECT MIN(created) FROM messages WHERE status='pending'" + (" AND (not_before IS NULL OR not_before <= ?)" if migrated else ""),
+                (now,) if migrated else ()).fetchone()[0]
+            retrying = self._db.execute("SELECT COUNT(*) FROM messages WHERE status='pending' AND not_before > ?", (now,)).fetchone()[0] if migrated else 0
             expired = self._db.execute("SELECT COUNT(*) FROM messages WHERE status='claimed' AND lease_until < ?", (now,)).fetchone()[0]
-        return {"counts": self.counts(), "dead": self.dead_count(), "retrying": retrying, "expired_claims": expired,
+            dead = self.dead_count() if migrated else 0
+        return {"counts": self.counts(), "dead": dead, "retrying": retrying, "expired_claims": expired,
                 "oldest_claimed_age_s": None if oldest_claimed is None else round(now - oldest_claimed, 1),
                 "oldest_pending_age_s": None if oldest_pending is None else round(now - oldest_pending, 1)}
 

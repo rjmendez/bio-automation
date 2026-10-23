@@ -10,7 +10,7 @@
     3. export origin/<branch> to a temporary folder under D:\bio-cache\tmp (git archive; the prod tree is not touched), run
        scripts\check_test_honesty.py and the targeted social tests there, basetemp on D:
     4. git merge --ff-only in the prod tree
-    5. run `bio social-selfcheck` from the prod tree (PYTHONPATH=<prod>\src, the editable install may point elsewhere);
+    5. run `bio pipeline-selfcheck --deploy` (queue schema, worker module imports, -OpsDir import check) and `bio social-selfcheck` from the prod tree (PYTHONPATH=<prod>\src, the editable install may point elsewhere);
        `social-selfcheck --deploy` is accepted only with exit code 0 or 1 AND its final summary line `selfcheck: ok` / `selfcheck: warn`;
        exit code >= 2, a crash (a traceback has no summary line) or a missing line -> git reset --hard to the previous head and exit 1
     6. after an accepted selfcheck, copy scripts\windows\*.ps1 of the prod tree to -ScriptsDest (default F:\services\bio-social); the old single
@@ -35,6 +35,7 @@ param(
     [string]$ScriptsDest = 'F:\services\bio-social',      # where scripts\windows\*.ps1 are copied after a good deploy; '' copies nothing (use it for a rehearsal)
     [string]$LogFile = 'D:\bio-cache\logs\deploy.log',
     [double]$MinFreeGbC = 15,
+    [string]$OpsDir = $env:BIO_OPS_DIR,                    # the ops repo checkout (nas_pipeline.py); when set, pipeline-selfcheck also import-checks it
     [switch]$AllowOtherBranch,
     [switch]$SkipTests
 )
@@ -128,6 +129,7 @@ if ($plan) {
         }
         Log "  2. git -C $ProdDir merge --ff-only $Remote/$Branch   (prod live-reloads from here)"
         Log "  3. PYTHONPATH=$ProdDir\src $Python -m bio_automation.cli social-selfcheck --deploy   (exit >= 2, a crash or no summary line -> git reset --hard $prev, exit 1)"
+        Log "  3b. the same with pipeline-selfcheck --deploy$(if ($OpsDir) { " --ops-dir $OpsDir" })   (queue schema, worker imports; the same rollback)"
         Log "  4. copy $ProdDir\scripts\windows\*.ps1 to '$ScriptsDest' (never run-social.ps1)"
     }
     Log "log file: $LogFile"
@@ -179,31 +181,43 @@ if ($prev -ne $target) {
     Log "prod fast-forwarded to $target"
 }
 
-# 5. self-check from the prod tree; roll back unless it exits 0 or 1 AND prints its summary line
+# 5. self-checks from the prod tree; roll back unless each exits 0 or 1 AND prints its summary line
 # A python crash (an import error in the new code) exits 1 with a traceback: that is NOT "passed with warnings". Only rc 0/1 with the final
 # line `selfcheck: ok` (rc 0) or `selfcheck: warn` (rc 1) is accepted; rc >= 2, no rc, or a missing/mismatching summary line rolls back.
-$oldPath = $env:PYTHONPATH
-$env:PYTHONPATH = Join-Path $ProdDir 'src'
-$rc = $null
-$out = @()
-try {
-    Log 'social-selfcheck --deploy from the prod tree'
-    $out = @(& $Python -m bio_automation.cli social-selfcheck --deploy 2>&1 | ForEach-Object { "$_" })
-    $rc = $LASTEXITCODE
-    $out | ForEach-Object { Log "  $_" }
+# Two gates: social-selfcheck (the Bluesky run) and pipeline-selfcheck (the NAS pipeline workers: the modules they import, the queue schema).
+# $OpsDir (optional) also import-checks the ops repo's nas_pipeline.py against the deployed package, so a bad merge is rolled back here
+# instead of putting the live-reloading workers into a restart loop.
+function Invoke-Selfcheck([string]$Name, [string[]]$CliArgs) {
+    $oldPath = $env:PYTHONPATH
+    $env:PYTHONPATH = Join-Path $ProdDir 'src'
+    $rc = $null
+    $out = @()
+    try {
+        Log "$Name from the prod tree"
+        $out = @(& $Python -m bio_automation.cli @CliArgs 2>&1 | ForEach-Object { "$_" })
+        $rc = $LASTEXITCODE
+        $out | ForEach-Object { Log "  $_" }
+    }
+    catch { Log "$Name could not run: $($_.Exception.Message)" }
+    finally { $env:PYTHONPATH = $oldPath }
+    $summary = ''
+    $lines = @($out | Where-Object { $_.Trim() -ne '' })
+    if ($lines.Count -gt 0) { $summary = $lines[$lines.Count - 1].Trim() }
+    $accepted = $false
+    if ($rc -eq 0 -and $summary -eq 'selfcheck: ok') { $accepted = $true }
+    elseif ($rc -eq 1 -and $summary -eq 'selfcheck: warn') { $accepted = $true }
+    if (-not $accepted) { Log "$Name not accepted (exit $rc, final line '$summary'); a crash or a missing summary line counts as a failure" }
+    return [pscustomobject]@{ Accepted = $accepted; Rc = $rc }
 }
-catch { Log "selfcheck could not run: $($_.Exception.Message)" }
-finally { $env:PYTHONPATH = $oldPath }
 
-$summary = ''
-$lines = @($out | Where-Object { $_.Trim() -ne '' })
-if ($lines.Count -gt 0) { $summary = $lines[$lines.Count - 1].Trim() }
-$accepted = $false
-if ($rc -eq 0 -and $summary -eq 'selfcheck: ok') { $accepted = $true }
-elseif ($rc -eq 1 -and $summary -eq 'selfcheck: warn') { $accepted = $true }
+$pipelineArgs = @('pipeline-selfcheck', '--deploy')
+if ($OpsDir) { $pipelineArgs += @('--ops-dir', $OpsDir) }
+$social = Invoke-Selfcheck 'social-selfcheck --deploy' @('social-selfcheck', '--deploy')
+$pipeline = Invoke-Selfcheck 'pipeline-selfcheck --deploy' $pipelineArgs
+$accepted = $social.Accepted -and $pipeline.Accepted
+$rc = if ($social.Rc -eq 1 -or $pipeline.Rc -eq 1) { 1 } else { 0 }
 
 if (-not $accepted) {
-    Log "selfcheck not accepted (exit $rc, final line '$summary'); a crash or a missing summary line counts as a failure"
     if ($prev -ne $target) {
         $reset = Invoke-Git reset --hard $prev
         if ($LASTEXITCODE -ne 0) { Fail "ROLLBACK FAILED, prod is at $target and needs a hand: $($reset -join ' ')" }
