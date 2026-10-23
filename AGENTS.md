@@ -205,6 +205,8 @@ swallowed-assert):
 Its allowlist (`scripts/test_honesty_allowlist.toml`) starts empty and should stay
 that way — fix the test rather than adding an entry.
 
+**Before merging** (until the GitHub `tests-private` job runs, which needs the `BSKY_OAUTH_READ_TOKEN` secret): `powershell -File scripts\premerge.ps1` runs the honesty check and the full suite with the basetemp on D:. A green `tests` job alone is the public subset only.
+
 ## Running tests
 
 `pytest` from the repo root. `tests/test_preclean_live.py` is real and unmocked
