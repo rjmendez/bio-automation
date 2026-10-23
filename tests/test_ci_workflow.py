@@ -129,7 +129,12 @@ class TestSummaryJob:
 
     def test_the_summary_script_behaves_for_each_result(self, tmp_path):
         import os, shutil, subprocess
-        bash = shutil.which("bash")
+        # System32\bash.exe is the WSL launcher, which does not see these env vars or Windows paths; a real bash is Git's.
+        found = [p for p in (shutil.which("bash"), r"C:\Program Files\Git\bin\bash.exe", "/bin/bash")
+                 if p and os.path.exists(p) and "system32" not in p.lower()]
+        if not found:
+            pytest.skip("no POSIX bash on this machine")
+        bash = found[0]
         (step,) = load()["jobs"]["summary"]["steps"]
         outcomes = {}
         for public, private in (("success", "success"), ("success", "skipped"), ("failure", "skipped"), ("success", "failure")):
