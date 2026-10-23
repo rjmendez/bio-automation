@@ -247,6 +247,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_social_draft.add_argument("--date", default=None, help="draft for this day's month (YYYY-MM-DD; default today)")
     p_social_draft.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
     p_social_draft.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_social_draft.add_argument("--no-themes", action="store_true", help="skip the themed posts (BIO_SOCIAL_THEMES=0 does the same)")
+
+    p_rules = sub.add_parser(
+        "social-rules",
+        help="List every posting rule with its state (on/off, its number) and where the state came from. All of them are optional: "
+             "--write-defaults writes the TOML file to edit (BIO_SOCIAL_RULES_FILE); BIO_SOCIAL_RULE_<NAME>=on|off|<number> overrides one.")
+    p_rules.add_argument("--write-defaults", action="store_true", help="write the current rules to the rules file (refuses to overwrite)")
+
+    p_audit = sub.add_parser("social-audit", help="Show the audit log of posting decisions (rules in force, what was chosen or skipped and why).")
+    p_audit.add_argument("--tail", type=int, default=20, help="the last N records (default 20)")
+    p_audit.add_argument("--run", default=None, help="only this run id")
+    p_audit.add_argument("--event", default=None, help="only this event (post_decision, post_skipped, posted, draft_run, drafted, ...)")
+
+    p_themes = sub.add_parser(
+        "social-themes",
+        help="Show the weekday theme calendar (Mushroom Monday ...) with how many observations each has left, and what the next days would "
+             "post. --write-defaults writes the built-in calendar as the TOML file you can edit (BIO_SOCIAL_THEMES_FILE).")
+    p_themes.add_argument("--days", type=int, default=7, help="plan this many days ahead (default 7)")
+    p_themes.add_argument("--date", default=None, help="start the plan on this day (YYYY-MM-DD; default today)")
+    p_themes.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_themes.add_argument("--write-defaults", action="store_true", help="write the built-in calendar to the themes file (refuses to overwrite)")
 
     p_social_list = sub.add_parser("social-list", help="List drafts and their state (drafted/approved/rejected/posting/posted/failed).")
     p_social_list.add_argument("--state", default=None)
@@ -687,12 +708,112 @@ def cmd_social_draft(args: argparse.Namespace) -> int:
     import datetime as dt
     import json
 
-    from .social import Ledger, draft_month, load_index
+    from .social import Ledger, draft_month, load_index, local_candidates
+    from .social_rules import load_rules
 
     today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
-    report = draft_month(load_index(Path(args.index)), Ledger(), today=today, gallery_dir=Path(args.gallery_dir),
-                         drafts_dir=settings.SOCIAL_DIR / "drafts", keep_pending=args.keep_pending)
+    index, ledger, rules = load_index(Path(args.index)), Ledger(), load_rules()
+    drafts_dir = settings.SOCIAL_DIR / "drafts"
+    local = local_candidates() if rules.on("lower_quality_photos") else {}
+    if rules.on("themes") and not args.no_themes:                     # themed posts first: their observations are then off the table for the rest
+        report = {"themes": _draft_themes(index, ledger, today, Path(args.gallery_dir), drafts_dir, rules, local)}
+        report.update(draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir,
+                                  keep_pending=args.keep_pending, rules=rules, local=local))
+    else:
+        report = draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir, keep_pending=args.keep_pending,
+                             rules=rules, local=local)
+    report["local_photos"] = len(local)
     print(json.dumps(report, indent=2))
+    return 0
+
+
+def _taxonomy(index: dict, local: dict | None = None) -> dict:
+    """{obs id: taxonomy entry} for the indexed observations and the local-photo ones: the cache of settings.OBS_TAXONOMY_FILE, topped up from iNat."""
+    from . import inat, themes
+
+    cache = inat.TaxonLineageCache(settings.INAT_TAXON_CACHE, settings.INAT_TAXON_TTL_S)
+    ids = {int(o) for o in index["files"].values()} | set(local or {})
+    tax, _ = themes.load_taxonomy(ids, settings.OBS_TAXONOMY_FILE, fetch=inat.fetch_inat_observations, lineage_cache=cache)
+    return tax
+
+
+def _draft_themes(index: dict, ledger, today, gallery_dir: Path, drafts_dir: Path, rules, local: dict) -> dict:
+    from . import themes
+    from .social import draft_themes
+
+    return draft_themes(index, ledger, _taxonomy(index, local if rules.on("lower_quality_photos") else None), themes.load_themes(), today=today,
+                        days_ahead=settings.SOCIAL_THEME_DAYS_AHEAD, gallery_dir=gallery_dir, drafts_dir=drafts_dir, rules=rules, local=local)
+
+
+def cmd_social_rules(args: argparse.Namespace) -> int:
+    from .social import SocialError
+    from .social_rules import RULES, load_rules, rules_toml
+
+    path = settings.SOCIAL_RULES_FILE
+    if args.write_defaults:
+        if path.exists():
+            raise SocialError(f"{path} exists: edit it, or move it away first")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rules_toml(), encoding="utf-8")
+        print(f"wrote {path}")
+        return 0
+    rules = load_rules()
+    print(f"posting rules ({'file ' + str(path) if path.is_file() else 'no file'}; BIO_SOCIAL_RULE_<NAME>=on|off|<number> overrides):")
+    for r in RULES:
+        s = rules.state(r.name)
+        val = f"={s.value}" if s.value is not None else ""
+        print(f"  {r.name:24} {'ON ' if s.enabled else 'off'}{val:4} [{s.source:8}] {r.description}")
+    return 0
+
+
+def cmd_social_audit(args: argparse.Namespace) -> int:
+    import json
+
+    from .social_rules import Audit
+
+    audit = Audit()
+    recs = [r for r in audit.records() if (not args.run or r["run"] == args.run) and (not args.event or r["event"] == args.event)]
+    for r in recs[-args.tail:]:
+        print(json.dumps(r, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def cmd_social_themes(args: argparse.Namespace) -> int:
+    import datetime as dt
+
+    from . import themes
+    from .social import Ledger, _obs_of, _taken, load_index, load_prints, local_candidates, theme_candidates
+    from .social_rules import load_rules
+
+    path = settings.SOCIAL_THEMES_FILE
+    if args.write_defaults:
+        from .social import SocialError
+
+        if path.exists():
+            raise SocialError(f"{path} exists: edit it, or move it away first")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(themes.themes_toml(), encoding="utf-8")
+        print(f"wrote {path}")
+        return 0
+    today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
+    index = load_index(Path(args.index))
+    listed = themes.load_themes()
+    rules = load_rules()
+    local = local_candidates() if rules.on("lower_quality_photos") else {}
+    candidates, _ = theme_candidates(index, _taxonomy(index, local), load_prints(), local)
+    month = f"{today.year}-{today.month:02d}"
+    taken = {o for v in Ledger().drafts().values() if _taken(v, month, today, rules) for o in _obs_of(v)}
+    print(f"calendar ({'file ' + str(path) if path.is_file() else 'built-in'}):")
+    for t in listed:
+        left = [o for o, c in candidates.items() if o not in taken and c["entry"].get("grade") != "casual" and themes.matches(t, c["entry"])]
+        print(f"  {themes.WEEKDAYS[t.weekday]:9} {t.name:22} {'on ' if t.enabled else 'OFF'} {len(left):5} observations left  #{' #'.join(t.tags)}")
+    print(f"\nnext {args.days} days:")
+    for k in range(args.days):
+        day = today + dt.timedelta(days=k)
+        t = themes.theme_for(day, listed)
+        ids = themes.pick_group(t, candidates, day=day, taken=taken, reserve=0) if t else []
+        names = ", ".join(((candidates[o]["entry"]["taxon"].get("common_name") or candidates[o]["entry"]["taxon"]["name"]) for o in ids))
+        print(f"  {day} {themes.WEEKDAYS[day.weekday()][:3]}  " + (f"{t.name}: {names}" if ids else (f"{t.name}: not enough observations" if t else "usual single observation")))
     return 0
 
 
@@ -866,7 +987,7 @@ def cmd_darkroom_sync(args: argparse.Namespace) -> int:
     return 0
 
 
-SOCIAL_COMMANDS = {"darkroom-sync": cmd_darkroom_sync, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+SOCIAL_COMMANDS = {"darkroom-sync": cmd_darkroom_sync, "social-themes": cmd_social_themes, "social-rules": cmd_social_rules, "social-audit": cmd_social_audit, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
                    "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,
@@ -974,10 +1095,12 @@ def main() -> int:
     if args.command.startswith("social-") or args.command == "darkroom-sync":
         from .darkroom import DarkroomError
         from .social import SocialError
+        from .social_rules import RulesError
+        from .themes import ThemeError
 
         try:
             return SOCIAL_COMMANDS[args.command](args)
-        except (SocialError, DarkroomError) as e:          # the message says what to do; a traceback would only bury it
+        except (SocialError, DarkroomError, ThemeError, RulesError) as e:          # the message says what to do; a traceback would only bury it
             print(f"bio {args.command}: {e}", file=sys.stderr)
             return 1
     if args.command == "build-keywords":
