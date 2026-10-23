@@ -386,19 +386,29 @@ class FakeEmbedder:
         return np.array([self.vectors[Path(p).name] for p in paths], dtype=np.float32)
 
 
-def _build_reference(tmp_path, stage, points):
-    """A real embedded Qdrant collection 'bio_photos_bioclip2' of (key, vector, payload); returns nothing (the stage reads CFG['qdrant_path'])."""
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, PointStruct, VectorParams
-    c = QdrantClient(path=str(tmp_path / "qdrant"))
-    c.create_collection("bio_photos_bioclip2", vectors_config=VectorParams(size=2, distance=Distance.COSINE))
-    c.upsert("bio_photos_bioclip2", [PointStruct(id=i + 1, vector=list(v), payload={"source": "inat_photo", "key": k, **pl})
-                                     for i, (k, v, pl) in enumerate(points)])
-    c.close()
+def install_fake_qdrant(monkeypatch, collections):
+    """A recording stand-in for the qdrant_client module (CI has no qdrant-client): {collection: [(vector, payload), ...]} served through scroll()
+    with the real call shape (collection, limit, with_payload, with_vectors, offset) -> (points, next_offset). Returns the ordered call list."""
+    calls = []
+
+    class FakeClient:
+        def __init__(self, path=None, **kw):
+            calls.append(("open", path))
+
+        def scroll(self, collection, limit, with_payload, with_vectors, offset=None):
+            calls.append(("scroll", collection, offset))
+            pts = collections[collection]
+            start = offset or 0
+            end = min(start + limit, len(pts))
+            return [SimpleNamespace(vector=v, payload=p) for v, p in pts[start:end]], (end if end < len(pts) else None)
+
+    mod = SimpleNamespace(QdrantClient=FakeClient)
+    monkeypatch.setitem(sys.modules, "qdrant_client", mod)
+    return calls
 
 
 class TestInatSuggestMain:
-    def _setup(self, tmp_path, stage, monkeypatch, with_copy):
+    def _setup(self, tmp_path, stage, monkeypatch, with_copy, reference=()):
         su = stage("inat_suggest")
         ei = stage("embed_index")
         data = tmp_path / "data"
@@ -414,25 +424,28 @@ class TestInatSuggestMain:
         old.write_text('{"7": {"photos": 1, "species": [], "iconic": []}}', encoding="utf-8")
         emb = FakeEmbedder({"g1.jpg": [1.0, 0.0]})
         monkeypatch.setattr(ei, "backend_setup", lambda name: (emb, "bio_photos_bioclip2", {}, 4))
-        return su, emb, old
+        calls = install_fake_qdrant(monkeypatch, {"bio_photos_bioclip2": list(reference)})
+        return su, emb, old, calls
 
     def test_no_upload_copy_on_disk_writes_nothing_and_keeps_the_previous_suggestions(self, stage, tmp_path, monkeypatch):
-        su, emb, old = self._setup(tmp_path, stage, monkeypatch, with_copy=False)
+        su, emb, old, calls = self._setup(tmp_path, stage, monkeypatch, with_copy=False)
         before = old.read_text(encoding="utf-8")
         with pytest.raises(SystemExit, match=r"none of the 2 queue entries has an upload copy on disk; nothing written"):
             su.main()
         assert old.read_text(encoding="utf-8") == before
-        assert emb.batches == []
+        assert emb.batches == [] and calls == []                       # no photo embedded and the reference store never opened
         assert not (tmp_path / "data" / "inat_suggestions.meta.json").exists()
 
     def test_same_queue_with_a_copy_present_votes_over_the_reference_and_writes_suggestions_and_meta(self, stage, tmp_path, monkeypatch):
-        su, emb, old = self._setup(tmp_path, stage, monkeypatch, with_copy=True)
-        _build_reference(tmp_path, stage, [
-            ("p1", (1.0, 0.0), {"obs_id": 1, "taxon": "Amanita muscaria", "rank": "species", "iconic": "Fungi", "common": "fly agaric"}),
-            ("p2", (0.9, 0.1), {"obs_id": 2, "taxon": "Amanita muscaria", "rank": "species", "iconic": "Fungi", "common": "fly agaric"}),
-            ("p3", (0.0, 1.0), {"obs_id": 3, "taxon": "Apis mellifera", "rank": "species", "iconic": "Insecta"}),
-        ])
+        reference = [
+            ((1.0, 0.0), {"source": "inat_photo", "key": "p1", "obs_id": 1, "taxon": "Amanita muscaria", "rank": "species", "iconic": "Fungi", "common": "fly agaric"}),
+            ((0.9, 0.1), {"source": "inat_photo", "key": "p2", "obs_id": 2, "taxon": "Amanita muscaria", "rank": "species", "iconic": "Fungi", "common": "fly agaric"}),
+            ((0.0, 1.0), {"source": "inat_photo", "key": "p3", "obs_id": 3, "taxon": "Apis mellifera", "rank": "species", "iconic": "Insecta"}),
+            ((0.5, 0.5), {"source": "library_render", "key": "17"}),                     # not an iNat photo: never a voter
+        ]
+        su, emb, old, calls = self._setup(tmp_path, stage, monkeypatch, with_copy=True, reference=reference)
         su.main()
+        assert calls == [("open", str(tmp_path / "qdrant")), ("scroll", "bio_photos_bioclip2", None)]
         assert emb.batches == [[str(tmp_path / "g1.jpg")]]
         out = json.loads(old.read_text(encoding="utf-8"))
         # K=15 > 3 reference photos, so every reference photo is a neighbour: 2 of 3 vote Amanita, 1 of 3 Apis
