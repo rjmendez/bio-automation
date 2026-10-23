@@ -223,8 +223,9 @@ def place_fields(r: dict, places: dict[int, dict]) -> dict:
 
 def taxon_lineages(cache: InatCache, lineage_cache, fetch_lineages: Callable[[list[int]], dict[int, list[dict]]]) -> dict[int, list[dict]]:
     """{taxon id: ancestors root first, each {id, rank, name, common}} for every taxon the owner observed. The names come from
-    inat.fetch_taxon_lineages (cached in `lineage_cache`), the ids from the observation's own ancestor_ids; a taxon whose two lists do not
-    line up gets its ancestors by name only (id None)."""
+    inat.fetch_taxon_lineages (cached in `lineage_cache`; they start at the kingdom), the ids from the observation's own ancestor_ids (which
+    start at the root "Life" and end with the taxon itself). The two line up when the ids, without the taxon itself, are as long as the
+    names or exactly one longer (the root); a taxon whose lists do not line up gets its ancestors by name only (id None)."""
     wanted = sorted({r["taxon"]["id"] for r in cache.obs.values() if r["taxon"]})
     have = {t: lineage_cache.get(t) for t in wanted if lineage_cache.get(t) is not None}
     for t, lin in fetch_lineages([t for t in wanted if t not in have]).items():
@@ -236,10 +237,25 @@ def taxon_lineages(cache: InatCache, lineage_cache, fetch_lineages: Callable[[li
         ids = list(ancestor_ids.get(t) or [])
         if ids and ids[-1] == t:
             ids = ids[:-1]
+        if len(ids) == len(lin) + 1:
+            ids = ids[1:]                                              # the root ("Life"), which the named lineage leaves out
         aligned = len(ids) == len(lin)
         out[t] = [{"id": ids[i] if aligned else None, "rank": a.get("rank"), "name": a.get("name"), "common": a.get("common_name")}
                   for i, a in enumerate(lin)]
     return out
+
+
+def lineage_check(lineages: dict[int, list[dict]]) -> dict:
+    """{"without_ids": lineages whose ids did not line up, "conflicts": taxon ids that carry two different names or ranks}: what an
+    alignment mistake looks like, so a sync reports it instead of writing wrong taxa quietly."""
+    seen: dict[int, tuple] = {}
+    conflicts: set[int] = set()
+    for lin in lineages.values():
+        for a in lin:
+            if a["id"] is not None:
+                if seen.setdefault(a["id"], (a["rank"], a["name"])) != (a["rank"], a["name"]):
+                    conflicts.add(a["id"])
+    return {"without_ids": sum(1 for lin in lineages.values() if any(a["id"] is None for a in lin)), "conflicts": len(conflicts)}
 
 
 def lineage_fields(taxon: dict, ancestors: list[dict]) -> dict[str, str]:
@@ -470,9 +486,13 @@ def sync(*, cache_file: Path, state_file: Path, client: qdrant_obs.Qdrant | None
                     "with_image_vector": sum(1 for i in obs_items if i["image"]), "with_local_photo": len(local_obs), "written": False,
                     "with": {k: sum(1 for i in obs_items if k in i["payload"]) for k in
                              ("taxon_name", "kingdom", "annotations", "tags", "description", "place_names", "lat", "prints", "social_state")},
-                    "private": sum(1 for r in cache.obs.values() if r["geoprivacy"] == "private" or r["taxon_geoprivacy"] == "private")})
+                    "private": sum(1 for r in cache.obs.values() if r["geoprivacy"] == "private" or r["taxon_geoprivacy"] == "private"),
+                    "lineages": lineage_check(lineages)})
     if not write:
         return summary
+    if summary["lineages"]["conflicts"]:
+        raise QdrantInatError(f"{summary['lineages']['conflicts']} taxon id(s) carry two different names or ranks in the lineages: the ids and "
+                              "the names do not line up, so the taxa are not written")
     text_dim = len(embed_text(["dimension probe"])[0])
     names = {"observations": f"{prefix}observations", "taxa": f"{prefix}taxa"}
     state_file = Path(state_file)

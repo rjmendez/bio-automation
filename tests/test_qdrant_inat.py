@@ -192,6 +192,17 @@ class TestTaxa:
         assert [(a["id"], a["rank"]) for a in got[101]] == [(48460, "stateofmatter"), (47170, "kingdom"), (47169, "phylum")]
         assert [a["id"] for a in got[102]] == [None, None]
 
+    def test_the_root_life_in_the_ancestor_ids_is_dropped_when_the_named_lineage_starts_at_the_kingdom(self, tmp_path):
+        c = self.cache(tmp_path, [raw(1)])                                          # ancestor_ids [48460 Life, 47170, 47169, 101]
+        got = qi.taxon_lineages(c, {}, lambda ids: {101: lineage(("kingdom", "Fungi"), ("phylum", "Basidiomycota"))})
+        assert [(a["id"], a["name"]) for a in got[101]] == [(47170, "Fungi"), (47169, "Basidiomycota")]
+
+    def test_lineage_check_counts_unaligned_lineages_and_ids_with_two_different_names(self):
+        ok = {1: [{"id": 5, "rank": "kingdom", "name": "Fungi", "common": None}], 2: [{"id": 5, "rank": "kingdom", "name": "Fungi", "common": None}]}
+        assert qi.lineage_check(ok) == {"without_ids": 0, "conflicts": 0}
+        bad = {**ok, 3: [{"id": None, "rank": "kingdom", "name": "Fungi", "common": None}], 4: [{"id": 5, "rank": "kingdom", "name": "Plantae", "common": None}]}
+        assert qi.lineage_check(bad) == {"without_ids": 1, "conflicts": 1}
+
     def test_a_cached_lineage_is_not_fetched_again(self, tmp_path):
         c = self.cache(tmp_path, [raw(1)])
         cache, asked = {101: lineage(("kingdom", "Fungi"), ("phylum", "X"), ("class", "Y"))}, []
@@ -395,6 +406,7 @@ class TestSync:
         assert (s["observations"], s["taxa"], s["observations_count"], s["taxa_count"], s["written"]) == (3, 6, 3, 6, True)
         assert (s["observations_collection"], s["taxa_collection"]) == ("created", "created")
         assert (s["with_image_vector"], s["with_local_photo"], s["private"], s["gallery_embedded"]) == (2, 3, 1, 3)
+        assert s["lineages"] == {"without_ids": 0, "conflicts": 0}
         obs = w.points("bio_inat_observations")
         p1, p2, p3 = (obs[qi.point_id("obs", i)] for i in (1, 2, 3))
         assert sorted(p1["vector"]) == ["image", "text"] and len(p1["vector"]["text"]) == 3
@@ -443,6 +455,14 @@ class TestSync:
         w.fake = FakeQdrant(wrong_count=True)
         with pytest.raises(QdrantInatError, match=r"^bio_inat_observations holds 4 points after the sync, expected 3$"):
             w.run()
+
+    def test_lineages_whose_ids_disagree_with_their_names_stop_the_write_before_anything_is_sent(self, tmp_path):
+        w = World(tmp_path)
+        w.lineages[102] = lineage(("kingdom", "Plantae"), ("phylum", "Basidiomycota"), ("class", "Agaricomycetes"))      # id 48460 named Fungi elsewhere
+        with pytest.raises(QdrantInatError, match=r"^1 taxon id\(s\) carry two different names or ranks in the lineages: the ids and the names do not line up"):
+            w.run()
+        assert w.fake.log == []
+        assert w.run(client=None, write=False)["lineages"] == {"without_ids": 0, "conflicts": 1}
 
     def test_a_dry_run_builds_everything_and_sends_nothing(self, tmp_path):
         w = World(tmp_path)
