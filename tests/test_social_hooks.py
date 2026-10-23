@@ -520,6 +520,25 @@ class TestPostSendStage:
         result = post(ledger, drafts, tmp_path)
         assert seen == [("2026-10-obs1", result["uri"], "bafyabc", ["en"], 2, ["drafted", "approved", "posting", "posted"], False)]
 
+    def test_post_send_runs_with_the_ledger_lock_released_and_pre_send_with_it_held(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 1)
+        held = {}
+
+        def lock_is_free(stage):
+            def hook(ctx):
+                try:
+                    with social.ledger_lock(ctx["ledger"].path):
+                        held[stage] = False
+                except SocialError:
+                    held[stage] = True
+            return hook
+
+        social_hooks.register("pre", "pre_send", lock_is_free("pre_send"))
+        social_hooks.register("post", "post_send", lock_is_free("post_send"))
+        result = post(ledger, drafts, tmp_path)
+        assert result["status"] == "posted"
+        assert held == {"pre_send": True, "post_send": False}          # held while the send is decided, free while the read-back runs
+
     def test_post_send_does_not_run_when_nothing_was_sent(self, tmp_path):
         ledger, drafts = drafted(tmp_path, 1)
         rec = Recorder()

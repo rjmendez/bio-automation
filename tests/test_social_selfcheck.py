@@ -548,13 +548,54 @@ class TestDeployMode:
         level = lambda out: {c["name"]: c["level"] for c in out["checks"]}["approved-drafts"]                   # noqa: E731
         assert (level(normal), level(deploy), deploy["exit"]) == (FAIL, WARN, 1)
 
-    def test_a_failure_that_is_not_environmental_stays_a_fail_in_deploy_mode(self, world, monkeypatch):
-        no_deep_integrity(monkeypatch)
+    KW = dict(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW)
+
+    def both(self, world):
+        """((normal levels, exit), (deploy levels, exit)) on the world as the test left it."""
+        normal = social_selfcheck.selfcheck(audit=Audit(world.tmp / "sc-audit.jsonl"), **self.KW)
+        deploy = social_selfcheck.selfcheck(deploy=True, audit=Audit(world.tmp / "sc-audit.jsonl"), **self.KW)
+        return ({c["name"]: c["level"] for c in normal["checks"]}, normal["exit"]), ({c["name"]: c["level"] for c in deploy["checks"]}, deploy["exit"])
+
+    def test_a_corrupt_ledger_is_a_fail_normally_and_a_warning_in_deploy_mode(self, world):
         lines = world.ledger_path.read_bytes().split(b"\n")
         world.ledger_path.write_bytes(b"\n".join([lines[0], b"{broken", *lines[1:]]))
-        deploy = social_selfcheck.selfcheck(drives={"system": Path("C:/sys"), "data": Path("D:/data")}, free=lambda p: 100 * GB, now=NOW, deploy=True,
-                                            audit=Audit(world.audit_path))
-        assert ({c["name"]: c["level"] for c in deploy["checks"]}["ledger"], deploy["exit"]) == (FAIL, 2)
+        (normal, n_exit), (deploy, d_exit) = self.both(world)
+        assert (normal["ledger"], n_exit, deploy["ledger"], d_exit) == (FAIL, 2, WARN, 1)
+
+    def test_an_unwritable_audit_log_a_bad_rules_file_and_a_bad_themes_file_are_warnings_in_deploy_mode(self, world, monkeypatch):
+        world.audit_path.mkdir()                                       # a directory where the audit log should be: not writable
+        rules_file, themes_file = world.tmp / "rules.toml", world.tmp / "themes.toml"
+        rules_file.write_text("[[[ not toml", encoding="utf-8")
+        themes_file.write_text("[[[ not toml", encoding="utf-8")
+        monkeypatch.setattr(settings, "SOCIAL_RULES_FILE", rules_file)
+        monkeypatch.setattr(settings, "SOCIAL_THEMES_FILE", themes_file)
+        (normal, n_exit), (deploy, d_exit) = self.both(world)
+        assert (normal["audit"], normal["rules"], normal["themes"], n_exit) == (FAIL, FAIL, FAIL, 2)
+        assert (deploy["audit"], deploy["rules"], deploy["rules-file"], deploy["themes"], deploy["themes-file"], d_exit) == (WARN, OK, WARN, OK, WARN, 1)
+
+    def test_an_unreadable_gallery_index_and_taxonomy_are_warnings_in_deploy_mode(self, world):
+        world.index.write_text("{", encoding="utf-8")
+        world.taxonomy.write_text("{", encoding="utf-8")
+        (normal, n_exit), (deploy, d_exit) = self.both(world)
+        assert (normal["gallery-index"], normal["taxonomy"], n_exit) == (FAIL, FAIL, 2)
+        assert (deploy["gallery-index"], deploy["taxonomy"], d_exit) == (WARN, WARN, 1)
+
+    def test_a_missing_extension_still_fails_in_deploy_mode(self, world, monkeypatch):
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", (*social_hooks.EXTENSIONS, "social_deleted_gate"))
+        (normal, n_exit), (deploy, d_exit) = self.both(world)
+        assert (normal["extensions"], n_exit, deploy["extensions"], d_exit) == (FAIL, 2, FAIL, 2)
+
+    def test_a_cli_that_does_not_import_fails_in_deploy_mode_and_a_working_one_is_ok(self, world, monkeypatch):
+        (_, _), (deploy, d_exit) = self.both(world)
+        assert (deploy["cli"], d_exit) == (OK, 0)
+        monkeypatch.setitem(sys.modules, "bio_automation.cli", None)
+        (_, _), (broken, b_exit) = self.both(world)
+        assert (broken["cli"], b_exit) == (FAIL, 2)
+
+    def test_the_deploy_checks_are_the_normal_ones_plus_cli_and_the_two_file_checks(self, world):
+        (normal, _), (deploy, _) = self.both(world)
+        assert list(normal) == NAMES
+        assert list(deploy) == ["rules", "extensions", "cli", "themes", "rules-file", "themes-file", *NAMES[3:]]
 
     def test_the_command_prints_the_summary_line_last_and_exits_1_for_environmental_trouble(self, world, plenty_of_disk, monkeypatch, capsys):
         (world.oauth / "account.json").unlink()

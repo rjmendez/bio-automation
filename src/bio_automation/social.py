@@ -1466,8 +1466,12 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
               auto_approve=rules.on("auto_approve") if auto_approve is None else auto_approve, rules=rules, audit=audit)
     if not live:
         return _post_next(ledger, drafts_dir, live=False, **kw)
+    after: list[Callable[[], None]] = []
     with ledger_lock(ledger.path):                                    # the checks, the "posting" record and the send are one step
-        return _post_next(ledger, drafts_dir, live=True, **kw)
+        result = _post_next(ledger, drafts_dir, live=True, after=after, **kw)
+    for run_after in after:                                           # the post_send hooks (the verify waits up to a minute for the AppView) run with the lock released:
+        run_after()                                                   # the post is recorded, and the owner's commands and the draft run must not wait for the read-back
+    return result
 
 
 MAX_PRE_SEND_WITHDRAWALS = 3         # drafts the pre_send hooks may take back in one run before it gives up
@@ -1515,7 +1519,7 @@ def _audit_or_stop(audit: Audit, event: str, *, then: str = "nothing was sent", 
 
 def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool, posts_per_day: int | None,
                send: Callable[[dict], tuple[str, str]], manual: bool, draft_id: str | None, auto_approve: bool,
-               rules: Rules, audit: Audit) -> dict:
+               rules: Rules, audit: Audit, after: list[Callable[[], None]] | None = None) -> dict:
     cap = posts_per_day if posts_per_day is not None else rules.value("daily_cap")
     month = f"{now.year}-{now.month:02d}"
     stalled = stalled_drafts(ledger, now, live=live, audit=audit)
@@ -1649,10 +1653,17 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
     extra = {"manual": True} if manual else {}
     ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=dmonth, uri=uri, cid=cid, now=now, **extra)
     result = {"status": "posted", "uri": uri, **payload, **_withdrawn_report(taken_back, reasons)}
-    social_hooks.run("post_send", {"draft_id": draft_id, "draft": draft, "uri": uri, "cid": cid, "request": request, "ledger": ledger, "now": now,
-                                   "manual": manual, "rules": rules}, rules=rules, audit=audit)
     try:
         audit.log("posted", draft_id=draft_id, uri=uri, manual=manual)
     except OSError:
         result["audit"] = "the posted record could not be written to the audit log"    # the post exists and the ledger has it: say so, do not raise
+
+    def post_send() -> None:
+        social_hooks.run("post_send", {"draft_id": draft_id, "draft": draft, "uri": uri, "cid": cid, "request": request, "ledger": ledger, "now": now,
+                                       "manual": manual, "rules": rules}, rules=rules, audit=audit)
+
+    if after is None:
+        post_send()
+    else:
+        after.append(post_send)                                       # post_next runs it once the ledger lock is released
     return result

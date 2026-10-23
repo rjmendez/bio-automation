@@ -8,8 +8,10 @@ will be withdrawn). The run is written to the audit log as the event "selfcheck"
 
 scripts/deploy_prod.ps1 runs this from the prod tree after a fast-forward with --deploy and rolls back unless it exits 0 or 1 AND prints the final
 summary line "selfcheck: ok|warn|fail" (a crash, which exits 1 with a traceback in Python, has no such line; the command itself catches any
-crash and exits 2 with "selfcheck: fail (<kind>)"). In --deploy mode the checks that depend on the machine rather than on the code (disk space,
-the Bluesky session, an approved draft whose hash changed) are warnings, not failures: a good deploy is not rolled back for them."""
+crash and exits 2 with "selfcheck: fail (<kind>)"). In --deploy mode only the checks that depend on the code
+(the extensions and their critical hooks, the CLI import, the rules and themes schema on the built-in defaults) may fail; everything that depends on
+the machine's data (disk space, the Bluesky session, the ledger, the audit log, the owner's rules and themes files, the gallery index, the taxonomy
+cache, the drafts) is a warning at worst: a good deploy is not rolled back for them."""
 from __future__ import annotations
 
 import datetime as dt
@@ -34,7 +36,7 @@ SYSTEM_DRIVE_WARN_GB = 20.0
 DATA_DRIVE_FAIL_GB = 2.0
 DATA_DRIVE_WARN_GB = 10.0
 ONLINE_TIMEOUT_S = 10
-ENVIRONMENTAL = ("disk-system", "disk-data", "bluesky-session", "bluesky-online", "approved-drafts")   # --deploy: a failure of these is a warning
+CODE_DEPENDENT = ("rules", "themes", "extensions", "cli")   # --deploy: only a failure of these (they depend on the code being deployed) is a failure; every other one is a warning
 
 
 class Check(NamedTuple):
@@ -53,16 +55,28 @@ def worst(checks: list[Check]) -> str:
 
 # ----------------------------------------------------------------------------------------------------------------- the checks
 
-def check_rules():
-    """(Check, rules): the rules as the file and the environment say; the defaults stand in for the other checks when they do not load."""
+def check_rules(name: str = "rules", *, builtin: bool = False):
+    """(Check, rules): the rules as the file and the environment say (builtin: the built-in defaults, which depend on the code alone); the defaults
+    stand in for the other checks when they do not load."""
     from .social_rules import RulesError, load_rules
 
     try:
-        rules = load_rules()
+        rules = load_rules(Path(os.devnull), env={}) if builtin else load_rules()
     except RulesError as e:
-        return Check("rules", FAIL, f"rules do not load: {e}"), load_rules(Path(os.devnull), env={})
+        return Check(name, FAIL, f"rules do not load: {e}"), load_rules(Path(os.devnull), env={})
     off = sorted(n for n, s in rules.snapshot().items() if not s["on"])
-    return Check("rules", OK, f"rules load ({len(rules.snapshot()) - len(off)} on, {len(off)} off)"), rules
+    return Check(name, OK, f"{'built-in ' if builtin else ''}rules load ({len(rules.snapshot()) - len(off)} on, {len(off)} off)"), rules
+
+
+def check_cli() -> Check:
+    """The command line module imports and has its entry point: a deploy whose CLI cannot start posts nothing."""
+    try:
+        mod = importlib.import_module(f"{__package__ or 'bio_automation'}.cli")
+    except Exception as e:  # noqa: BLE001 -- whatever the import raised, the CLI is broken
+        return Check("cli", FAIL, f"the CLI does not import: {type(e).__name__}: {e}"[:300])
+    if not callable(getattr(mod, "main", None)):
+        return Check("cli", FAIL, "the CLI has no main()")
+    return Check("cli", OK, "the CLI imports")
 
 
 CRITICAL_HOOKS = (("alt_text_privacy", "draft"), ("image_floor", "draft"), ("live_recheck", "pre_send"),
@@ -89,15 +103,16 @@ def check_extensions() -> Check:
     return Check("extensions", OK, f"{len(mods)} social modules loaded, {len(CRITICAL_HOOKS)} critical hooks registered")
 
 
-def check_themes() -> Check:
+def check_themes(name: str = "themes", *, builtin: bool = False) -> Check:
     from .themes import ThemeError, load_themes
 
+    path = Path(os.devnull) if builtin else None                  # builtin: not a file, so the defaults load (and validate)
     try:
-        themes = load_themes()
+        themes = load_themes(path)
     except ThemeError as e:
-        return Check("themes", FAIL, f"themes do not load: {e}")
-    source = "file" if Path(settings.SOCIAL_THEMES_FILE).is_file() else "built-in defaults"
-    return Check("themes", OK, f"{len(themes)} themes ({source})")
+        return Check(name, FAIL, f"themes do not load: {e}")
+    source = "file" if not builtin and Path(settings.SOCIAL_THEMES_FILE).is_file() else "built-in defaults"
+    return Check(name, OK, f"{len(themes)} themes ({source})")
 
 
 def _light_ledger_check(path: Path) -> tuple[str, str]:
@@ -351,10 +366,17 @@ def check_inat_online(probe: Callable[[], int]) -> Check:
 
 def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: dict[str, Path] | None = None,
                free: Callable[[Path], int] | None = None, whoami: Callable[[], dict] | None = None,
-               inat_probe: Callable[[], int] | None = None) -> list[Check]:
+               inat_probe: Callable[[], int] | None = None, deploy: bool = False) -> list[Check]:
+    """deploy: "rules" and "themes" check the built-in defaults (the code), the owner's files get their own checks (rules-file, themes-file)
+    and the CLI import is checked; for_deploy() then lets only the code-dependent checks fail."""
     now = now or dt.datetime.now(settings.LOCAL_TZ)
-    rules_check, rules = check_rules()
-    checks = [rules_check, check_extensions(), check_themes(), check_ledger(), check_audit_writable(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
+    rules_check, rules = check_rules("rules", builtin=True) if deploy else check_rules()
+    extra = []
+    if deploy:
+        file_check, file_rules = check_rules("rules-file")
+        extra = [file_check, check_themes("themes-file")]
+        rules = file_rules
+    checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
               check_approved_drafts(), check_pending_quality(rules), check_pause(), *check_disks(drives or default_drives(), free or _free_bytes)]
     if online:
         checks += [check_bsky_online(whoami or default_whoami), check_inat_online(inat_probe or default_inat_probe)]
@@ -368,15 +390,17 @@ def report(checks: list[Check], *, online: bool) -> dict:
 
 
 def for_deploy(checks: list[Check]) -> list[Check]:
-    """--deploy: the environmental failures become warnings (the message says so); everything else stays as it is."""
-    return [Check(c.name, WARN, f"{c.message} [environmental: a warning in --deploy mode]") if c.name in ENVIRONMENTAL and c.level == FAIL else c
+    """--deploy: only the code-dependent checks (CODE_DEPENDENT: the built-in rules and themes, the extensions and their critical hooks, the CLI
+    import) may fail; every other failure (disk, session, ledger, audit, the owner's rules and themes files, indexes, caches, drafts) depends on
+    the machine's data, not on the code being deployed, and becomes a warning (the message says so)."""
+    return [Check(c.name, WARN, f"{c.message} [environmental: a warning in --deploy mode]") if c.name not in CODE_DEPENDENT and c.level == FAIL else c
             for c in checks]
 
 
 def selfcheck(*, online: bool = False, audit=None, deploy: bool = False, **kw) -> dict:
     from .social_rules import Audit
 
-    checks = run_checks(online=online, **kw)
+    checks = run_checks(online=online, deploy=deploy, **kw)
     if deploy:
         checks = for_deploy(checks)
     out = report(checks, online=online)
@@ -409,8 +433,8 @@ def add_parsers(sub) -> None:
     p = sub.add_parser("social-selfcheck", help="Check everything the scheduled Bluesky run depends on; exit 0 ok, 1 warn, 2 fail. Posts nothing.")
     p.add_argument("--online", action="store_true", help="also probe the Bluesky session and iNat (read-only)")
     p.add_argument("--json", action="store_true", help="print the result as JSON")
-    p.add_argument("--deploy", action="store_true", help="what scripts/deploy_prod.ps1 runs: disk space, the Bluesky session and a changed approved "
-                   "draft are warnings, not failures; the last output line is always `selfcheck: ok|warn|fail`")
+    p.add_argument("--deploy", action="store_true", help="what scripts/deploy_prod.ps1 runs: only code-dependent checks (extensions, CLI, built-in rules/themes) can fail; "
+                   "disk, session, ledger, audit, rules/themes files, indexes and drafts are warnings; the last output line is always `selfcheck: ok|warn|fail`")
 
 
 COMMANDS = {"social-selfcheck": cmd_social_selfcheck}
