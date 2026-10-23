@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
-from test_social import PRINT, TZ, RecordingDescribe, RecordingFetch, RecordingSend, jpeg, labels, no_model, observation
+from test_social import PRINT, TZ, RecordingDescribe, RecordingFetch, RecordingSend, jpeg, labels, no_model, observation, rules_with
 
 from bio_automation import social, themes
 from bio_automation.social import Ledger, SkipObservation, SocialError
@@ -287,3 +287,30 @@ class TestCli:
         monkeypatch.setattr("sys.argv", ["bio", "social-themes", "--index", str(tmp_path / "index.json")])
         assert cli.main() == 1
         assert capsys.readouterr().err.startswith(f"bio social-themes: {tmp_path / 'themes.toml'}: theme 'a': weekday must be one of monday")
+
+
+class TestRedraftUnderTheSameId:
+    def ledger(self, tmp_path):
+        ledger = Ledger(tmp_path / "l.jsonl")
+        ledger.append("drafted", "2026-10-26-mushroom-monday", obs_id=1, obs_ids=[1, 2, 3, 4], month="2026-10", theme="mushroom-monday", for_date="2026-10-26")
+        ledger.append("approved", "2026-10-26-mushroom-monday", obs_id=1, month="2026-10", hash="old")
+        ledger.append("withdrawn", "2026-10-26-mushroom-monday", obs_id=1, month="2026-10", reason="small")
+        ledger.append("drafted", "2026-10-26-mushroom-monday", obs_id=5, obs_ids=[5, 6, 7, 8], month="2026-10", theme="mushroom-monday", for_date="2026-10-26")
+        return ledger
+
+    def test_a_redraft_replaces_the_observations_and_forgets_the_old_approval(self, tmp_path):
+        v = self.ledger(tmp_path).drafts()["2026-10-26-mushroom-monday"]
+        assert (v["state"], v["obs_id"], v["obs_ids"], v["for_date"], v["theme"]) == ("drafted", 5, [5, 6, 7, 8], "2026-10-26", "mushroom-monday")
+        assert v["approved_hash"] is None and "approved_seq" not in v
+
+    def test_the_withdrawn_observations_are_free_and_the_redrafted_ones_are_taken(self, tmp_path):
+        v = self.ledger(tmp_path).drafts()["2026-10-26-mushroom-monday"]
+        taken = {o for o in social._obs_of(v)} if social._taken(v, "2026-10", dt.date(2026, 10, 22), rules_with()) else set()
+        assert taken == {5, 6, 7, 8}
+
+    def test_a_draft_that_was_never_redrafted_keeps_its_first_records_fields_and_its_approval(self, tmp_path):
+        ledger = Ledger(tmp_path / "l.jsonl")
+        ledger.append("drafted", "2026-10-26-mushroom-monday", obs_id=1, obs_ids=[1, 2], month="2026-10", theme="mushroom-monday", for_date="2026-10-26")
+        ledger.append("approved", "2026-10-26-mushroom-monday", obs_id=1, month="2026-10", hash="h1")
+        v = ledger.drafts()["2026-10-26-mushroom-monday"]
+        assert (v["state"], v["obs_ids"], v["approved_hash"], "approved_seq" in v) == ("approved", [1, 2], "h1", True)
