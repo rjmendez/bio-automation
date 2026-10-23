@@ -109,6 +109,15 @@ GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gal
 SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
 SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 3))    # scheduled posts a day (08:00, 12:00, 20:00); manual posts are not counted
 SOCIAL_AUTO_APPROVE = env("BIO_SOCIAL_AUTO_APPROVE", "1").strip().lower() not in ("", "0", "false", "no")   # owner 2026-10-22: no per-draft review
+# themed posts ("Mushroom Monday": up to 4 photos of one kind of organism in one post, one theme per weekday; see themes.py)
+SOCIAL_THEMES = env("BIO_SOCIAL_THEMES", "1").strip().lower() not in ("", "0", "false", "no")
+SOCIAL_THEMES_FILE = env_path("BIO_SOCIAL_THEMES_FILE", SOCIAL_DIR / "themes.toml")             # the owner's calendar; built-in defaults without it
+SOCIAL_THEME_DAYS_AHEAD = int(env("BIO_SOCIAL_THEME_DAYS_AHEAD", 7))                              # social-draft prepares the themed posts of the next N days
+OBS_TAXONOMY_FILE = env_path("BIO_OBS_TAXONOMY_FILE", CACHE_DIR / "state" / "obs_taxonomy.json")   # observation id -> taxon + lineage (iNat, cached)
+INAT_SNAPSHOT = env_path("BIO_INAT_SNAPSHOT", Path(r"F:\bio-automation-data\inat_observations.json"))   # all of the owner's iNat observations (photo ids included)
+# every posting rule is optional and every decision audited (social_rules.py): the owner's switches, and the append-only decision log
+SOCIAL_RULES_FILE = env_path("BIO_SOCIAL_RULES_FILE", SOCIAL_DIR / "rules.toml")
+SOCIAL_AUDIT_LOG = env_path("BIO_SOCIAL_AUDIT_LOG", CACHE_DIR / "state" / "social_audit.jsonl")
 # app.bsky.embed.images allows 2,000,000 B per image (formerly 1 MB); the official app compresses post images to the same pair
 # (social-app src/lib/constants.ts IMAGE_SIZE_CONFIG_POSTS: maxDimension 4000, maxSize 2000000)
 BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 2_000_000))
