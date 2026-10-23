@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import settings
+from . import secrets_guard, settings
 from .social_rules import Audit, Rules, load_rules
 
 DEDUP_WINDOW = dt.timedelta(hours=12)
@@ -360,7 +360,7 @@ def new_alerts(alerts: list[Alert], log: list[dict], now: dt.datetime) -> list[A
 def _append(path: Path, rec: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as f:
-        f.write(json.dumps(rec, sort_keys=True, ensure_ascii=False) + "\n")
+        f.write(json.dumps(secrets_guard.redact(rec), sort_keys=True, ensure_ascii=False) + "\n")
 
 
 def split_command(text: str) -> list[str]:

@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from . import disk_guard, settings, social_hooks
+from . import disk_guard, secrets_guard, settings, social_hooks
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 EXIT = {OK: 0, WARN: 1, FAIL: 2}
@@ -202,6 +202,24 @@ def check_bsky_session() -> Check:
     except (OSError, ValueError, KeyError, TypeError) as e:
         return Check("bluesky-session", FAIL, f"{path} is unreadable ({type(e).__name__}); run `bio social-login`")
     return Check("bluesky-session", OK, f"session files present for {who}")
+
+
+def secret_scan_paths() -> list[Path]:
+    from . import social_alerts
+
+    return [social_alerts.social_log_path().parent, Path(settings.SOCIAL_AUDIT_LOG), Path(settings.SOCIAL_ALERTS_LOG), Path(settings.SOCIAL_ENGAGEMENT_LOG),
+            _drafts_dir(), Path(settings.SOCIAL_BACKUP_DIR), Path(settings.SOCIAL_DIGEST_DIR)]
+
+
+def check_secret_scan(paths: list[Path] | None = None) -> Check:
+    """No token-shaped string (JWT, bearer/DPoP/Authorization value, PEM private key, JWK private member, api key) in the logs, audit, alerts,
+    drafts, digests or backups. Names the files only, never the match."""
+    found = secrets_guard.scan_paths(secret_scan_paths() if paths is None else paths)
+    if found:
+        shown = "; ".join(f"{f.path} ({', '.join(f.kinds)})" for f in found[:5])
+        more = f" and {len(found) - 5} more" if len(found) > 5 else ""
+        return Check("secret-scan", FAIL, f"{len(found)} file(s) hold credential-like text: {shown}{more}. Remove or rotate; values are not shown")
+    return Check("secret-scan", OK, "no credential-like text in the logs, audit, alerts, drafts, digests or backups")
 
 
 def check_gallery_index(now: dt.datetime) -> Check:
@@ -406,7 +424,7 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
         file_check, file_rules = check_rules("rules-file")
         extra = [file_check, check_themes("themes-file")]
         rules = file_rules
-    checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
+    checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_secret_scan(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
               check_approved_drafts(), check_pending_quality(rules), check_pause(), *([] if deploy else [check_script_drift()]), *check_disks(drives or default_drives(), free or _free_bytes)]
     if online:
         checks += [check_bsky_online(whoami or default_whoami), check_inat_online(inat_probe or default_inat_probe)]
