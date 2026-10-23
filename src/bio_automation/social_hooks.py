@@ -9,7 +9,9 @@ refuse: a reject for draft, a block for pre_send (order, post_send and maintenan
 Stages and their ctx:
   draft        {obs, obs_id, image (Path), alt, label, month, rules}        reject = skip this observation
   order        {candidates (list of obs ids, mutate IN PLACE), kind ("single" | "theme:<key>"), taxonomy, ledger, today, rules}
-  pre_send     {draft_id, draft, draft_dir, ledger, now, live, manual, fetch, rules}   reject/withdraw = withdraw the draft; block = send nothing
+  pre_send     {draft_id, draft, draft_dir, ledger, now, live, manual, fetch, rules, audit, on_send}   reject/withdraw = withdraw the draft; block = send nothing
+               (on_send: a list a hook may append zero-argument callables to; the post run calls them right after it records "posting", i.e. only
+               when a send actually starts: for effects that must not happen when a later hook withdraws the draft, like spending the breaker probe)
   post_send    {draft_id, draft, uri, cid, request, ledger, now, manual, rules}        results are audited only
   maintenance  {drafts_dir, ledger, rules, today}                            after each social-draft run
 draft and pre_send stop at the first non-pass verdict; the other stages run every hook.

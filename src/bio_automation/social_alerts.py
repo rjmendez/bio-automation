@@ -6,7 +6,7 @@ when asked (--notify, or settings.SOCIAL_ALERT_COMMAND is set) and the rule `ale
 `bio social-digest` writes one Markdown page per day to settings.SOCIAL_DIGEST_DIR.
 
 Alert kinds and levels (exit code: 0 none, 1 warnings, 2 errors):
-  error    post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
+  error    draft_stalled (a draft whose sends keep sending nothing: skipped for the day, later marked failed; the alert names it), post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
            ledger_corrupt (an audit event, or unreadable lines found in the ledger file itself), prep_failed (a prep_step with ok=false),
            selfcheck_failed (a selfcheck event with level fail), expected_post_missing, run_silent, disk (C: under 15 GB)
   warning  post_blocked, hook_error, paused, backup_failed, withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
@@ -44,7 +44,7 @@ LOW_STOCK_POSTS = 10
 DISK_MIN_GB = (("C:\\", 15, "error"), ("D:\\", 20, "warning"))
 NOTIFY_TIMEOUT_S = 30
 ERROR_EVENTS = {"post_failed": "error", "post_verify_failed": "error", "circuit_open": "error", "ledger_corrupt": "error",
-                "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning"}
+                "draft_stalled": "error", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning"}
 WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
 WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
 DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
@@ -220,7 +220,8 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
             detail = "; ".join(str(p) for p in r["problems"][:3])
         who = r.get("draft_id") or r.get("name") or ""
         text = f"{kind}{' ' + str(who) if who else ''}{': ' + str(detail)[:200] if detail else ''} ({r.get('at')})"
-        key = f"{kind}:{at.date().isoformat()}" if kind in PER_DAY_EVENTS else f"{kind}:{who}:{r.get('at')}"
+        key = (f"{kind}:{at.date().isoformat()}" if kind in PER_DAY_EVENTS else
+               f"{kind}:{who}:{at.date().isoformat()}:{r.get('action')}" if kind == "draft_stalled" else f"{kind}:{who}:{r.get('at')}")      # a stalled draft: once a day each
         add(Alert(key, kind, level, text, sticky=True))
 
     # withdrawal spike: a live_recheck that withdraws many drafts is usually a false positive draining the stock (would_withdraw = a dry run)

@@ -31,7 +31,7 @@ from .social_hooks import Verdict
 # state -> the states it may be followed by (a note such as "error" is not a state and is ignored)
 TRANSITIONS: dict[str, tuple[str, ...]] = {
     "drafted": ("approved", "rejected", "withdrawn", "drafted"),
-    "approved": ("approved", "posting", "rejected", "withdrawn"),
+    "approved": ("approved", "posting", "rejected", "withdrawn", "failed"),     # failed: a draft that sent nothing for STALL_FAIL_DAYS days (social.stalled_drafts)
     "posting": ("posted", "failed", "approved"),                  # approved only as a restored approval (a send that sent nothing)
     "failed": ("approved", "rejected", "withdrawn", "drafted"),
     "withdrawn": ("drafted",),

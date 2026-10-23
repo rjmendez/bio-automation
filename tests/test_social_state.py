@@ -135,7 +135,7 @@ class TestTransitions:
              "posting": ["drafted", "approved", "posting"], "posted": ["drafted", "approved", "posting", "posted"],
              "failed": ["drafted", "approved", "posting", "failed"], "withdrawn": ["drafted", "withdrawn"]}
     ALLOWED = {("drafted", "approved"), ("drafted", "rejected"), ("drafted", "withdrawn"), ("drafted", "drafted"),
-               ("approved", "approved"), ("approved", "posting"), ("approved", "rejected"), ("approved", "withdrawn"),
+               ("approved", "approved"), ("approved", "posting"), ("approved", "rejected"), ("approved", "withdrawn"), ("approved", "failed"),
                ("posting", "posted"), ("posting", "failed"),
                ("failed", "approved"), ("failed", "rejected"), ("failed", "withdrawn"), ("failed", "drafted"),
                ("withdrawn", "drafted")}

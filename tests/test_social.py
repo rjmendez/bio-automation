@@ -1430,6 +1430,68 @@ class TestTitleCacheCachesOnlySuccessfulReads:
         assert sorted(json.loads(cache.read_text(encoding="utf-8"))["titles"]) == ["2025/2025-10/2025-10-02_DSC_2.jpg"]
 
 
+class TestStalledDrafts:
+    """A draft whose send keeps sending nothing (e.g. a deterministic upload error) must not block the queue."""
+
+    def attempt(self, ledger, drafts, tmp_path, *, now=NOW, fail=True):
+        send = RecordingSend(fail=social.NothingSent("image upload failed") if fail else None)
+        audit = Audit(tmp_path / "audit.jsonl", run="r", now=lambda: now)
+        try:
+            return social.post_next(ledger, drafts, now=now, live=True, send=send, rules=rules_with(daily_cap=9), audit=audit), send
+        except SocialError as e:
+            return str(e), send
+
+    def stall(self, tmp_path, n=2):
+        ledger = Ledger(tmp_path / "l.jsonl")
+        drafts = tmp_path / "drafts"
+        for i in (1, 2):
+            write_draft(drafts, f"2026-10-obs{i}", i, "2026-10")
+            ledger.append("drafted", f"2026-10-obs{i}", obs_id=i, month="2026-10", now=NOW - dt.timedelta(days=2, minutes=-i))
+        for _ in range(n):
+            msg, send = self.attempt(ledger, drafts, tmp_path)
+            assert msg == "nothing was posted (image upload failed); 2026-10-obs1 stays approved for the next run"
+        return ledger, drafts
+
+    def test_two_consecutive_nothing_sent_failures_skip_the_draft_for_the_rest_of_the_day(self, tmp_path):
+        ledger, drafts = self.stall(tmp_path)
+        assert ledger.nothing_sent_streaks()["2026-10-obs1"]["count"] == 2
+        result, send = self.attempt(ledger, drafts, tmp_path, now=NOW + dt.timedelta(hours=3), fail=False)
+        assert (result["status"], len(send.calls)) == ("posted", 1)
+        assert events(ledger, "2026-10-obs2")[-1] == "posted" and events(ledger, "2026-10-obs1")[-1] == "error"
+        [rec] = [r for r in Audit(tmp_path / "audit.jsonl").records() if r["event"] == "draft_stalled"]
+        assert (rec["draft_id"], rec["count"], rec["action"]) == ("2026-10-obs1", 2, "skipped")
+
+    def test_positive_twin_one_failure_does_not_stall_the_draft(self, tmp_path):
+        ledger, drafts = self.stall(tmp_path, n=1)
+        result, send = self.attempt(ledger, drafts, tmp_path, now=NOW + dt.timedelta(hours=3), fail=False)
+        assert result["status"] == "posted" and events(ledger, "2026-10-obs1")[-1] == "posted"
+        assert [r for r in Audit(tmp_path / "audit.jsonl").records() if r["event"] == "draft_stalled"] == []
+
+    def test_the_next_day_the_draft_is_tried_again(self, tmp_path):
+        ledger, drafts = self.stall(tmp_path)
+        result, send = self.attempt(ledger, drafts, tmp_path, now=NOW + dt.timedelta(days=1), fail=False)
+        assert result["status"] == "posted" and events(ledger, "2026-10-obs1")[-1] == "posted"
+
+    def test_after_three_days_the_draft_is_marked_failed_and_the_alert_names_it(self, tmp_path):
+        from bio_automation import social_alerts
+
+        ledger, drafts = self.stall(tmp_path)
+        later = NOW + dt.timedelta(days=3)
+        result, send = self.attempt(ledger, drafts, tmp_path, now=later, fail=False)
+        assert result["status"] == "posted" and ledger.drafts()["2026-10-obs1"]["state"] == "failed"
+        [rec] = [r for r in Audit(tmp_path / "audit.jsonl").records() if r["event"] == "draft_stalled"]
+        assert (rec["draft_id"], rec["action"]) == ("2026-10-obs1", "failed")
+        alerts, _ = social_alerts.scan(later + dt.timedelta(minutes=5), audit_path=tmp_path / "audit.jsonl", ledger_path=ledger.path, rules=rules_with(),
+                                       slots=[], taxonomy_file=tmp_path / "none.json", disk_free=lambda p: 10 ** 12)
+        stalled = [a for a in alerts if a.kind == "draft_stalled"]
+        assert [(a.level, a.message.startswith("draft_stalled 2026-10-obs1: ")) for a in stalled] == [("error", True)]
+
+    def test_an_owner_approval_ends_the_streak(self, tmp_path):
+        ledger, drafts = self.stall(tmp_path)
+        social.approve(ledger, drafts, "2026-10-obs1", rules=rules_with(), audit=Audit(tmp_path / "audit.jsonl"))
+        assert "2026-10-obs1" not in ledger.nothing_sent_streaks()
+
+
 class TestCorruptLedgerIsAudited:
     def corrupt(self, tmp_path, tail):
         ledger = Ledger(tmp_path / "l.jsonl")

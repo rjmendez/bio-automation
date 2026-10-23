@@ -51,10 +51,10 @@ def run_cli(monkeypatch, *argv) -> int:
     return cli.main()
 
 
-def pre_send(manual=False, rules=None, draft_id="d1", now=NOW, live=True):
+def pre_send(manual=False, rules=None, draft_id="d1", now=NOW, live=True, on_send=None):
     social_controls.register_hooks()
     ctx = {"draft_id": draft_id, "draft": {}, "draft_dir": Path("."), "ledger": social.Ledger(), "now": now, "live": live, "manual": manual,
-           "fetch": None, "rules": rules or rules_with()}
+           "fetch": None, "rules": rules or rules_with(), "on_send": [] if on_send is None else on_send}
     results = social_hooks.run("pre_send", ctx, rules=ctx["rules"], audit=Audit(audit_path(), run="r1", now=lambda: NOW))
     return social_hooks.first_non_pass(results)
 
@@ -343,14 +343,19 @@ class TestBreakerCooldown:
 
     def test_after_the_cool_down_one_live_probe_goes_through_and_is_audited(self):
         self.three_failures()
-        assert pre_send(now=self.LAST + dt.timedelta(hours=6)) is None
+        started = []
+        assert pre_send(now=self.LAST + dt.timedelta(hours=6), on_send=started) is None
+        assert events("breaker_probe") == []                         # not spent by pre_send itself, only when the send starts
+        assert len(started) == 1
+        started[0]()
         [rec] = events("breaker_probe")
         assert (rec["draft_id"], rec["count"], rec["limit"], rec["cooldown_h"]) == ("d1", 3, 3, 6.0)
 
     def test_a_dry_run_after_the_cool_down_passes_without_spending_the_probe(self):
         self.three_failures()
-        assert pre_send(now=self.LAST + dt.timedelta(hours=7), live=False) is None
-        assert events("breaker_probe") == []
+        started = []
+        assert pre_send(now=self.LAST + dt.timedelta(hours=7), live=False, on_send=started) is None
+        assert (events("breaker_probe"), started) == ([], [])
 
     def test_a_manual_post_is_never_stopped_and_never_a_probe(self):
         self.three_failures()
@@ -412,3 +417,34 @@ class TestBreakerCooldown:
         probe, send = flow.post(tmp_path / "probe")
         assert (probe["status"], len(send.calls), len(events("breaker_probe"))) == ("posted", 1, 1)
         assert social_controls.breaker_state(limit=3, now=NOW)["open"] is False
+
+
+class TestProbeIsSpentOnlyWhenASendStarts:
+    """Three failures 10 h before NOW and a 6 h cool-down: the probe is due. A later pre_send hook withdrawing the candidate must not spend it."""
+
+    def world(self, tmp_path, monkeypatch, withdraw):
+        stamp = (NOW - dt.timedelta(hours=10)).isoformat(timespec="seconds")
+        write_audit(*[("post_failed", f"r{i}", {"draft_id": f"x{i}", "outcome": "nothing sent", "error": "boom", "at": stamp}) for i in range(3)])
+        social_controls.register_hooks()
+        social_hooks.register("floor", "pre_send", lambda ctx: social_hooks.Verdict("withdraw", "small") if ctx["draft_id"] in withdraw else None, priority=30)
+        ledger, drafts = drafted(tmp_path, 2)
+        audit = Audit(audit_path(), run="flow", now=lambda: NOW)
+        send = RecordingSend()
+        result = social.post_next(ledger, drafts, now=NOW, live=True, send=send, rules=rules_with(), audit=audit)
+        return result, send
+
+    def test_a_probe_candidate_withdrawn_by_a_later_hook_leaves_the_probe_for_the_next_candidate(self, tmp_path, monkeypatch):
+        result, send = self.world(tmp_path, monkeypatch, withdraw={"2026-10-obs1"})
+        assert (result["status"], result["withdrawn"], len(send.calls)) == ("posted", ["2026-10-obs1"], 1)
+        [probe] = events("breaker_probe")
+        assert probe["draft_id"] == "2026-10-obs2"
+
+    def test_when_every_candidate_is_withdrawn_no_probe_is_spent(self, tmp_path, monkeypatch):
+        result, send = self.world(tmp_path, monkeypatch, withdraw={"2026-10-obs1", "2026-10-obs2"})
+        assert (result["status"], result["withdrawn"], len(send.calls), events("breaker_probe")) == (
+            "nothing approved", ["2026-10-obs1", "2026-10-obs2"], 0, [])
+
+    def test_positive_twin_a_probe_that_is_not_withdrawn_is_spent_once_with_its_draft(self, tmp_path, monkeypatch):
+        result, send = self.world(tmp_path, monkeypatch, withdraw=set())
+        assert (result["status"], len(send.calls)) == ("posted", 1)
+        assert [r["draft_id"] for r in events("breaker_probe")] == ["2026-10-obs1"]

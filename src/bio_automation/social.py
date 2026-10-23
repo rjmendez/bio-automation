@@ -416,6 +416,8 @@ def order_candidates(cands: dict[int, list[str]], exclude: set[int], seed: str, 
 _CORRUPT_LOGGED: set[tuple] = set()               # (ledger, run, line, kind) already audited as ledger_corrupt
 LEDGER_LOCK_WAIT_S = 60.0                         # a writer other than the post run waits this long for a running post to release the ledger lock
 LEDGER_LOCK_POLL_S = 0.5
+STALL_AFTER = 2                                   # consecutive NothingSent failures of one draft after which it is skipped for the rest of that day
+STALL_FAIL_DAYS = 3                               # a draft that has been stalled this long is marked failed (the owner re-approves or rejects it)
 MAX_WITHDRAWALS_PER_OBS = 3                       # pre_send gates may take back drafts of one observation this often; then it is no candidate any more
                                                   # (a draft that fails the gates every time would otherwise be redrafted and withdrawn forever, burning stock and slots)
 
@@ -472,6 +474,20 @@ class Ledger:
             elif r["event"] == "withdrawn" and r.get("hook"):
                 for o in obs_of.get(r["draft_id"], []):
                     out[o] = (out.get(o, (0, ""))[0] + 1, str(r.get("reason") or ""))
+        return out
+
+    def nothing_sent_streaks(self) -> dict[str, dict]:
+        """{draft_id: {"count", "first", "last"}}: the "error" notes (a send that sent nothing) of each draft since its last drafted, owner
+        approval, failed, posted, rejected or withdrawn record. A restored approval (the send's own undo) does not end the streak."""
+        out: dict[str, dict] = {}
+        for r in self.records():
+            did, ev = r["draft_id"], r["event"]
+            if ev == "error":
+                s = out.setdefault(did, {"count": 0, "first": r["at"], "last": r["at"]})
+                s["count"] += 1
+                s["last"] = r["at"]
+            elif ev in ("drafted", "failed", "posted", "rejected", "withdrawn") or (ev == "approved" and not r.get("restored")):
+                out.pop(did, None)
         return out
 
     def append(self, event: str, draft_id: str, *, now: dt.datetime | None = None, **fields) -> dict:
@@ -1443,6 +1459,30 @@ def _withdrawn_report(taken_back: list[str], reasons: dict[str, str]) -> dict:
     return {"withdrawn": list(taken_back), "withdrawn_count": len(taken_back), "withdrawn_reasons": {d: reasons[d] for d in taken_back}}
 
 
+def stalled_drafts(ledger: Ledger, now: dt.datetime, *, live: bool, audit: Audit) -> set[str]:
+    """The drafts to skip today: STALL_AFTER or more consecutive NothingSent failures, the last one on now's local day (a deterministic failure
+    must not block the queue forever). Live: each is audited as draft_stalled (an alert names it), and one stalled for STALL_FAIL_DAYS days is
+    marked failed (so choose() stops considering it until the owner approves or rejects it)."""
+    out: set[str] = set()
+    states = ledger.drafts()
+    for did, s in sorted(ledger.nothing_sent_streaks().items()):
+        if s["count"] < STALL_AFTER or states.get(did, {}).get("state") not in ("approved", "drafted"):
+            continue
+        first, last = dt.datetime.fromisoformat(s["first"]), dt.datetime.fromisoformat(s["last"])
+        if now - first >= dt.timedelta(days=STALL_FAIL_DAYS):
+            if live:
+                reason = f"{s['count']} sends in a row sent nothing since {s['first']}; marked failed after {STALL_FAIL_DAYS} days"
+                ledger.append("failed", did, obs_id=states[did]["obs_id"], month=states[did]["month"], error=reason, now=now)
+                _audit_or_stop(audit, "draft_stalled", draft_id=did, count=s["count"], action="failed", reason=reason)
+            continue
+        if last.astimezone(now.tzinfo).date() == now.date():
+            out.add(did)
+            if live:
+                _audit_or_stop(audit, "draft_stalled", draft_id=did, count=s["count"], action="skipped",
+                               reason=f"{s['count']} sends in a row sent nothing (last {s['last']}); skipped for the rest of the day")
+    return out
+
+
 def _audit_or_stop(audit: Audit, event: str, *, then: str = "nothing was sent", **fields) -> None:
     """Write the audit record or raise SocialError saying that `then` (what did not happen) is the consequence."""
     try:
@@ -1456,6 +1496,7 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
                rules: Rules, audit: Audit) -> dict:
     cap = posts_per_day if posts_per_day is not None else rules.value("daily_cap")
     month = f"{now.year}-{now.month:02d}"
+    stalled = stalled_drafts(ledger, now, live=live, audit=audit)
     drafts = ledger.drafts()
     why: list[str] = []
     stuck = [d for d, v in drafts.items() if v["state"] == "posting"]
@@ -1515,13 +1556,13 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
     taken_back: list[str] = []
     reasons: dict[str, str] = {}
     for _attempt in range(MAX_PRE_SEND_WITHDRAWALS):
-        draft_id, needs_approval, why_now = choose(set(taken_back))
+        draft_id, needs_approval, why_now = choose(set(taken_back) | (stalled if not explicit else set()))
         if draft_id is None:
             return {**needs_approval, **_withdrawn_report(taken_back, reasons)}
         ddir = Path(drafts_dir) / draft_id
-        hooked = social_hooks.run(
-            "pre_send", {"draft_id": draft_id, "draft": load_draft(ddir), "draft_dir": ddir, "ledger": ledger, "now": now, "live": live,
-                         "manual": manual, "fetch": _fetch, "rules": rules}, rules=rules, audit=audit)
+        pre_ctx = {"draft_id": draft_id, "draft": load_draft(ddir), "draft_dir": ddir, "ledger": ledger, "now": now, "live": live,
+                   "manual": manual, "fetch": _fetch, "rules": rules, "audit": audit, "on_send": []}
+        hooked = social_hooks.run("pre_send", pre_ctx, rules=rules, audit=audit)
         stop = social_hooks.first_non_pass(hooked)
         if stop is None:
             why = why_now
@@ -1568,6 +1609,8 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
     if not live:
         return {"status": "dry-run", **payload, **_withdrawn_report(taken_back, reasons)}
     ledger.append("posting", draft_id, obs_id=draft["obs_id"], month=dmonth, now=now)
+    for started in pre_ctx["on_send"]:                                # effects of pre_send hooks that must wait until a send really starts
+        started()
     try:
         uri, cid = send(request)
     except NothingSent as e:

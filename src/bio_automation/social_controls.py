@@ -173,8 +173,13 @@ def breaker_hook(ctx: dict) -> Verdict | None:
         return None
     if state["probe_due"]:
         if ctx.get("live"):
-            with contextlib.suppress(OSError):
-                Audit().log("breaker_probe", draft_id=ctx.get("draft_id"), count=state["count"], limit=limit, cooldown_h=state["cooldown_h"])
+            draft_id, count, cooldown_h, audit = ctx.get("draft_id"), state["count"], state["cooldown_h"], ctx.get("audit") or Audit()
+
+            def spend_probe() -> None:
+                with contextlib.suppress(OSError):
+                    audit.log("breaker_probe", draft_id=draft_id, count=count, limit=limit, cooldown_h=cooldown_h)
+
+            ctx.setdefault("on_send", []).append(spend_probe)       # spent when a send actually starts, not here: a later hook may still withdraw this draft
         return None                                              # one probe: success closes the breaker, a failure restarts the cool-down
     after = f"; the next probe is allowed after {state['next_probe_at']}" if state["next_probe_at"] else ""
     reason = (f"circuit breaker open: {state['count']} scheduled posts failed in a row (limit {limit}){after}; "
