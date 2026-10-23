@@ -121,13 +121,13 @@ def _exiftool() -> str:
 
 def read_titles(paths: list[Path]) -> dict[Path, str]:
     """{path: embedded XMP-dc title ('' when the file has none)} for many files in one exiftool run (argfile, UTF-8). A file exiftool skipped
-    (locked, timed out) is absent from the result: that is a miss, not an empty title."""
+    (locked, timed out, empty, corrupt: a record carrying an Error) is absent from the result: that is a miss, not an empty title."""
     if not paths:
         return {}
     with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False, encoding="utf-8", newline="\n") as af:
         af.write("\n".join(str(p) for p in paths) + "\n")
     try:
-        r = subprocess.run([_exiftool(), "-j", "-charset", "utf8", "-charset", "filename=utf8", "-XMP-dc:Title", "-@", af.name],
+        r = subprocess.run([_exiftool(), "-j", "-charset", "utf8", "-charset", "filename=utf8", "-XMP-dc:Title", "-Error", "-@", af.name],
                            capture_output=True)
     finally:
         os.unlink(af.name)
@@ -135,6 +135,8 @@ def read_titles(paths: list[Path]) -> dict[Path, str]:
         raise SocialError(f"exiftool read no titles: {r.stderr.decode('utf-8', 'replace').strip()[:200]}")
     by_name = {}
     for d in json.loads(r.stdout.decode("utf-8")):
+        if d.get("Error"):
+            continue                                     # empty, locked or corrupt: exiftool prints the error only on stderr and a record with no Title (a miss, never '')
         t = d.get("Title")
         by_name[os.path.normcase(os.path.normpath(d["SourceFile"]))] = "" if t is None else str(t)
     got = {p: by_name[os.path.normcase(os.path.normpath(str(p)))] for p in paths if os.path.normcase(os.path.normpath(str(p))) in by_name}

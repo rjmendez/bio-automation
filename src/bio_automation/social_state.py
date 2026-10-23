@@ -220,6 +220,23 @@ def ledger_gate(ctx: dict) -> Verdict | None:
     return Verdict("block", reason)
 
 
+def duplicate_gate(ctx: dict) -> Verdict | None:
+    """pre_send, rule ledger_integrity: withdraw a candidate when any of its observations is already in a posted or posting draft with a different
+    draft id (two drafts of one observation, e.g. a single and a themed one, must not both go out). A pass for the same draft id."""
+    drafts = ctx["ledger"].drafts()
+    mine = drafts.get(ctx["draft_id"])
+    if mine is None:
+        return None
+    wanted = {str(o) for o in _obs_of(mine)}
+    for did, v in sorted(drafts.items()):
+        if did == ctx["draft_id"] or v.get("state") not in ("posted", "posting"):
+            continue
+        shared = sorted(wanted & {str(o) for o in _obs_of(v)})
+        if shared:
+            return Verdict("withdraw", f"observation {', '.join(shared)} is already in {v['state']} draft {did}; posting {ctx['draft_id']} would be a duplicate")
+    return None
+
+
 # --------------------------------------------------------------------------------------------------- backups
 
 def backup_sources(ledger_path: Path | str | None = None) -> dict[str, Path]:
@@ -498,4 +515,5 @@ def register_hooks() -> None:
     from . import social_hooks
 
     social_hooks.register("ledger_integrity", "pre_send", ledger_gate, rule="ledger_integrity", priority=2)
+    social_hooks.register("duplicate_post", "pre_send", duplicate_gate, rule="ledger_integrity", priority=3)
     social_hooks.register("daily_backup", "maintenance", daily_backup, rule="ledger_integrity", priority=90)

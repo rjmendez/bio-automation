@@ -65,13 +65,28 @@ def check_rules():
     return Check("rules", OK, f"rules load ({len(rules.snapshot()) - len(off)} on, {len(off)} off)"), rules
 
 
+CRITICAL_HOOKS = (("alt_text_privacy", "draft"), ("image_floor", "draft"), ("live_recheck", "pre_send"),
+                  ("gate_rescreen_privacy", "pre_send"), ("gate_rescreen_image", "pre_send"))     # the privacy and image gates: a post without them must not ship
+
+
 def check_extensions() -> Check:
-    """Every social extension module must load: one that does not leaves its gates out of the posting run."""
+    """Every module in social_hooks.EXTENSIONS must load (a missing one counts) and the critical hooks must be registered: one that is not leaves its gates out of the posting run."""
     mods = social_hooks.load_all()
-    bad = social_hooks.failed()
+    bad = dict(social_hooks.failed())
+    loaded = {m.__name__.rsplit(".", 1)[-1] for m in mods}
+    for name in social_hooks.EXTENSIONS:
+        if name not in loaded and name not in bad:
+            bad[name] = "not loaded"
+    registered = {(h.name, h.stage) for stage in social_hooks.STAGES for h in social_hooks.hooks(stage)}
+    missing = [f"{n} ({st})" for n, st in CRITICAL_HOOKS if (n, st) not in registered]
+    problems = []
     if bad:
-        return Check("extensions", FAIL, f"{len(bad)} social module(s) did not load: " + "; ".join(f"{n} ({e})" for n, e in sorted(bad.items())))
-    return Check("extensions", OK, f"{len(mods)} social modules loaded")
+        problems.append(f"{len(bad)} social module(s) did not load: " + "; ".join(f"{n} ({e})" for n, e in sorted(bad.items())))
+    if missing:
+        problems.append("critical hook(s) not registered: " + ", ".join(missing))
+    if problems:
+        return Check("extensions", FAIL, "; ".join(problems))
+    return Check("extensions", OK, f"{len(mods)} social modules loaded, {len(CRITICAL_HOOKS)} critical hooks registered")
 
 
 def check_themes() -> Check:

@@ -176,10 +176,17 @@ def fakepkg(tmp_path, monkeypatch):
 
 
 class TestExtensions:
-    def test_a_missing_extension_module_is_tolerated_and_the_present_ones_load(self, fakepkg, monkeypatch):
+    def test_a_missing_extension_module_is_recorded_as_a_failure_and_the_present_ones_load(self, fakepkg, monkeypatch):
         (fakepkg / "ext_one.py").write_text("X = 1\n", encoding="utf-8")
         monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_one", "ext_absent"))
         assert [m.__name__ for m in social_hooks.extensions()] == ["fakeext.ext_one"]
+        assert social_hooks.failed() == {"ext_absent": "ModuleNotFoundError: No module named 'fakeext.ext_absent'"}
+        with pytest.raises(social_hooks.ExtensionsFailed, match="ext_absent"):
+            social_hooks.require_loaded()
+
+    def test_every_shipped_extension_name_exists(self):
+        assert social_hooks.extensions() and social_hooks.failed() == {}
+        assert [m.__name__.rsplit(".", 1)[-1] for m in social_hooks.extensions()] == list(social_hooks.EXTENSIONS)
 
     def test_register_hooks_is_called_once_even_when_load_all_runs_twice(self, fakepkg, monkeypatch):
         (fakepkg / "ext_one.py").write_text(
@@ -624,13 +631,14 @@ class TestLibraryCallersCannotBypassTheGates:
     def test_selfcheck_reports_a_failed_extension_and_passes_when_all_loaded(self, fakepkg, monkeypatch):
         from bio_automation import social_selfcheck
 
+        missing = "critical hook(s) not registered: alt_text_privacy (draft), image_floor (draft), live_recheck (pre_send), gate_rescreen_privacy (pre_send), gate_rescreen_image (pre_send)"
         self.extension(fakepkg, monkeypatch, "X = 1\n")
-        assert social_selfcheck.check_extensions() == social_selfcheck.Check("extensions", "ok", "1 social modules loaded")
+        assert social_selfcheck.check_extensions() == social_selfcheck.Check("extensions", "fail", missing)
         social_hooks.reset()
         (fakepkg / "ext_broken.py").write_text("raise RuntimeError('import broke')\n", encoding="utf-8")
         monkeypatch.setattr(social_hooks, "EXTENSIONS", ("ext_gate", "ext_broken"))
         assert social_selfcheck.check_extensions() == social_selfcheck.Check(
-            "extensions", "fail", "1 social module(s) did not load: ext_broken (RuntimeError: import broke)")
+            "extensions", "fail", "1 social module(s) did not load: ext_broken (RuntimeError: import broke); " + missing)
 
 
 class TestWouldWithdraw:

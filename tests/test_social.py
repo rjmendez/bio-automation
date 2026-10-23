@@ -1411,6 +1411,24 @@ class TestTitleCacheCachesOnlySuccessfulReads:
         gone = tmp_path / "gone.jpg"
         assert social.read_titles([a, gone]) == {a: "Wasp"}
 
+    def test_read_titles_drops_a_file_exiftool_reports_an_error_for_and_a_good_twin_is_kept(self, tmp_path):
+        good = jpeg(tmp_path / "good.jpg")
+        embed_label(good, {"title": "Wasp", "caption": "c", "keywords": ["k"]})
+        empty = tmp_path / "empty.jpg"
+        empty.write_bytes(b"")
+        assert social.read_titles([good, empty]) == {good: "Wasp"}
+
+    def test_an_errored_file_is_never_cached_as_an_empty_title_and_is_read_again(self, tmp_path):
+        g = tmp_path / "gallery"
+        jpeg(g / "2025/2025-10/2025-10-02_DSC_2.jpg")
+        empty = g / "2025/2025-10/2025-10-02_DSC_3.jpg"
+        empty.write_bytes(b"")
+        c = write_csv(tmp_path / "c.csv", [cand("200", "Right Bee", "2025-10-02", "2025/2025-10-02/DSC_2.NEF", "1"),
+                                            cand("201", "Other Bee", "2025-10-02", "2025/2025-10-02/DSC_3.NEF", "2")])
+        cache = tmp_path / "cache" / "titles.json"
+        social.build_obs_index(g, [], [c], titles=social.read_titles, title_cache=cache)
+        assert sorted(json.loads(cache.read_text(encoding="utf-8"))["titles"]) == ["2025/2025-10/2025-10-02_DSC_2.jpg"]
+
 
 class TestCorruptLedgerIsAudited:
     def corrupt(self, tmp_path, tail):

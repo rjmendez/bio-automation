@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from test_social import NOW, drafted, rules_with, write_draft
 
-from bio_automation import cli, settings, social, social_selfcheck
+from bio_automation import cli, settings, social, social_hooks, social_selfcheck
 from bio_automation.social import Ledger
 from bio_automation.social_rules import Audit
 from bio_automation.social_selfcheck import FAIL, OK, WARN, GB
@@ -83,6 +83,28 @@ class TestHealthy:
 
 
 # ----------------------------------------------------------------------------------------------------------------------- rules, themes
+
+class TestExtensionsCheck:
+    def test_all_modules_and_critical_hooks_present_is_ok(self, world):
+        c = world.run()["extensions"]
+        assert (c.level, c.message) == (OK, f"{len(social_hooks.EXTENSIONS)} social modules loaded, 5 critical hooks registered")
+
+    def test_a_deleted_extension_module_fails(self, world, monkeypatch):
+        monkeypatch.setattr(social_hooks, "EXTENSIONS", (*social_hooks.EXTENSIONS, "social_deleted_gate"))
+        c = world.run()["extensions"]
+        assert c.level == FAIL
+        assert "social_deleted_gate (ModuleNotFoundError: No module named 'bio_automation.social_deleted_gate')" in c.message
+
+    def test_a_critical_hook_that_is_not_registered_fails_and_names_it(self, world, monkeypatch):
+        real = social_hooks.load_all
+        def load_without_image_floor():
+            mods = real()
+            social_hooks._hooks[:] = [h for h in social_hooks._hooks if h.name != "image_floor"]
+            return mods
+        monkeypatch.setattr(social_hooks, "load_all", load_without_image_floor)
+        c = world.run()["extensions"]
+        assert (c.level, c.message) == (FAIL, "critical hook(s) not registered: image_floor (draft)")
+
 
 class TestRulesAndThemes:
     def test_a_bad_rule_in_the_environment_fails(self, world, monkeypatch):

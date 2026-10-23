@@ -9,7 +9,6 @@
 Each gate is a hook (social_hooks) that runs only while its rule is on; register_hooks() is called by social_hooks.load_all()."""
 from __future__ import annotations
 
-import inspect
 import re
 import socket
 import unicodedata
@@ -307,16 +306,9 @@ def rescreen_image(ctx: dict) -> Verdict | None:
 
 # -------------------------------------------------------------------------------------------------------------- extension
 
-def _register(*args, **kwargs) -> None:
-    """social_hooks.register, passing critical=True (a failing hook fails closed in every stage) where the framework supports it."""
-    if "critical" not in inspect.signature(social_hooks.register).parameters:
-        kwargs.pop("critical", None)
-    social_hooks.register(*args, **kwargs)
-
-
 def register_hooks() -> None:
-    _register("alt_text_privacy", "draft", alt_text_privacy, rule="alt_text_privacy", priority=10, critical=True)
-    _register("image_floor", "draft", image_floor, rule="image_floor", priority=30, critical=True)
-    _register("live_recheck", "pre_send", live_recheck, rule="live_recheck", priority=20, critical=True)
-    _register("gate_rescreen_privacy", "pre_send", rescreen_privacy, rule="alt_text_privacy", priority=25, critical=True)
-    _register("gate_rescreen_image", "pre_send", rescreen_image, rule="image_floor", priority=25, critical=True)
+    social_hooks.register("alt_text_privacy", "draft", alt_text_privacy, rule="alt_text_privacy", priority=10, critical=True)
+    social_hooks.register("image_floor", "draft", image_floor, rule="image_floor", priority=30, critical=True)
+    social_hooks.register("live_recheck", "pre_send", live_recheck, rule="live_recheck", priority=20, critical=True)
+    social_hooks.register("gate_rescreen_privacy", "pre_send", rescreen_privacy, rule="alt_text_privacy", priority=25, critical=True)
+    social_hooks.register("gate_rescreen_image", "pre_send", rescreen_image, rule="image_floor", priority=25, critical=True)

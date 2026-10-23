@@ -157,19 +157,15 @@ def _record_failure(name: str, e: BaseException) -> None:
 
 
 def extensions() -> list:
-    """The extension modules that load. A module that is not there yet is skipped; one that is there but fails to import is skipped too and
-    recorded in failed() (and audited): a broken extension must not take every other command down."""
+    """The extension modules that load. One that is missing (every name in EXTENSIONS must exist in a shipped tree) or fails to import is skipped
+    and recorded in failed() (and audited): a broken extension must not take every other command down, but it is never silent."""
     out = []
     for name in EXTENSIONS:
         full = _qualified(name)
         if full not in _modules:
             try:
                 _modules[full] = importlib.import_module(full)
-            except ModuleNotFoundError as e:
-                if e.name != full:
-                    _record_failure(name, e)
-                continue
-            except Exception as e:  # noqa: BLE001 -- any import-time error of one extension
+            except Exception as e:                       # a module that is not there (deleted, not shipped) is a failure too: its gates are missing  # noqa: BLE001 -- any import-time error of one extension
                 _record_failure(name, e)
                 continue
             _failed.pop(name, None)

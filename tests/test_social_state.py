@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from test_social import NOW, RecordingSend, drafted, events, rules_with
+from test_social import NOW, RecordingSend, drafted, events, rules_with, write_draft
 
 from bio_automation import cli, settings, social, social_hooks, social_state
 from bio_automation.social import Ledger, SocialError
@@ -231,8 +231,57 @@ class TestPreSendGate:
 
     def test_registered_at_priority_2_for_pre_send_and_90_for_maintenance_under_the_rule(self):
         social_state.register_hooks()
-        assert [(h.name, h.rule, h.priority) for h in social_hooks.hooks("pre_send")] == [("ledger_integrity", "ledger_integrity", 2)]
+        assert [(h.name, h.rule, h.priority) for h in social_hooks.hooks("pre_send")] == [
+            ("ledger_integrity", "ledger_integrity", 2), ("duplicate_post", "ledger_integrity", 3)]
         assert [(h.name, h.rule, h.priority) for h in social_hooks.hooks("maintenance")] == [("daily_backup", "ledger_integrity", 90)]
+
+    def dup_world(self, tmp_path, other_state):
+        """Draft d-new wants observation 1, which draft d-old (observation 1 and 7) is in `other_state`."""
+        ledger = Ledger(tmp_path / "dup.jsonl")
+        ledger.append("drafted", "d-old", obs_id=1, obs_ids=[1, 7], month="2026-10", now=NOW)
+        ledger.append("approved", "d-old", obs_id=1, month="2026-10", hash="h", now=NOW)
+        if other_state in ("posting", "posted"):
+            ledger.append("posting", "d-old", obs_id=1, month="2026-10", now=NOW)
+        if other_state == "posted":
+            ledger.append("posted", "d-old", obs_id=1, month="2026-10", uri="at://u", now=NOW)
+        if other_state == "withdrawn":
+            ledger.append("withdrawn", "d-old", obs_id=1, month="2026-10", reason="x", now=NOW)
+        ledger.append("drafted", "d-new", obs_id=1, obs_ids=[7, 9], month="2026-10", now=NOW)
+        return ledger
+
+    @pytest.mark.parametrize("state", ["posted", "posting"])
+    def test_duplicate_gate_withdraws_a_draft_whose_observation_is_already_posted_or_posting(self, tmp_path, state):
+        ledger = self.dup_world(tmp_path, state)
+        verdict = social_state.duplicate_gate({"draft_id": "d-new", "ledger": ledger})
+        assert verdict == social_hooks.Verdict("withdraw", f"observation 7 is already in {state} draft d-old; posting d-new would be a duplicate")
+
+    @pytest.mark.parametrize("state", ["approved", "withdrawn"])
+    def test_duplicate_gate_passes_when_the_other_draft_is_not_posted_or_posting(self, tmp_path, state):
+        ledger = self.dup_world(tmp_path, state)
+        assert social_state.duplicate_gate({"draft_id": "d-new", "ledger": ledger}) is None
+
+    def test_duplicate_gate_passes_the_posted_draft_itself_and_unrelated_observations(self, tmp_path):
+        ledger = self.dup_world(tmp_path, "posted")
+        ledger.append("drafted", "d-other", obs_id=50, month="2026-10", now=NOW)
+        assert social_state.duplicate_gate({"draft_id": "d-old", "ledger": ledger}) is None
+        assert social_state.duplicate_gate({"draft_id": "d-other", "ledger": ledger}) is None
+
+    def test_a_duplicate_is_withdrawn_in_the_run_and_the_next_draft_goes_out(self, tmp_path):
+        social_state.register_hooks()
+        ledger, drafts = drafted(tmp_path, 1)                        # obs 1
+        for event, extra in (("approved", {"hash": "h"}), ("posting", {}), ("posted", {"uri": "at://u"})):
+            ledger.append(event, "2026-10-obs1", obs_id=1, month="2026-10", now=NOW, **extra)
+        ledger.append("drafted", "2026-10-dup", obs_id=1, month="2026-10", now=NOW - dt.timedelta(days=3))     # a second draft of observation 1, older than the next
+        write_draft(drafts, "2026-10-dup", 1, "2026-10")
+        ledger.append("drafted", "2026-10-obs5", obs_id=5, month="2026-10", now=NOW - dt.timedelta(days=1))
+        write_draft(drafts, "2026-10-obs5", 5, "2026-10")
+        send = RecordingSend()
+        result = social.post_next(ledger, drafts, now=NOW, live=True, send=send, rules=rules_with(), audit=Audit(tmp_path / "a.jsonl"))
+        assert (result["status"], result["withdrawn"]) == ("posted", ["2026-10-dup"])
+        assert result["withdrawn_reasons"] == {"2026-10-dup": "observation 1 is already in posted draft 2026-10-obs1; posting 2026-10-dup would be a duplicate"}
+        assert events(ledger, "2026-10-dup") == ["drafted", "withdrawn"]
+        assert events(ledger, "2026-10-obs5") == ["drafted", "approved", "posting", "posted"]
+        assert len(send.calls) == 1
 
     def test_a_scheduled_post_is_blocked_and_nothing_is_sent_while_the_ledger_is_corrupt(self, tmp_path):
         social_state.register_hooks()
