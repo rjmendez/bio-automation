@@ -1,10 +1,11 @@
 """Show the proposed (not yet submitted) iNat photos in the PiGallery2 gallery, grouped by what the BioCLIP 2 suggestions say they are.
 
 Layout, under one top-level folder that is NOT a ``<year>/<year-month>`` folder (the Bluesky poster draws from those and must never see iNat's
-2048 px upload copies): ``inat-pending/<predicted iconic group>/g<group>[_<Species>_p<vote share %>]/<file>``. The folder names carry the
-suggestion, so no file is modified. A species is named only when its vote share reaches ``min_share``, and the share is part of the name:
-the leave-one-out table (suggest_bins.json) says what a share is worth, a 0.5 share is right about 4 times in 10. Groups whose top iconic
-vote is under ``min_share`` go under ``Unsure``.
+2048 px upload copies): ``inat-pending/<predicted iconic group>/g<group>[_<Species>_a<accuracy %>]/<file>``. The folder names carry the
+suggestion, so no file is modified. A species is named only when its MEASURED accuracy reaches ``min_accuracy`` (default 0.6), and that accuracy is
+part of the name. It comes from whichever source is better calibrated for this group: the nearest-neighbour vote over the owner's own photos
+(suggest_bins.json) or the whole-taxonomy zero-shot probability (zeroshot_bins.json, per observation). The iconic folder is the named species' group;
+without a named species it is the nearest-neighbour iconic vote when it reaches ``min_share``, else ``Unsure``.
 
 Files are HARDLINKS of the upload copies (no extra disk, the copies untouched); hardlinks need the same volume as the copies. Nothing already in
 the gallery is replaced, and only links this module made (its manifest) are ever pruned. A change publishes ONE ``gallery.reindex`` message
@@ -29,20 +30,35 @@ def _slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-")
 
 
-def group_folder(group, suggestion: dict | None, min_share: float = 0.5) -> str:
-    """'inat-pending/<Iconic or Unsure>/g<group>[_<Species>_p<share%>]' for one proposed observation."""
+def best_species(suggestion: dict, min_accuracy: float) -> dict | None:
+    """The better-calibrated top species of the two sources (the nearest-neighbour vote in "species", the whole-taxonomy zero-shot in "zero_shot"),
+    when its MEASURED accuracy reaches *min_accuracy*; a tie goes to the nearest-neighbour vote. None when neither qualifies."""
+    cands = []
+    for key in ("species", "zero_shot"):
+        top = (suggestion.get(key) or [None])[0]
+        if top and top.get("measured_accuracy") is not None and top["measured_accuracy"] >= min_accuracy:
+            cands.append(top)
+    return max(cands, key=lambda c: c["measured_accuracy"]) if cands else None
+
+
+def group_folder(group, suggestion: dict | None, min_share: float = 0.5, min_accuracy: float = 0.6) -> str:
+    """'inat-pending/<Iconic or Unsure>/g<group>[_<Species>_a<accuracy%>]' for one proposed observation. The species is named when its measured accuracy
+    reaches min_accuracy and the iconic folder is that species' group; otherwise the iconic folder is the nearest-neighbour iconic vote when it reaches
+    min_share, else Unsure."""
     iconic, species = UNSURE, ""
     if suggestion:
-        top_i = (suggestion.get("iconic") or [None])[0]
-        if top_i and top_i["vote_share"] >= min_share:
-            iconic = _slug(top_i["iconic"]) or UNSURE
-        top_s = (suggestion.get("species") or [None])[0]
-        if top_s and top_s["vote_share"] >= min_share:
-            species = f"_{_slug(top_s['taxon'])}_p{round(top_s['vote_share'] * 100)}"
+        best = best_species(suggestion, min_accuracy)
+        if best:
+            species = f"_{_slug(best['taxon'])}_a{round(best['measured_accuracy'] * 100)}"
+            iconic = _slug(best.get("iconic") or "") or UNSURE
+        if iconic == UNSURE:
+            top_i = (suggestion.get("iconic") or [None])[0]
+            if top_i and top_i["vote_share"] >= min_share:
+                iconic = _slug(top_i["iconic"]) or UNSURE
     return f"{ROOT_NAME}/{iconic}/g{int(group):04d}{species}"
 
 
-def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5) -> tuple[dict[str, str], list[dict]]:
+def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5, min_accuracy: float = 0.6) -> tuple[dict[str, str], list[dict]]:
     """({gallery-relative path: source copy path}, [queue entries skipped because their copy is not on disk]).
     Two copies with the same file name in one group folder is an error: the second would silently shadow the first."""
     links: dict[str, str] = {}
@@ -52,7 +68,7 @@ def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5) -> tuple[
         if not copy or not os.path.exists(copy):
             skipped.append(item)
             continue
-        rel = f"{group_folder(item['group'], suggestions.get(str(item['group'])), min_share)}/{Path(copy).name}"
+        rel = f"{group_folder(item['group'], suggestions.get(str(item['group'])), min_share, min_accuracy)}/{Path(copy).name}"
         if rel in links and not os.path.samefile(links[rel], copy):
             raise GalleryLinkError(f"two different upload copies would both be {rel}: {links[rel]} and {copy}")
         links[rel] = copy

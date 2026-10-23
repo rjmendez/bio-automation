@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 STAGES = Path(__file__).resolve().parents[1] / "pipeline" / "stages"
-_FLAT = ("embed_index", "ort_providers", "bioclip_embed", "embed_loo", "inat_suggest")
+_FLAT = ("embed_index", "ort_providers", "bioclip_embed", "embed_loo", "inat_suggest", "taxon_zeroshot")
 
 
 @pytest.fixture
@@ -455,4 +455,4 @@ class TestInatSuggestMain:
             "iconic": [{"iconic": "Fungi", "vote_share": 0.667}, {"iconic": "Insecta", "vote_share": 0.333}]}}
         meta = json.loads((tmp_path / "data" / "inat_suggestions.meta.json").read_text(encoding="utf-8"))
         assert meta == {"backend": "bioclip2", "collection": "bio_photos_bioclip2", "reference_photos": 3, "queue_entries": 2,
-                        "entries_with_copy": 1, "groups": 1}
+                        "entries_with_copy": 1, "groups": 1, "zero_shot_index": None}
