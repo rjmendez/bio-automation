@@ -162,6 +162,7 @@ INAT_COVERAGE_CSV = env_path("BIO_INAT_COVERAGE_CSV", "F:/bio-automation-data/in
 # rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
 BSKY_HANDLE = env("BIO_BSKY_HANDLE", "trunkfullofdeadhookers.com")
 BSKY_OAUTH_DIR = env_path("BIO_BSKY_OAUTH_DIR", r"F:\services\bio-social\oauth")
+SOCIAL_SCRIPTS_DIR = env_path("BIO_SOCIAL_SCRIPTS_DIR", r"F:\services\bio-social")      # where scripts\deploy_prod.ps1 copies scripts\windows\*.ps1; social-selfcheck compares them to the repo copies
 BSKY_CLIENT_ID = env("BIO_BSKY_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/poster/client-metadata.json")
 BSKY_REDIRECT_URI = env("BIO_BSKY_REDIRECT_URI", "https://rjmendez.github.io/bio-social-oauth/callback.html")
 BSKY_OAUTH_SCOPE = env("BIO_BSKY_OAUTH_SCOPE", "atproto repo:app.bsky.feed.post?action=create blob:image/*")   # create posts + upload images only

@@ -13,6 +13,8 @@ All three run the package in `$env:BIO_PACKAGE_DEPLOY`, else `D:\apps\bio-automa
 
 **Mutual exclusion.** Prep and post hold the named Windows mutex `Global\bio-social-run`. Prep holds it for the whole run and waits up to 30 minutes for it (a prep that missed 03:00 and starts at wake-up waits for a post run that is in progress; if it still cannot get it, it logs that and exits 1). A post run waits up to 10 minutes for a running prep, then posts anyway and logs `OVERLAP` (a missed post is worse than an overlap). A holder that died abandons the mutex; the next script logs that and takes it.
 
+Drift: `bio social-selfcheck` compares these files byte for byte (sha256) with the copies in `F:\services\bio-social` (setting `BIO_SOCIAL_SCRIPTS_DIR`) and warns (`script-drift`) for a missing or different one; `deploy_prod.ps1` refreshes them and verifies the hashes. Edit the repo copy, never the deployed one.
+
 Nothing here is applied automatically. `scripts\deploy_prod.ps1` copies every `scripts\windows\*.ps1` to `F:\services\bio-social\` after a deploy whose selfcheck passed (never `run-social.ps1`, the old single script, which stays as the rollback). `register-social-tasks.ps1` registers `Bio-Social-Prep`, `Bio-Social-Post` and `Bio-Social-Watch` with the principal and settings of `Bio-Social-Daily`, DISABLED by default so nothing double-posts; `-Cutover` disables `Bio-Social-Daily` (it is not deleted) and enables the three (`-WhatIf` shows the plan). The commands below do the same by hand, in an elevated Windows PowerShell 5.1.
 
 ## Register
