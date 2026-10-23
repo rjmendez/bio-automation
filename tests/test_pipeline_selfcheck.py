@@ -169,18 +169,25 @@ class TestCrashLoop:
         (tmp_path / "worker_guard.json").write_text(json.dumps(state), encoding="utf-8")
 
     def test_no_record_is_ok(self, tmp_path):
-        assert sc.check_crash_loop(tmp_path).level == "ok"
+        assert sc.check_crash_loop(tmp_path, now=NOW).level == "ok"
 
     def test_below_the_alert_count_is_ok_and_at_it_fails(self, tmp_path):
-        self.write(tmp_path, {"render-0": {"quick_exits": 2}})
-        assert sc.check_crash_loop(tmp_path).level == "ok"
-        self.write(tmp_path, {"render-0": {"quick_exits": 3}, "tag-1": {"quick_exits": 9}})
-        check = sc.check_crash_loop(tmp_path)
+        self.write(tmp_path, {"render-0": {"quick_exits": 2, "counted": True, "last_start": NOW - 50}})
+        assert sc.check_crash_loop(tmp_path, now=NOW).level == "ok"
+        self.write(tmp_path, {"render-0": {"quick_exits": 3, "counted": True, "last_start": NOW - 50},
+                              "tag-1": {"quick_exits": 9, "counted": False, "last_start": NOW - 10}})
+        check = sc.check_crash_loop(tmp_path, now=NOW)
         assert check.level == "fail" and "render-0 x3, tag-1 x9" in check.message
+
+    def test_a_worker_that_has_stayed_up_since_its_last_start_is_not_looping(self, tmp_path):
+        self.write(tmp_path, {"render-0": {"quick_exits": 5, "counted": False, "last_start": NOW - 600}})
+        assert sc.check_crash_loop(tmp_path, now=NOW).level == "ok"
+        self.write(tmp_path, {"render-0": {"quick_exits": 5, "counted": False, "last_start": NOW - 30}})
+        assert sc.check_crash_loop(tmp_path, now=NOW).level == "fail"
 
     def test_a_torn_file_is_a_warning(self, tmp_path):
         (tmp_path / "worker_guard.json").write_text("{", encoding="utf-8")
-        assert sc.check_crash_loop(tmp_path).level == "warn"
+        assert sc.check_crash_loop(tmp_path, now=NOW).level == "warn"
 
 
 class TestGpu:

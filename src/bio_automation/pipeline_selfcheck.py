@@ -42,7 +42,8 @@ LONGEST_LEASE_S = 6 * 3600.0                   # nas_pipeline.LEASE_MAX_S: a liv
 CLAIM_WARN_S = LONGEST_LEASE_S + 1800.0
 PENDING_WARN_S = 24 * 3600.0                   # a claimable message this old and nobody took it
 PACE_WARN_S = 300.0
-GUARD_ALERT_AT = 3
+GUARD_ALERT_AT = 3                             # worker_guard.GUARD_ALERT_AT
+QUICK_RUN_S = 120.0                            # worker_guard.QUICK_RUN_S
 STAGE_TOPICS = {                               # which worker stage consumes which topic (nas_pipeline.py's run_worker calls)
     "lightcraft": (topics.STOCK_RENDER_IN_LIBRARY, topics.NAS_DAY_MATCHED, topics.LIBRARY_DAY_SELECTED),
     "render": (topics.STOCK_RENDER_REQUESTED,),
@@ -162,14 +163,19 @@ def check_workers(q: Queue | None, heartbeat_dir: Path | str, *, now: float, ali
     return Check("workers", OK, f"{len(beats)} workers alive: " + ", ".join(sorted(str(b["worker_id"]) for b in beats)))
 
 
-def check_crash_loop(directory: Path | str) -> Check:
+def check_crash_loop(directory: Path | str, *, now: float | None = None) -> Check:
+    """worker_guard.json (written by the ops repo's worker_guard.py for the supervisor): a worker is crash-looping when GUARD_ALERT_AT quick exits
+    in a row are on record and its latest start has already ended (counted) or is younger than the quick-run limit; one that has stayed up past
+    the limit since is running again and its old count is history."""
+    now = time.time() if now is None else now
     path = Path(directory) / "worker_guard.json"
     if not path.is_file():
         return Check("crash-loop", OK, "no crash-loop record")
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
-        looping = {n: s for n, s in state.items() if int(s.get("quick_exits", 0)) >= GUARD_ALERT_AT}
-    except (OSError, ValueError, AttributeError) as e:
+        looping = {n: s for n, s in state.items() if int(s.get("quick_exits", 0)) >= GUARD_ALERT_AT
+                   and (s.get("counted") or now - float(s.get("last_start", 0)) < QUICK_RUN_S)}
+    except (OSError, ValueError, AttributeError, TypeError) as e:
         return Check("crash-loop", WARN, f"{path} is unreadable: {type(e).__name__}: {e}")
     if looping:
         return Check("crash-loop", FAIL, "workers exiting within seconds of starting, being held back by the supervisor: " +
@@ -252,7 +258,7 @@ def run_checks(*, db: Path | str | None = None, pipeline_dir: Path | str | None 
     finally:
         if q is not None:
             q.close()
-    checks += [check_crash_loop(pipeline_dir / "logs"), check_gpu(gpu_probe or default_gpu_probe), check_inat_pace(rate_db or settings.INAT_RATE_DB, now=now),
+    checks += [check_crash_loop(pipeline_dir / "logs", now=now), check_gpu(gpu_probe or default_gpu_probe), check_inat_pace(rate_db or settings.INAT_RATE_DB, now=now),
                *check_disks(drives or default_drives(), free or _free)]
     return checks
 
