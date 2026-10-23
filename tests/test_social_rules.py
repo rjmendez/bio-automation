@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import os
+import urllib.error
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from test_social import NOW, RecordingDescribe, RecordingFetch, RecordingSend, drafted, events, jpeg, labels, no_model, observation, rules_with, write_draft
 
 from bio_automation import settings, social, themes
-from bio_automation.social import Ledger, SocialError
+from bio_automation.social import Ledger, SkipObservation, SocialError
 from bio_automation.social_rules import RULES, Audit, RulesError, load_rules, rules_toml
 
 NOWHERE = Path(os.devnull)
@@ -22,7 +25,7 @@ class TestRuleStates:
         assert r.snapshot() == {
             "daily_cap": {"on": True, "value": 3}, "manual_exempt_from_cap": {"on": True}, "auto_approve": {"on": True},
             "month_candidates": {"on": False}, "month_posting": {"on": False}, "themes": {"on": True}, "theme_day_only": {"on": True},
-            "theme_species_first": {"on": True}, "lower_quality_photos": {"on": True}, "prints_first": {"on": True}, "year_rotation": {"on": True}, "skip_casual": {"on": True},
+            "theme_species_first": {"on": True}, "lower_quality_photos": {"on": True, "value": 1000}, "prints_first": {"on": True}, "year_rotation": {"on": True}, "skip_casual": {"on": True},
             "strip_review_claim": {"on": True}}
         assert [r.state(x.name).source for x in RULES] == ["default"] * len(RULES)
 
@@ -322,6 +325,7 @@ class TestCli:
         by = {line.split()[0]: line for line in out[1:]}
         assert by["prints_first"].startswith("  prints_first             off     [file    ] ")
         assert by["month_posting"].startswith("  month_posting            off     [default ] ")
+        assert by["lower_quality_photos"].startswith("  lower_quality_photos     ON =1000 [default ] Observations without a gallery photo are eligible too")
 
     def test_social_rules_write_defaults_once(self, tmp_path, monkeypatch, capsys):
         from bio_automation import cli
@@ -360,86 +364,198 @@ class TestCli:
 
 
 def snapshot(tmp_path, observations):
-    """A tiny iNat snapshot and a photo cache: observations = [(obs id, observed_on, [(photo id, bytes or None for 'not cached')])]."""
-    cache = tmp_path / "inat_photos"
-    cache.mkdir(parents=True, exist_ok=True)
-    rows = []
-    for obs, day, photos in observations:
-        rows.append({"id": obs, "observed_on": day, "photos": [{"id": pid} for pid, _ in photos]})
-        for pid, size in photos:
-            if size:
-                jpeg(cache / f"{pid}.jpg", size=size)
-    snap = tmp_path / "inat_observations.json"
-    snap.write_text(json.dumps({"login": "me", "count": len(rows), "observations": rows}), encoding="utf-8")
-    return snap, cache
+    """A tiny iNat snapshot: observations = [(obs id, observed_on, [(photo id, width, height, license)])]."""
+    rows = [{"id": o, "observed_on": d, "photos": [{"id": pid, "dims": {"width": w, "height": h}, "license": lic} for pid, w, h, lic in photos]}
+            for o, d, photos in observations]
+    p = tmp_path / "inat_observations.json"
+    p.write_text(json.dumps({"login": "me", "count": len(rows), "observations": rows}), encoding="utf-8")
+    return p
 
 
-class TestLowerQualityPhotos:
-    def test_cached_photos_are_matched_to_their_observation_biggest_first_and_uncached_ones_are_left_out(self, tmp_path):
-        snap, cache = snapshot(tmp_path, [(10, "2020-05-04", [(111, (40, 30)), (112, (400, 300)), (113, None)]), (11, "2021-01-02", [(114, None)]),
-                                          (12, None, [(115, (64, 48))])])
-        got = social.local_candidates(snap, cache)
-        assert got == {10: {"paths": [str(cache / "112.jpg"), str(cache / "111.jpg")], "observed_on": "2020-05-04"},
-                       12: {"paths": [str(cache / "115.jpg")], "observed_on": None}}
+def jpeg_bytes(size):
+    buf = io.BytesIO()
+    Image.new("RGB", size, (10, 90, 10)).save(buf, "JPEG")
+    return buf.getvalue()
 
-    def test_no_snapshot_or_no_cache_gives_nothing(self, tmp_path):
-        snap, cache = snapshot(tmp_path, [(10, "2020-05-04", [(111, (40, 30))])])
-        assert social.local_candidates(tmp_path / "missing.json", cache) == {}
-        assert social.local_candidates(snap, tmp_path / "no-cache") == {}
-        assert social.local_candidates(snap, cache) != {}
 
+def open_data(pid, size):
+    return social.OPEN_DATA_URL.format(id=pid, size=size)
+
+
+class Photos:
+    """Stands in for the download: {url: bytes, or an int HTTP status, or an exception to raise}; records every url asked for."""
+
+    def __init__(self, by_url):
+        self.by_url, self.calls = by_url, []
+
+    def __call__(self, url):
+        self.calls.append(url)
+        v = self.by_url[url]
+        if isinstance(v, int):
+            raise urllib.error.HTTPError(url, v, "status", {}, None)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+
+class Sleeps:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, seconds):
+        self.calls.append(seconds)
+
+
+CC = "cc-by-nc"
+
+
+class TestInatPhotoCandidates:
+    def test_each_observation_gets_its_biggest_licensed_photo_when_it_is_big_enough(self, tmp_path):
+        snap = snapshot(tmp_path, [
+            (10, "2020-05-04", [(111, 2048, 1365, CC), (112, 1024, 683, CC), (113, 4000, 3000, None)]),     # the unlicensed one is not in open data
+            (11, "2021-01-02", [(114, 2048, 1365, CC)]),                                                      # the gallery has this one
+            (12, "2022-02-03", [(115, 800, 600, CC)]),                                                        # too small
+            (13, None, [(116, 1500, 1000, CC)]), (14, "2023-03-04", [])])
+        assert social.inat_photo_candidates(snap, min_edge=1000, exclude={11}) == {
+            10: {"photo_id": 111, "edge": 2048, "observed_on": "2020-05-04"}, 13: {"photo_id": 116, "edge": 1500, "observed_on": None}}
+        assert sorted(social.inat_photo_candidates(snap, min_edge=500, exclude={11})) == [10, 12, 13]
+
+    def test_no_snapshot_gives_nothing_and_a_snapshot_gives_something(self, tmp_path):
+        snap = snapshot(tmp_path, [(10, "2020-05-04", [(111, 2048, 1365, CC)])])
+        assert social.inat_photo_candidates(tmp_path / "missing.json", min_edge=1000) == {}
+        assert social.inat_photo_candidates(snap, min_edge=1000) != {}
+
+
+class TestFetchBestPhoto:
+    def test_the_original_is_downloaded_once_kept_and_the_downloads_are_paced(self, tmp_path):
+        big = jpeg_bytes((2048, 1365))
+        get, sleeps = Photos({open_data(5, "original"): big}), Sleeps()
+        got = social.fetch_best_photo(5, tmp_path / "best", min_edge=1000, get=get, sleep=sleeps, pause_s=1.5)
+        assert got == tmp_path / "best" / "5.jpg" and got.read_bytes() == big
+        assert (get.calls, sleeps.calls) == ([open_data(5, "original")], [1.5])
+        again = social.fetch_best_photo(5, tmp_path / "best", min_edge=1000, get=get, sleep=sleeps)
+        assert again == got and len(get.calls) == 1 and sleeps.calls == [1.5]                                  # kept: no second download
+
+    def test_when_the_original_is_missing_the_large_copy_is_used_if_it_is_big_enough(self, tmp_path):
+        large = jpeg_bytes((1024, 683))
+        get = Photos({open_data(5, "original"): 404, open_data(5, "large"): large})
+        assert social.fetch_best_photo(5, tmp_path, min_edge=1000, get=get, sleep=Sleeps()).read_bytes() == large
+        assert get.calls == [open_data(5, "original"), open_data(5, "large")]
+
+    def test_a_photo_with_no_copy_big_enough_is_skipped_and_nothing_is_kept(self, tmp_path):
+        get = Photos({open_data(5, "original"): jpeg_bytes((700, 500)), open_data(5, "large"): 403})
+        with pytest.raises(SkipObservation, match=r"^iNat photo 5: no copy of at least 1000 px in iNat's open data$"):
+            social.fetch_best_photo(5, tmp_path, min_edge=1000, get=get, sleep=Sleeps())
+        assert list(tmp_path.iterdir()) == []
+        assert social.fetch_best_photo(5, tmp_path, min_edge=600, get=Photos({open_data(5, "original"): jpeg_bytes((700, 500))}), sleep=Sleeps()).is_file()
+
+    def test_a_kept_photo_under_the_minimum_is_fetched_again_and_an_unreadable_download_falls_back(self, tmp_path):
+        jpeg(tmp_path / "5.jpg", size=(500, 333))
+        get = Photos({open_data(5, "original"): b"not an image", open_data(5, "large"): jpeg_bytes((1100, 700))})
+        got = social.fetch_best_photo(5, tmp_path, min_edge=1000, get=get, sleep=Sleeps())
+        assert Image.open(got).size == (1100, 700) and len(get.calls) == 2
+
+    def test_a_server_error_or_a_dead_network_skips_the_observation_naming_the_cause(self, tmp_path):
+        with pytest.raises(SkipObservation, match=r"^iNat photo 5: HTTP 500 from https://inaturalist-open-data"):
+            social.fetch_best_photo(5, tmp_path, min_edge=1000, get=Photos({open_data(5, "original"): 500}), sleep=Sleeps())
+        with pytest.raises(SkipObservation, match=r"^iNat photo 5: URLError: .*no route"):
+            social.fetch_best_photo(5, tmp_path, min_edge=1000, get=Photos({open_data(5, "original"): urllib.error.URLError("no route")}), sleep=Sleeps())
+
+
+class TestResolvePhotos:
+    def test_tokens_become_downloaded_paths_and_other_paths_stay(self):
+        calls = []
+        got = social.resolve_photos(["2025/x.jpg", "inat-photo:701", "D:/a/b.jpg"], lambda pid: calls.append(pid) or Path(f"best/{pid}.jpg"))
+        assert got == ["2025/x.jpg", str(Path("best/701.jpg")), "D:/a/b.jpg"] and calls == [701]
+        assert social.resolve_photos(["2025/x.jpg"], None) == ["2025/x.jpg"]
+
+    def test_a_token_without_a_fetcher_is_an_error(self):
+        with pytest.raises(SocialError, match=r"^an iNat photo has to be fetched but no fetch_photo was given$"):
+            social.resolve_photos(["inat-photo:701"], None)
+
+
+class TestDraftsWithBestPhotos:
     def world(self, tmp_path):
-        g, index = tmp_path / "gallery", {"files": {}}
-        for o, year in ((1, 2025), (2, 2025)):
-            rel = f"{year}/{year}-10/x{o}.jpg"
-            jpeg(g / rel, size=(300, 200))
-            index["files"][rel] = o
-        snap, cache = snapshot(tmp_path, [(2, "2025-10-02", [(201, (200, 150))]), (7, "2019-03-04", [(701, (300, 200))]),
-                                          (8, "2019-10-09", [(801, (300, 200))])])
-        return g, index, social.local_candidates(snap, cache), cache
-
-    def draft(self, tmp_path, rules, **kw):
-        g, index, local, cache = self.world(tmp_path)
-        fetch = RecordingFetch({o: observation(o) for o in (1, 2, 7, 8)})
-        audit = Audit(tmp_path / "audit.jsonl")
-        report = social.draft_month(index, Ledger(tmp_path / "l.jsonl"), today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
-                                    keep_pending=10, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(), pick_model=no_model,
-                                    style_source=lambda: None, prints={}, rules=rules, audit=audit, local=local, **kw)
-        return report, fetch, audit, cache
-
-    def test_an_observation_with_only_a_cached_photo_is_drafted_when_the_rule_is_on_and_not_when_it_is_off(self, tmp_path):
-        on, fetch, audit, cache = self.draft(tmp_path / "a", rules_with())
-        assert sorted(on["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs7", "2026-10-obs8"]
-        draft = social.load_draft(tmp_path / "a" / "drafts" / "2026-10-obs7")
-        assert [i["source"] for i in draft["images"]] == [str(cache / "701.jpg")]                       # the draft's photo is the cached one
-        assert [x for x in audit.records() if x["event"] == "draft_run"][0]["local_only"] == 2
-        off, fetch2, _, _ = self.draft(tmp_path / "b", rules_with(lower_quality_photos=False))
-        assert sorted(off["drafted"]) == ["2026-10-obs1", "2026-10-obs2"] and 7 not in fetch2.calls
-
-    def test_a_gallery_photo_comes_before_the_cached_ones_of_the_same_observation(self, tmp_path):
-        _, _, _, cache = self.draft(tmp_path, rules_with())
-        draft = social.load_draft(tmp_path / "drafts" / "2026-10-obs2")
-        assert [i["source"] for i in draft["images"]] == ["2025/2025-10/x2.jpg", str(cache / "201.jpg")]
-
-    def test_with_month_candidates_on_a_cached_photo_must_be_of_this_month_too(self, tmp_path):
-        report, _, _, _ = self.draft(tmp_path, rules_with(month_candidates=True))
-        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs8"]        # obs 8 was seen in October 2019, obs 7 in March
-
-    def test_observations_with_only_a_cached_photo_take_their_turn_by_the_year_they_were_seen(self, tmp_path):
         g, index = tmp_path / "gallery", {"files": {}}
         for o in (1, 2):
             rel = f"2025/2025-10/x{o}.jpg"
             jpeg(g / rel, size=(300, 200))
             index["files"][rel] = o
-        snap, cache = snapshot(tmp_path, [(7, "2019-03-04", [(701, (300, 200))]), (8, "2019-10-09", [(801, (300, 200))])])
+        snap = snapshot(tmp_path, [(2, "2025-10-02", [(201, 2048, 1365, CC)]), (7, "2019-03-04", [(701, 2048, 1365, CC)]),
+                                   (8, "2019-10-09", [(801, 2048, 1365, CC)]), (9, "2019-10-10", [(901, 800, 600, CC)])])
+        return g, index, social.inat_photo_candidates(snap, min_edge=1000, exclude={1, 2})
+
+    def photo_fetcher(self, tmp_path, fail=()):
+        calls = []
+
+        def fetch(pid):
+            calls.append(pid)
+            if pid in fail:
+                raise SkipObservation(f"iNat photo {pid}: no copy of at least 1000 px in iNat's open data")
+            return jpeg(tmp_path / "best" / f"{pid}.jpg", size=(1500, 1000))
+        fetch.calls = calls
+        return fetch
+
+    def draft(self, tmp_path, rules, fail=(), **kw):
+        g, index, local = self.world(tmp_path)
+        fetch = RecordingFetch({o: observation(o) for o in (1, 2, 7, 8, 9)})
+        photos = self.photo_fetcher(tmp_path, fail)
+        audit = Audit(tmp_path / "audit.jsonl")
+        report = social.draft_month(index, Ledger(tmp_path / "l.jsonl"), today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts",
+                                    keep_pending=10, model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(), pick_model=no_model,
+                                    style_source=lambda: None, prints={}, rules=rules, audit=audit, local=local, fetch_photo=photos, **kw)
+        return report, fetch, photos, audit
+
+    def test_an_observation_the_gallery_does_not_have_is_drafted_with_its_fetched_original_when_the_rule_is_on(self, tmp_path):
+        report, fetch, photos, audit = self.draft(tmp_path / "a", rules_with())
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs7", "2026-10-obs8"]
+        assert sorted(photos.calls) == [701, 801]                                                          # only the drafted ones are downloaded, the gallery's never
+        draft = social.load_draft(tmp_path / "a" / "drafts" / "2026-10-obs7")
+        assert [i["source"] for i in draft["images"]] == [str(tmp_path / "a" / "best" / "701.jpg")] and draft["images"][0]["width"] == 1500
+        assert [x for x in audit.records() if x["event"] == "draft_run"][0]["local_only"] == 2
+        assert 9 not in fetch.calls                                                                         # its only photo is 800 px
+        off, _, photos2, _ = self.draft(tmp_path / "b", rules_with(lower_quality_photos=False))
+        assert sorted(off["drafted"]) == ["2026-10-obs1", "2026-10-obs2"] and photos2.calls == []
+
+    def test_an_observation_the_gallery_has_keeps_its_gallery_photo_even_when_the_candidates_list_it(self, tmp_path):
+        g, index, _ = self.world(tmp_path)
+        everything = social.inat_photo_candidates(tmp_path / "inat_observations.json", min_edge=1000)         # no exclude: obs 2 is in the list
+        assert 2 in everything
+        photos = self.photo_fetcher(tmp_path)
+        social.draft_month(index, Ledger(tmp_path / "l.jsonl"), today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "drafts", keep_pending=10,
+                           model="vis:1", fetch=RecordingFetch({o: observation(o) for o in (1, 2, 7, 8, 9)}), read_label=labels,
+                           describe_fn=RecordingDescribe(), pick_model=no_model, style_source=lambda: None, prints={}, rules=rules_with(),
+                           audit=Audit(tmp_path / "audit.jsonl"), local=everything, fetch_photo=photos)
+        assert 201 not in photos.calls
+        assert [i["source"] for i in social.load_draft(tmp_path / "drafts" / "2026-10-obs2")["images"]] == ["2025/2025-10/x2.jpg"]
+
+    def test_a_photo_that_cannot_be_fetched_skips_its_observation_and_the_audit_says_why(self, tmp_path):
+        report, _, _, audit = self.draft(tmp_path, rules_with(), fail=(801,))
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs7"]
+        assert report["skipped"] == {8: "iNat photo 801: no copy of at least 1000 px in iNat's open data"}
+        assert [(x["obs_id"], x["reason"]) for x in audit.records() if x["event"] == "draft_skipped"] == [
+            (8, "iNat photo 801: no copy of at least 1000 px in iNat's open data")]
+
+    def test_with_month_candidates_on_only_this_months_observations_qualify(self, tmp_path):
+        report, _, photos, _ = self.draft(tmp_path, rules_with(month_candidates=True))
+        assert sorted(report["drafted"]) == ["2026-10-obs1", "2026-10-obs2", "2026-10-obs8"] and photos.calls == [801]
+
+    def test_the_minimum_edge_is_the_rules_number(self, tmp_path):
+        snap = snapshot(tmp_path, [(9, "2019-10-10", [(901, 800, 600, CC)])])
+        assert social.inat_photo_candidates(snap, min_edge=rules_with().value("lower_quality_photos")) == {}
+        assert list(social.inat_photo_candidates(snap, min_edge=rules_with(lower_quality_photos=700).value("lower_quality_photos"))) == [9]
+
+    def test_observations_without_a_gallery_photo_take_their_turn_by_the_year_they_were_seen(self, tmp_path):
+        g, index, local = self.world(tmp_path)
+        local = {o: v for o, v in local.items() if o in (7, 8)}
         fetch = RecordingFetch({o: observation(o) for o in (1, 2, 7, 8)})
         social.draft_month(index, Ledger(tmp_path / "l.jsonl"), today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "d", keep_pending=4,
                            model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(), pick_model=no_model, style_source=lambda: None,
-                           prints={}, rules=rules_with(), audit=Audit(tmp_path / "a.jsonl"), local=social.local_candidates(snap, cache))
-        assert ["gallery" if o in (1, 2) else "cached" for o in fetch.calls] == ["gallery", "cached", "gallery", "cached"]      # 2025, 2019, 2025, 2019
+                           prints={}, rules=rules_with(), audit=Audit(tmp_path / "a.jsonl"), local=local, fetch_photo=self.photo_fetcher(tmp_path))
+        assert ["gallery" if o in (1, 2) else "iNat" for o in fetch.calls] == ["gallery", "iNat", "gallery", "iNat"]                  # 2025, 2019, 2025, 2019
 
-    def test_a_themed_group_can_use_an_observation_that_has_only_a_cached_photo(self, tmp_path):
-        g, index, local, cache = self.world(tmp_path)
+    def test_a_themed_group_can_use_an_observation_the_gallery_does_not_have(self, tmp_path):
+        g, index, local = self.world(tmp_path)
         taxonomy = {o: themes_entry(f"Amanita sp{o}") for o in (1, 2, 7, 8)}
         theme = themes.Theme("m", "Mushroom Monday", 0, ("MushroomMonday",), "", {"order": ["Agaricales"]}, {})
 
@@ -448,11 +564,72 @@ class TestLowerQualityPhotos:
             ledger = Ledger(tmp_path / sub / "l.jsonl")
             social.draft_themes(index, ledger, taxonomy, [theme], today=dt.date(2026, 10, 26), days_ahead=1, gallery_dir=g, drafts_dir=tmp_path / sub / "d",
                                 model="vis:1", fetch=fetch, read_label=labels, describe_fn=RecordingDescribe(), pick_model=lambda: "vis:1",
-                                style_source=lambda: None, prints={}, rules=rules, audit=Audit(tmp_path / sub / "a.jsonl"), local=local)
+                                style_source=lambda: None, prints={}, rules=rules, audit=Audit(tmp_path / sub / "a.jsonl"), local=local,
+                                fetch_photo=self.photo_fetcher(tmp_path / sub))
             return [r["obs_ids"] for r in ledger.records() if r.get("theme")]
 
-        assert sorted(run(rules_with(), "on")[0]) == [1, 2, 7, 8]
-        assert [sorted(g) for g in run(rules_with(lower_quality_photos=False), "off")] == [[1, 2]]
+        assert [sorted(x) for x in run(rules_with(), "on")] == [[1, 2, 7, 8]]
+        assert [sorted(x) for x in run(rules_with(lower_quality_photos=False), "off")] == [[1, 2]]
+
+
+class TestWithdrawSmall:
+    def drafts(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 4)
+        sizes = {"2026-10-obs1": (500, 333), "2026-10-obs2": (2667, 4000), "2026-10-obs3": (4000, 2667), "2026-10-obs4": (500, 333)}
+        for did, (w, h) in sizes.items():
+            p = drafts / did / "draft.json"
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            for img in doc["images"]:
+                img["width"], img["height"] = w, h
+            if did == "2026-10-obs3":                                                                         # one big and one small image
+                doc["images"][1]["width"], doc["images"][1]["height"] = 400, 300
+            p.write_text(json.dumps(doc), encoding="utf-8")
+        social.approve(ledger, drafts, "2026-10-obs3")
+        ledger.append("posted", "2026-10-obs4", obs_id=4, month="2026-10")                                      # posted long ago: never touched
+        return ledger, drafts
+
+    def test_pending_drafts_with_a_small_photo_are_withdrawn_with_the_reason_and_the_big_ones_stay(self, tmp_path):
+        ledger, drafts = self.drafts(tmp_path)
+        audit = Audit(tmp_path / "audit.jsonl")
+        assert social.withdraw_small(ledger, drafts, min_edge=1000, audit=audit) == ["2026-10-obs1", "2026-10-obs3"]
+        states = {k: v["state"] for k, v in ledger.drafts().items()}
+        assert states == {"2026-10-obs1": "withdrawn", "2026-10-obs2": "drafted", "2026-10-obs3": "withdrawn", "2026-10-obs4": "posted"}
+        reasons = {r["draft_id"]: r["reason"] for r in ledger.records() if r["event"] == "withdrawn"}
+        assert reasons == {"2026-10-obs1": "photo(s) under 1000 px: 1.jpg is 500, 2.jpg is 500", "2026-10-obs3": "photo(s) under 1000 px: 2.jpg is 400"}
+        assert [(x["event"], x["draft_id"]) for x in audit.records()] == [("withdrawn", "2026-10-obs1"), ("withdrawn", "2026-10-obs3")]
+        assert social.withdraw_small(ledger, drafts, min_edge=1000, audit=audit) == []                              # nothing left to withdraw
+
+    def test_a_withdrawn_draft_is_never_posted_and_its_observation_can_be_drafted_again(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 1)
+        social.withdraw_small(ledger, drafts, min_edge=1000, audit=Audit(tmp_path / "audit.jsonl"))
+        assert social.post_next(ledger, drafts, now=NOW, live=True, send=RecordingSend()) == {"status": "nothing approved", "month": "2026-10"}
+        g = tmp_path / "gallery"
+        index = {"files": {}}
+        rel = "2025/2025-10/x1.jpg"
+        jpeg(g / rel, size=(300, 200))
+        index["files"][rel] = 1
+        report = social.draft_month(index, ledger, today=dt.date(2026, 10, 21), gallery_dir=g, drafts_dir=tmp_path / "new", keep_pending=5, model="vis:1",
+                                    fetch=RecordingFetch({1: observation(1)}), read_label=labels, describe_fn=RecordingDescribe(), pick_model=no_model,
+                                    style_source=lambda: None, prints={}, rules=rules_with(), audit=Audit(tmp_path / "a2.jsonl"))
+        assert report["drafted"] == ["2026-10-obs1"]
+
+    def test_a_withdrawn_themed_draft_frees_its_day_and_its_observations_for_a_new_one(self, tmp_path):
+        ledger, drafts = drafted(tmp_path, 0)
+        ledger.append("drafted", "2026-10-26-mushroom-monday", obs_id=1, obs_ids=[1, 2], month="2026-10", theme="mushroom-monday", for_date="2026-10-26")
+        write_draft(drafts, "2026-10-26-mushroom-monday", 1, "2026-10")
+        assert social.withdraw_small(ledger, drafts, min_edge=1000, audit=Audit(tmp_path / "audit.jsonl")) == ["2026-10-26-mushroom-monday"]
+        g = tmp_path / "gallery"
+        index = {"files": {}}
+        for o in (1, 2, 3, 4):
+            rel = f"2025/2025-10/x{o}.jpg"
+            jpeg(g / rel, size=(300, 200))
+            index["files"][rel] = o
+        theme = themes.Theme("mushroom-monday", "Mushroom Monday", 0, ("MushroomMonday",), "", {"order": ["Agaricales"]}, {})
+        report = social.draft_themes(index, ledger, {o: themes_entry(f"Amanita sp{o}") for o in (1, 2, 3, 4)}, [theme], today=dt.date(2026, 10, 22), days_ahead=7,
+                                     gallery_dir=g, drafts_dir=tmp_path / "new", model="vis:1", fetch=RecordingFetch({o: observation(o) for o in (1, 2, 3, 4)}),
+                                     read_label=labels, describe_fn=RecordingDescribe(), pick_model=lambda: "vis:1", style_source=lambda: None, prints={},
+                                     rules=rules_with(), audit=Audit(tmp_path / "a2.jsonl"))
+        assert report["drafted"] == ["2026-10-26-mushroom-monday"]
 
 
 def themes_entry(species):
