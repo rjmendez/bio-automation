@@ -344,7 +344,15 @@ class Ledger:
     def records(self) -> list[dict]:
         if not self.path.is_file():
             return []
-        return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        out = []
+        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                raise SocialError(f"the ledger {self.path} is corrupt at line {number} ({e.msg}); nothing was changed; run `bio social-integrity`") from e
+        return out
 
     def append(self, event: str, draft_id: str, *, now: dt.datetime | None = None, **fields) -> dict:
         if event not in STATES + NOTES:
