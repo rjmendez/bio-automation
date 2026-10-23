@@ -15,8 +15,9 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from taxon_zeroshot import iconic_of, measured as zs_measured, pool_group  # noqa: E402
 
-ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
+ROOT =os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 K = 15
 TAG = os.environ.get('BIO_QUEUE_TAG', '')
 BACKEND = os.environ.get('BIO_SUGGEST_BACKEND', 'bioclip2')
@@ -39,8 +40,10 @@ def measured(share, bins):
     return None
 
 
-def suggest_groups(by_group, tid, bins):
-    """by_group: {group: [neighbour payload list per photo]} -> {str(group): {"photos", "species" (top 3), "iconic" (top 2)}}."""
+def suggest_groups(by_group, tid, bins, zs_by_group=None, zs_bins=None):
+    """by_group: {group: [neighbour payload list per photo]} -> {str(group): {"photos", "species" (top 3), "iconic" (top 2)}}.
+    With zs_by_group ({group: [per-photo [(species row, prob)]]}) and zs_bins, each group also gets "zero_shot": the top 3 species of the WHOLE taxonomy
+    by pooled probability, each with the accuracy measured per observation for its probability bin ([] for a group without predictions)."""
     out = {}
     for g, lists in by_group.items():
         sp, ic, info = collections.Counter(), collections.Counter(), {}
@@ -60,7 +63,26 @@ def suggest_groups(by_group, tid, bins):
                             'vote_share': round(share, 3), 'measured_accuracy': measured(share, bins)})
         iconic = [{'iconic': k, 'vote_share': round(v / m, 3)} for k, v in ic.most_common(2)]
         out[str(g)] = {'photos': m, 'species': species, 'iconic': iconic}
+        if zs_by_group is not None:
+            pooled = pool_group(zs_by_group[g]) if zs_by_group.get(g) else []
+            out[str(g)]['zero_shot'] = [{'taxon': row[1], 'taxon_id': row[0], 'iconic': iconic_of(row), 'family': row[6], 'prob': round(p, 3),
+                                         'measured_accuracy': zs_measured(p, zs_bins)} for row, p in pooled]
     return out
+
+
+def load_zeroshot(emb, cfg, torch_mod=None):
+    """(ZeroShot, logit scale, observation-level bins) when embed_config.json's bioclip.zeroshot_index is set and the backend is BioCLIP 2; else None.
+    SystemExit when it is set but taxon_zeroshot.py calibrate has not been run: a probability without its measured accuracy is not shown."""
+    index = cfg.get('zeroshot_index')
+    if not index or BACKEND != 'bioclip2':
+        return None
+    path = os.path.join(ROOT, 'zeroshot_bins.json')
+    if not os.path.exists(path):
+        raise SystemExit(f'inat_suggest: {path} does not exist; run taxon_zeroshot.py calibrate first')
+    if torch_mod is None:
+        import torch as torch_mod
+    from taxon_zeroshot import ZeroShot
+    return ZeroShot(index, torch_mod, emb.device), emb.logit_scale(), json.load(open(path, encoding='utf-8'))['bins']
 
 
 def main():
@@ -92,11 +114,15 @@ def main():
     X /= np.linalg.norm(X, axis=1, keepdims=True) + 1e-9
     print(f'backend {BACKEND}: reference photos {len(X)} in {collection}; {len(items)} of {len(q)} queue entries have a copy', flush=True)
 
-    by_group = collections.defaultdict(list)
+    zsl = load_zeroshot(emb, CFG['bioclip'])
+    by_group, zs_by_group = collections.defaultdict(list), collections.defaultdict(list)
     B = 16
     for s in range(0, len(items), B):
         chunk = items[s:s + B]
         V = emb.embed([i['copy'] for i in chunk])
+        if zsl:
+            for it, preds in zip(chunk, zsl[0].predict(V, zsl[1])):
+                zs_by_group[it['group']].append(preds)
         S = V @ X.T
         for it, row in zip(chunk, S):
             k = min(K, len(row))
@@ -105,10 +131,11 @@ def main():
         if (s // B) % 10 == 0:
             print(f'  embedded {min(s + B, len(items))}/{len(items)}', flush=True)
 
-    out = suggest_groups(by_group, tid, bins)
+    out = suggest_groups(by_group, tid, bins, zs_by_group if zsl else None, zsl[2] if zsl else None)
     json.dump(out, open(os.path.join(ROOT, f'inat_suggestions{TAG}.json'), 'w'))
     json.dump({'backend': BACKEND, 'collection': collection, 'reference_photos': int(len(X)), 'queue_entries': len(q),
-               'entries_with_copy': len(items), 'groups': len(out)}, open(os.path.join(ROOT, f'inat_suggestions{TAG}.meta.json'), 'w'))
+               'entries_with_copy': len(items), 'groups': len(out), 'zero_shot_index': CFG['bioclip'].get('zeroshot_index') if zsl else None},
+              open(os.path.join(ROOT, f'inat_suggestions{TAG}.meta.json'), 'w'))
     strong = sum(1 for v in out.values() if v['species'] and v['species'][0]['vote_share'] >= 0.7)
     print(f'groups with suggestions {len(out)} | species vote share >= 0.7: {strong}', flush=True)
 
