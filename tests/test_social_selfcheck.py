@@ -644,11 +644,11 @@ class TestScriptDrift:
         return sorted(f.name for f in social_selfcheck.repo_scripts_dir().glob("*.ps1"))
 
     def test_the_repo_has_the_scheduled_task_scripts_the_check_compares(self):
-        assert self.repo_names() == ["notify-to-inbox.ps1", "register-social-tasks.ps1", "run-social-post.ps1", "run-social-prep.ps1", "run-social-watch.ps1"]
+        assert self.repo_names() == ["notify-to-inbox.ps1", "register-social-tasks.ps1", "run-qdrant-sync.ps1", "run-social-post.ps1", "run-social-prep.ps1", "run-social-watch.ps1"]
 
     def test_identical_copies_are_ok_and_the_message_counts_them(self, world):
         c = world.run()["script-drift"]
-        assert (c.level, c.message) == (OK, f"5 scheduled-task scripts in {world.scripts} match the repo (sha256)")
+        assert (c.level, c.message) == (OK, f"6 scheduled-task scripts in {world.scripts} match the repo (sha256)")
 
     def test_a_changed_copy_warns_and_names_the_file(self, world):
         with open(world.scripts / "run-social-post.ps1", "ab") as f:
