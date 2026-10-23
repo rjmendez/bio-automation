@@ -26,7 +26,7 @@ this script early-stops on a held-out composite score, not on train loss.
 from __future__ import annotations
 
 import argparse
-import copy
+import json
 import random
 import sys
 import time
@@ -143,22 +143,31 @@ def main() -> None:
     ap.add_argument("--source-dir", type=Path, required=True)
     ap.add_argument("--weights", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=Path("hat_s_lora.pt"))
-    ap.add_argument("--steps", type=int, default=1200)
-    ap.add_argument("--batch-size", type=int, default=2)
-    ap.add_argument("--train-patch-size", type=int, default=128,
-                     help="HR patch edge for TRAINING only (LR input is half this); independent of the "
-                          "256/128 eval patch size (PATCH_SIZE, imported from train.py) kept fixed so eval "
-                          "stays comparable to benchmark_hat_s.py's zero-shot numbers. Default 128 (LR 64x64, "
-                          "matching HAT-S's own img_size=64 pretraining resolution) keeps backward-pass memory "
-                          "small on this shared, GPU-contended machine (measured: bs=2/128 ~5.6GB reserved; "
-                          "bs=6/128 OOMs outright even with ~11.6GB nominally free, because other live "
-                          "processes on this card -- Ollama-served local models -- claim VRAM dynamically).")
+    ap.add_argument("--steps", type=int, default=20_000, help="hard upper cap; --time-budget-s is the real stop")
+    ap.add_argument("--time-budget-s", type=float, default=5400,
+                     help="stop training after this many seconds regardless of step count, leaving headroom "
+                          "under the external process timeout for staging/install/eval/upload -- same pattern "
+                          "as aws_train.py.")
+    ap.add_argument("--batch-size", type=int, default=8,
+                     help="AWS g4dn.xlarge's T4 is dedicated (16GB, no shared-desktop Ollama contention), so "
+                          "this can be larger than the local smoke test's bs=2.")
+    ap.add_argument("--train-patch-size", type=int, default=256,
+                     help="HR patch edge for TRAINING; matches the 256/128 eval patch size (PATCH_SIZE, "
+                          "imported from train.py) by default, removing the crop-size mismatch the local smoke "
+                          "test had (it used 128 to fit this shared desktop's contended VRAM; AWS's dedicated "
+                          "T4 doesn't need that compromise).")
     ap.add_argument("--lr", type=float, default=1.5e-4)
     ap.add_argument("--rank", type=int, default=8)
     ap.add_argument("--alpha", type=float, default=None, help="default: equal to --rank")
-    ap.add_argument("--held-out", type=int, default=40)
-    ap.add_argument("--eval-every", type=int, default=100)
-    ap.add_argument("--patience", type=int, default=3, help="evals with no composite improvement before early stop")
+    ap.add_argument("--held-out", type=int, default=80)
+    ap.add_argument("--eval-every", type=int, default=250)
+    ap.add_argument("--patience", type=int, default=6, help="evals with no composite improvement before early stop")
+    ap.add_argument("--checkpoint-dir", type=Path, default=None,
+                     help="if set, write the current best LoRA checkpoint here on every improvement (atomic "
+                          "tmp-then-rename), so an external kill (timeout, spot interruption) still leaves a "
+                          "usable checkpoint, not just whatever --out would have been at clean exit.")
+    ap.add_argument("--result-json", type=Path, default=None,
+                     help="dump the final gate numbers as JSON (native float/bool, not numpy) alongside --out.")
     ap.add_argument("--cuda-name-substr", type=str, default=None)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -216,10 +225,26 @@ def main() -> None:
     patience_counter = 0
     stopped_early = False
 
+    def save_checkpoint(lora_state: dict, step: int, elapsed: float) -> None:
+        if args.checkpoint_dir is None:
+            return
+        args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        tmp = args.checkpoint_dir / "hat_s_lora.pt.tmp"
+        torch.save({"lora_state": lora_state, "rank": args.rank, "alpha": args.alpha or args.rank,
+                    "step": step, "lr": args.lr}, tmp)
+        tmp.replace(args.checkpoint_dir / "hat_s_lora.pt")
+        (args.checkpoint_dir / "progress.json").write_text(json.dumps({"step": step, "elapsed_s": elapsed}))
+
     losses: list[float] = []
     t0 = time.time()
     actual_steps = 0
+    stopped_on_time_budget = False
     for step in range(args.steps):
+        elapsed = time.time() - t0
+        if elapsed >= args.time_budget_s:
+            print(f"\ntime budget ({args.time_budget_s:.0f}s) reached at step {step}")
+            stopped_on_time_budget = True
+            break
         actual_steps = step + 1
         hr_uint8 = sample_hr_batch(args.batch_size)
         lr_list = [degrade_hr_to_lr(hr_uint8[i], rng) for i in range(hr_uint8.shape[0])]
@@ -250,6 +275,7 @@ def main() -> None:
                 best_lora_state = lora_state_dict(model)
                 best_eval = ev
                 patience_counter = 0
+                save_checkpoint(best_lora_state, best_step, time.time() - t0)
             else:
                 patience_counter += 1
                 if patience_counter >= args.patience:
@@ -260,8 +286,8 @@ def main() -> None:
             model.eval()
             torch.cuda.empty_cache()  # perceptual_scores() builds fresh LPIPS/DISTS (VGG) nets every call
 
-    print(f"\ntraining stopped after {actual_steps} steps "
-          f"({'early stop' if stopped_early else 'max steps reached'}), best checkpoint @ step {best_step}")
+    stop_reason = "early stop" if stopped_early else ("time budget" if stopped_on_time_budget else "max steps reached")
+    print(f"\ntraining stopped after {actual_steps} steps ({stop_reason}), best checkpoint @ step {best_step}")
 
     # Restore the best checkpoint's LoRA weights before the final gate eval.
     sd = model.state_dict()
@@ -298,6 +324,22 @@ def main() -> None:
     else:
         print("\n  GATE FAILED: LoRA fine-tune does NOT clear HAT-S zero-shot on all three metrics. "
               "This is a real negative result for this rank/LR/step budget, not a thing to hide.")
+
+    if args.result_json:
+        result = {
+            "actual_steps": actual_steps, "best_step": best_step, "stop_reason": stop_reason,
+            "train_elapsed_s": time.time() - t0, "rank": args.rank, "alpha": float(args.alpha or args.rank),
+            "lr": args.lr, "batch_size": args.batch_size, "train_patch_size": args.train_patch_size,
+            "zero_shot_psnr_db": float(zero_shot["model_psnr"]), "zero_shot_lpips": float(zero_shot["model_lpips"]),
+            "zero_shot_dists": float(zero_shot["model_dists"]), "zero_shot_deploy_sharp": float(zero_shot["model_sharp"]),
+            "final_psnr_db": float(final["model_psnr"]), "final_lpips": float(final["model_lpips"]),
+            "final_dists": float(final["model_dists"]), "final_deploy_sharp": float(final["model_sharp"]),
+            "psnr_pass": bool(psnr_pass), "lpips_pass": bool(lpips_pass), "dists_pass": bool(dists_pass),
+            "gate_pass": bool(gate_pass),
+        }
+        args.result_json.parent.mkdir(parents=True, exist_ok=True)
+        args.result_json.write_text(json.dumps(result, indent=2))
+        print(f"\nresult written: {args.result_json}")
 
 
 if __name__ == "__main__":
