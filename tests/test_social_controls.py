@@ -448,3 +448,143 @@ class TestProbeIsSpentOnlyWhenASendStarts:
         result, send = self.world(tmp_path, monkeypatch, withdraw=set())
         assert (result["status"], len(send.calls)) == ("posted", 1)
         assert [r["draft_id"] for r in events("breaker_probe")] == ["2026-10-obs1"]
+
+
+class TestRemotePause:
+    """BIO_SOCIAL_PAUSE_SYNC_FILE: a second marker on a synced path, off unless configured."""
+
+    @pytest.fixture
+    def sync(self, tmp_path, monkeypatch):
+        path = tmp_path / "synced" / "PAUSE-BIO"
+        monkeypatch.setattr(settings, "SOCIAL_PAUSE_SYNC_FILE", path)
+        return path
+
+    def test_it_is_off_by_default_so_a_file_at_that_path_means_nothing(self, tmp_path):
+        assert settings.SOCIAL_PAUSE_SYNC_FILE is None
+        (tmp_path / "synced").mkdir()
+        (tmp_path / "synced" / "PAUSE-BIO").write_text("", encoding="utf-8")
+        assert social_controls.read_pause() is None
+        assert pre_send() is None
+
+    def test_a_marker_created_from_another_device_pauses_scheduled_posts_and_a_manual_one_still_goes(self, sync):
+        sync.parent.mkdir()
+        sync.write_text("away until Monday\nsecond line", encoding="utf-8")                # what a phone's file app makes: plain text
+        assert social_controls.read_pause() == {"at": None, "reason": "away until Monday", "source": "sync"}
+        hook, verdict = pre_send()
+        assert (hook.name, verdict.action) == ("pause_switch", "block")
+        assert verdict.reason == "posting is paused (away until Monday); `bio social-resume` lifts it"
+        assert [(r["source"], r["reason"]) for r in events("paused") if r["action"] == "blocked"] == [("sync", "away until Monday")]
+        assert pre_send(manual=True) is None
+
+    def test_an_empty_marker_and_a_json_marker_both_pause(self, sync):
+        sync.parent.mkdir()
+        sync.write_text("", encoding="utf-8")
+        assert social_controls.read_pause() == {"at": None, "reason": "", "source": "sync"}
+        sync.write_text(json.dumps({"at": "2026-10-23T09:00:00-04:00", "reason": "trip"}), encoding="utf-8")
+        assert social_controls.read_pause() == {"at": "2026-10-23T09:00:00-04:00", "reason": "trip", "source": "sync"}
+
+    def test_deleting_the_marker_resumes_and_a_missing_folder_does_not_pause(self, sync):
+        assert social_controls.read_pause() is None and pre_send() is None
+        sync.parent.mkdir()
+        sync.write_text("x", encoding="utf-8")
+        assert pre_send() is not None
+        sync.unlink()
+        assert pre_send() is None
+
+    def test_the_local_marker_wins_when_both_exist(self, sync):
+        sync.parent.mkdir()
+        sync.write_text("remote", encoding="utf-8")
+        Path(settings.SOCIAL_PAUSE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(settings.SOCIAL_PAUSE_FILE).write_text(json.dumps({"reason": "local"}), encoding="utf-8")
+        assert social_controls.read_pause() == {"at": None, "reason": "local", "source": "local"}
+
+    def test_a_marker_that_cannot_be_read_still_pauses(self, sync):
+        sync.mkdir(parents=True)                                       # a directory where the file should be: reading it raises
+        state = social_controls.read_pause()
+        assert state["unreadable"] is True and state["source"] == "sync"
+        assert pre_send() is not None
+
+    def test_with_the_rule_off_the_remote_marker_does_nothing(self, sync):
+        sync.parent.mkdir()
+        sync.write_text("x", encoding="utf-8")
+        assert pre_send(rules=rules_with(pause_switch=False)) is None
+        assert pre_send(rules=rules_with(pause_switch=True)) is not None
+
+    def test_pause_sync_writes_both_markers_and_resume_removes_both_with_one_audit_record_each(self, sync, monkeypatch, capsys):
+        assert run_cli(monkeypatch, "social-pause", "--sync", "--reason", "trip") == 0
+        assert capsys.readouterr().out == f"paused: {settings.SOCIAL_PAUSE_FILE}, {sync} (trip)\n"
+        assert json.loads(sync.read_text(encoding="utf-8"))["reason"] == "trip"
+        assert [r["files"] for r in events("paused")] == [[str(settings.SOCIAL_PAUSE_FILE), str(sync)]]
+        assert run_cli(monkeypatch, "social-resume") == 0
+        assert not Path(settings.SOCIAL_PAUSE_FILE).exists() and not sync.exists()
+        assert capsys.readouterr().out == f"resumed: {settings.SOCIAL_PAUSE_FILE} removed, {sync} removed\n"
+        assert [(r["action"], r["files"]) for r in events("paused")][1] == ("cleared", [str(settings.SOCIAL_PAUSE_FILE), str(sync)])
+
+    def test_resume_clears_a_remote_only_pause_too(self, sync, monkeypatch, capsys):
+        sync.parent.mkdir()
+        sync.write_text("x", encoding="utf-8")
+        assert run_cli(monkeypatch, "social-resume") == 0
+        assert not sync.exists() and capsys.readouterr().out == f"resumed: {sync} removed\n"
+        assert pre_send() is None
+
+    def test_plain_pause_leaves_the_synced_marker_alone_and_sync_without_configuration_is_refused(self, sync, monkeypatch, capsys):
+        assert run_cli(monkeypatch, "social-pause") == 0
+        assert not sync.exists()
+        monkeypatch.setattr(settings, "SOCIAL_PAUSE_SYNC_FILE", None)
+        assert run_cli(monkeypatch, "social-pause", "--force", "--sync") == 1
+        assert "bio social-pause: --sync needs BIO_SOCIAL_PAUSE_SYNC_FILE" in capsys.readouterr().err
+
+
+class TestTwoMarkersAreAtomic:
+    @pytest.fixture
+    def sync(self, tmp_path, monkeypatch):
+        path = tmp_path / "synced" / "PAUSE-BIO"
+        monkeypatch.setattr(settings, "SOCIAL_PAUSE_SYNC_FILE", path)
+        return path
+
+    def test_pause_sync_with_an_unreachable_sync_folder_changes_nothing_and_says_so(self, sync, monkeypatch, capsys):
+        sync.parent.write_text("a file where the synced folder should be", encoding="utf-8")
+        assert run_cli(monkeypatch, "social-pause", "--sync", "--reason", "trip") == 1
+        assert not Path(settings.SOCIAL_PAUSE_FILE).exists()                       # the local marker was rolled back
+        assert social_controls.read_pause() is None
+        assert "could not write the pause marker" in capsys.readouterr().err
+        [rec] = events("paused")
+        assert (rec["action"], rec["written_then_rolled_back"]) == ("set_failed", [str(settings.SOCIAL_PAUSE_FILE)])
+
+    def test_a_forced_pause_whose_sync_write_fails_restores_the_earlier_local_marker(self, sync, monkeypatch):
+        assert run_cli(monkeypatch, "social-pause", "--reason", "first") == 0
+        before = Path(settings.SOCIAL_PAUSE_FILE).read_bytes()
+        sync.parent.write_text("blocked", encoding="utf-8")
+        assert run_cli(monkeypatch, "social-pause", "--sync", "--force", "--reason", "second") == 1
+        assert Path(settings.SOCIAL_PAUSE_FILE).read_bytes() == before
+
+    def test_with_a_local_marker_already_there_sync_adds_the_missing_remote_marker_without_force(self, sync, monkeypatch, capsys):
+        assert run_cli(monkeypatch, "social-pause", "--reason", "first") == 0
+        local = Path(settings.SOCIAL_PAUSE_FILE).read_bytes()
+        capsys.readouterr()
+        assert run_cli(monkeypatch, "social-pause", "--sync", "--reason", "second") == 0
+        assert capsys.readouterr().out == f"paused: {sync} (second)\n"
+        assert Path(settings.SOCIAL_PAUSE_FILE).read_bytes() == local            # the local marker is untouched
+        assert json.loads(sync.read_text(encoding="utf-8"))["reason"] == "second"
+        assert events("paused")[-1]["files"] == [str(sync)]
+
+    def test_with_both_markers_there_pause_still_needs_force(self, sync, monkeypatch, capsys):     # twin
+        assert run_cli(monkeypatch, "social-pause", "--sync") == 0
+        assert run_cli(monkeypatch, "social-pause", "--sync") == 1
+        assert "already paused" in capsys.readouterr().err
+
+    def test_resume_with_a_synced_marker_that_cannot_be_removed_changes_nothing_and_stays_paused(self, sync, monkeypatch, capsys):
+        assert run_cli(monkeypatch, "social-pause", "--reason", "trip") == 0
+        sync.mkdir(parents=True)                                                  # a directory where the marker should be: it exists and cannot be unlinked
+        capsys.readouterr()
+        assert run_cli(monkeypatch, "social-resume") == 1
+        assert Path(settings.SOCIAL_PAUSE_FILE).exists()                          # still paused, consistently
+        err = capsys.readouterr().err
+        assert "could not remove the pause marker" in err and "posting stays paused" in err
+        assert events("paused")[-1]["action"] == "clear_failed"
+        assert social_controls.read_pause() is not None
+
+    def test_resume_with_both_removable_markers_clears_both(self, sync, monkeypatch, capsys):    # twin
+        assert run_cli(monkeypatch, "social-pause", "--sync") == 0
+        assert run_cli(monkeypatch, "social-resume") == 0
+        assert not Path(settings.SOCIAL_PAUSE_FILE).exists() and not sync.exists()

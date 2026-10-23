@@ -188,7 +188,7 @@ class ModelCache:
         try:
             dest.mkdir(parents=True, exist_ok=True)
         except OSError:
-            dest = Path(tempfile.mkdtemp())
+            dest = Path(tempfile.mkdtemp(dir=settings.scratch_dir()))
             created = False
 
         try:

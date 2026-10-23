@@ -342,9 +342,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cl_run = sub.add_parser(
         "social-cleanup-run",
-        help="Delete exactly the posts in a cleanup plan. Requires --confirm <plan id>; resumable (ledger next to the plan).")
+        help="DRY RUN of a cleanup plan unless --confirm and --confirm-count are both given; then deletes exactly the plan's posts "
+             "(resumable: ledger next to the plan, one audit record per deletion).")
     p_cl_run.add_argument("plan")
-    p_cl_run.add_argument("--confirm", required=True, help="the plan id printed by social-cleanup-plan: your approval of that list")
+    p_cl_run.add_argument("--confirm", default=None, help="the plan id printed by social-cleanup-plan: your approval of that list")
+    p_cl_run.add_argument("--confirm-count", type=int, default=None, help="the number of posts the plan deletes (its 'delete' count): your approval of its size")
 
     p_social_style = sub.add_parser(
         "social-style",
@@ -425,11 +427,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_console.add_argument("--host", default="127.0.0.1")
     p_review_console.add_argument("--port", type=int, default=8780)
 
-    from . import social_hooks
+    from . import disk_guard, pipeline_selfcheck, social_hooks
 
+    disk_guard.add_parsers(sub)
+    pipeline_selfcheck.add_parsers(sub)
     for ext in social_hooks.load_all():                     # extension modules (social_hooks.EXTENSIONS) add their own commands
         if hasattr(ext, "add_parsers"):
             ext.add_parsers(sub)
+    from . import social_live_audit                          # read-only and not a gate: kept out of EXTENSIONS so a fault here never stops posting
+
+    social_live_audit.add_parsers(sub)
     return parser
 
 
@@ -944,6 +951,18 @@ def post_exit_code(result: dict) -> int:
     return 1 if result.get("status") in ("blocked", "withdrawn") else 0
 
 
+def wait_for_post_room(**kw) -> bool:
+    """A live post run writes the ledger and the audit log: pause (audited, resumes by itself) while C:, the data drive or the drafts folder's drive is under the
+    post floor; False, with nothing written and nothing sent, when settings.SOCIAL_POST_MAX_WAIT_S ran out."""
+    from . import disk_guard
+    from .social_rules import Audit
+
+    floors = disk_guard.default_floors(system_gb=settings.SOCIAL_POST_MIN_FREE_GB, data_gb=settings.SOCIAL_POST_MIN_FREE_GB,
+                                       extra={"drafts": Path(settings.SOCIAL_DIR)})
+    kw.setdefault("audit", Audit().log)
+    return disk_guard.wait_for_room(floors, who="social-post", max_wait_s=settings.SOCIAL_POST_MAX_WAIT_S, **kw)
+
+
 def cmd_social_post(args: argparse.Namespace) -> int:
     import datetime as dt
     import json
@@ -952,6 +971,8 @@ def cmd_social_post(args: argparse.Namespace) -> int:
     from .social_rules import load_rules
 
     now = dt.datetime.now(settings.LOCAL_TZ)
+    if args.live and not wait_for_post_room():
+        return 1
     ledger = Ledger()
     try:
         result = post_next(ledger, settings.SOCIAL_DIR / "drafts", now=now, live=args.live, manual=args.manual, draft_id=args.draft)
@@ -1019,8 +1040,11 @@ def cmd_social_cleanup_run(args: argparse.Namespace) -> int:
 
     from .social_cleanup import run_plan
 
-    report = _bsky(lambda: run_plan(Path(args.plan), args.confirm))
+    report = _bsky(lambda: run_plan(Path(args.plan), args.confirm, confirm_count=args.confirm_count))
     print(json.dumps(report, indent=2))
+    if report["dry_run"]:
+        print(f"dry run: nothing deleted. To delete: --confirm {report['plan_id']} --confirm-count {report['plan_size']}", file=sys.stderr)
+        return 0
     return 0 if not report["stopped"] and report["remaining"] == 0 else 1
 
 
@@ -1127,7 +1151,36 @@ def cmd_qdrant_inat_sync(args: argparse.Namespace) -> int:
     return 0
 
 
-SOCIAL_COMMANDS = {"qdrant-inat-sync": cmd_qdrant_inat_sync, "qdrant-sync": cmd_qdrant_sync, "darkroom-sync": cmd_darkroom_sync, "social-themes": cmd_social_themes, "social-rules": cmd_social_rules, "social-audit": cmd_social_audit, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+def _recorded(name: str, fn):
+    """Wrap a Qdrant sync command: a real run that wrote is recorded in the sync marker and audited (qdrant_sync); a crash is audited as
+    qdrant_sync_failed (a warning in social-alerts) and still propagates to the caller."""
+    def run(args: argparse.Namespace) -> int:
+        from . import sync_marker
+        from .social_rules import Audit
+
+        def audit(event: str, **fields) -> None:
+            try:
+                Audit().log(event, command=name, **fields)
+            except OSError:
+                pass
+
+        dry_run, limit = getattr(args, "dry_run", False), getattr(args, "limit", None)       # a parser without the flag is a real, full run
+        try:
+            code = fn(args)
+        except Exception as e:  # noqa: BLE001 -- audited, then re-raised unchanged
+            if not dry_run:
+                audit("qdrant_sync_failed", error=f"{type(e).__name__}: {e}"[:300])
+            raise
+        if code == 0 and not dry_run and not limit:      # a --limit trial writes only some points: it is not a fresh index
+            sync_marker.record(name)
+            audit("qdrant_sync")
+        elif code != 0:
+            audit("qdrant_sync_failed", error=f"exit code {code}")
+        return code
+    return run
+
+
+SOCIAL_COMMANDS = {"qdrant-inat-sync": _recorded("qdrant-inat-sync", cmd_qdrant_inat_sync), "qdrant-sync": _recorded("qdrant-sync", cmd_qdrant_sync), "darkroom-sync": cmd_darkroom_sync, "social-themes": cmd_social_themes, "social-rules": cmd_social_rules, "social-audit": cmd_social_audit, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
                    "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,
@@ -1238,7 +1291,19 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
+    if args.command == "disk-guard":
+        from . import disk_guard
+
+        return disk_guard.cmd_disk_guard(args)
+    if args.command == "pipeline-selfcheck":
+        from .pipeline_selfcheck import cmd_pipeline_selfcheck
+
+        return cmd_pipeline_selfcheck(args)
     ext_commands = {c: fn for ext in social_hooks.extensions() for c, fn in (getattr(ext, "COMMANDS", None) or {}).items()}
+    if args.command == "social-audit-live":
+        from . import social_live_audit
+
+        return social_live_audit.cmd_social_audit_live(args)
     if args.command in ext_commands or args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
         from .darkroom import DarkroomError
         from .qdrant_obs import QdrantError

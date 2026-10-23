@@ -5,6 +5,8 @@
 # 1 when the script could not start the run at all (no package, no session, an unexpected error). Every failure lands in social.log.
 # Mutual exclusion with prep: the named Windows mutex Global\bio-social-run. Prep holds it while it drafts; this script waits up to 10 minutes
 # for it and then RUNS ANYWAY (a missed post is worse than an overlap), logging the overlap.
+# The Qdrant sync (run-qdrant-sync.ps1) takes the same mutex and is capped at 150 minutes (05:00 -> 07:30), so this wait is normally zero; an overlap
+# with it or with prep can still happen after the 10 minutes, by design.
 # Sign-in: Bluesky OAuth via the bsky-oauth library, "poster" profile; `bio social-login` once (session in F:\services\bio-social\oauth).
 $ErrorActionPreference = 'Stop'
 $log = 'D:\bio-cache\logs\social.log'
