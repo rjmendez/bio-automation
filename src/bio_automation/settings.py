@@ -114,6 +114,7 @@ SOCIAL_THEMES = env("BIO_SOCIAL_THEMES", "1").strip().lower() not in ("", "0", "
 SOCIAL_THEMES_FILE = env_path("BIO_SOCIAL_THEMES_FILE", SOCIAL_DIR / "themes.toml")             # the owner's calendar; built-in defaults without it
 SOCIAL_THEME_DAYS_AHEAD = int(env("BIO_SOCIAL_THEME_DAYS_AHEAD", 7))                              # social-draft prepares the themed posts of the next N days
 OBS_TAXONOMY_FILE = env_path("BIO_OBS_TAXONOMY_FILE", CACHE_DIR / "state" / "obs_taxonomy.json")   # observation id -> taxon + lineage (iNat, cached)
+INAT_BEST_PHOTO_DIR = env_path("BIO_INAT_BEST_PHOTO_DIR", PHOTOS_CACHE / "inat_best")                 # the best size of an iNat photo, fetched when a draft needs it
 INAT_SNAPSHOT = env_path("BIO_INAT_SNAPSHOT", Path(r"F:\bio-automation-data\inat_observations.json"))   # all of the owner's iNat observations (photo ids included)
 # every posting rule is optional and every decision audited (social_rules.py): the owner's switches, and the append-only decision log
 SOCIAL_RULES_FILE = env_path("BIO_SOCIAL_RULES_FILE", SOCIAL_DIR / "rules.toml")

@@ -30,6 +30,7 @@ import shutil
 import re
 import subprocess
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -69,7 +70,7 @@ ICONIC_TAGS = {
     "Protozoa": ("protozoa",),
 }
 GRADE_TEXT = {"research": "Research Grade", "needs_id": "Needs ID"}
-STATES = ("drafted", "approved", "rejected", "posting", "posted", "failed")
+STATES = ("drafted", "approved", "rejected", "posting", "posted", "failed", "withdrawn")    # withdrawn: taken back, its observations are free again
 NOTES = ("error",)    # recorded, not a state change
 
 
@@ -178,20 +179,109 @@ def write_index(index: dict, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def local_candidates(snapshot: Path | None = None, photo_dir: Path | None = None) -> dict[int, dict]:
-    """The lower-quality local photos: {obs id: {"paths": [absolute paths, the biggest file first], "observed_on": "YYYY-MM-DD" or None}} for
-    the observations of the owner's iNat snapshot (settings.INAT_SNAPSHOT) that have a photo cached as <photo id>.jpg in the iNat photo
-    cache (settings.INAT_PHOTO_CACHE). {} when either is missing."""
-    snapshot, photo_dir = Path(snapshot or settings.INAT_SNAPSHOT), Path(photo_dir or settings.INAT_PHOTO_CACHE)
-    if not snapshot.is_file() or not photo_dir.is_dir():
+PHOTO_TOKEN = "inat-photo:"                                      # a candidate photo that is not on disk yet: inat-photo:<iNat photo id>
+OPEN_DATA_URL = "https://inaturalist-open-data.s3.amazonaws.com/photos/{id}/{size}.jpg"
+PHOTO_SIZES = ("original", "large")                              # best first
+PHOTO_PAUSE_S = 1.0                                              # between two downloads from iNat's open data
+
+
+def inat_photo_candidates(snapshot: Path | None = None, *, min_edge: int, exclude=frozenset()) -> dict[int, dict]:
+    """The best iNat photo of each observation the gallery does not have: {obs id: {"photo_id", "edge", "observed_on"}} for the observations of
+    the owner's iNat snapshot (settings.INAT_SNAPSHOT) not in `exclude`, with the biggest photo by its original dimensions, when that is at
+    least `min_edge` px on the long side and licensed (iNat's open data holds only the licensed ones). {} without the snapshot."""
+    snapshot = Path(snapshot or settings.INAT_SNAPSHOT)
+    if not snapshot.is_file():
         return {}
-    have = {p.stem: p for p in photo_dir.glob("*.jpg")}
     out: dict[int, dict] = {}
     for o in json.loads(snapshot.read_text(encoding="utf-8")).get("observations") or []:
-        paths = [have[str(p["id"])] for p in o.get("photos") or [] if str(p.get("id")) in have]
-        if paths:
-            paths.sort(key=lambda p: (-p.stat().st_size, p.name))
-            out[int(o["id"])] = {"paths": [str(p) for p in paths], "observed_on": o.get("observed_on")}
+        oid = int(o["id"])
+        if oid in exclude:
+            continue
+        best = None
+        for p in o.get("photos") or []:
+            d = p.get("dims") or {}
+            w, h = d.get("width") or 0, d.get("height") or 0
+            if p.get("license") and (best is None or w * h > best[0]):
+                best = (w * h, max(w, h), int(p["id"]))
+        if best and best[1] >= min_edge:
+            out[oid] = {"photo_id": best[2], "edge": best[1], "observed_on": o.get("observed_on")}
+    return out
+
+
+def _http_photo(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "bio-automation-photo-fetch/0.1 (owner photos)"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+
+def fetch_best_photo(photo_id: int, dest_dir: Path, *, min_edge: int, get: Callable[[str], bytes] | None = None,
+                     sleep: Callable[[float], None] = time.sleep, pause_s: float = PHOTO_PAUSE_S) -> Path:
+    """<dest_dir>/<photo id>.jpg: the biggest copy of the iNat photo in iNat's open data (original, else large) that is at least `min_edge`
+    px on its long side, downloaded once and kept. SkipObservation when there is none (not in open data, too small, or the network failed)."""
+    dest = Path(dest_dir) / f"{photo_id}.jpg"
+    if dest.is_file():
+        with contextlib.suppress(OSError):
+            with Image.open(dest) as im:
+                if max(im.size) >= min_edge:
+                    return dest
+    get = get or _http_photo
+    for size in PHOTO_SIZES:
+        url = OPEN_DATA_URL.format(id=photo_id, size=size)
+        try:
+            data = get(url)
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404):                              # not in open data, or not in that size
+                continue
+            raise SkipObservation(f"iNat photo {photo_id}: HTTP {e.code} from {url}") from e
+        except (urllib.error.URLError, OSError) as e:
+            raise SkipObservation(f"iNat photo {photo_id}: {type(e).__name__}: {e}") from e
+        finally:
+            sleep(pause_s)
+        try:
+            with Image.open(io.BytesIO(data)) as im:
+                edge = max(im.size)
+        except (OSError, ValueError):
+            continue
+        if edge >= min_edge:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".part")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+            return dest
+    raise SkipObservation(f"iNat photo {photo_id}: no copy of at least {min_edge} px in iNat's open data")
+
+
+def resolve_photos(rels: list[str], fetch_photo: Callable[[int], Path] | None) -> list[str]:
+    """`rels` with every inat-photo:<id> token replaced by the downloaded photo's path (fetch_photo raises SkipObservation when it cannot)."""
+    if fetch_photo is None and any(r.startswith(PHOTO_TOKEN) for r in rels):
+        raise SocialError("an iNat photo has to be fetched but no fetch_photo was given")
+    return [str(fetch_photo(int(r[len(PHOTO_TOKEN):]))) if r.startswith(PHOTO_TOKEN) else r for r in rels]
+
+
+def default_photo_fetch(rules: Rules) -> Callable[[int], Path]:
+    min_edge = rules.value("lower_quality_photos") or 1000
+    return lambda pid: fetch_best_photo(pid, settings.INAT_BEST_PHOTO_DIR, min_edge=min_edge)
+
+
+def withdraw_small(ledger: "Ledger", drafts_dir: Path, *, min_edge: int, audit: Audit | None = None) -> list[str]:
+    """Withdraw every pending (drafted or approved) draft with an image of fewer than `min_edge` px on its long side: it is taken back (state
+    "withdrawn", reason in the ledger and the audit log) and its observations are free for a new draft. Returns the draft ids."""
+    audit = audit or Audit()
+    out = []
+    for did, v in ledger.drafts().items():
+        if v["state"] not in ("drafted", "approved"):
+            continue
+        try:
+            draft = load_draft(Path(drafts_dir) / did)
+        except (OSError, ValueError):
+            continue
+        small = {i["file"]: max(i.get("width") or 0, i.get("height") or 0) for i in draft["images"]
+                 if max(i.get("width") or 0, i.get("height") or 0) < min_edge}
+        if small:
+            reason = f"photo(s) under {min_edge} px: " + ", ".join(f"{f} is {e}" for f, e in small.items())
+            ledger.append("withdrawn", did, obs_id=v["obs_id"], month=v["month"], reason=reason)
+            audit.log("withdrawn", draft_id=did, obs_ids=_obs_of(v), reason=reason)
+            out.append(did)
     return out
 
 
@@ -722,12 +812,13 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
                 model: str | None = None, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                 describe_fn: Callable[..., str] = describe, pick_model: Callable[[], str] = vision_model,
                 style_source: Callable[[], Callable[[str], dict]] | None = None, prints: dict[int, str] | None = None,
-                rules: Rules | None = None, audit: Audit | None = None, local: dict[int, dict] | None = None) -> dict:
+                rules: Rules | None = None, audit: Audit | None = None, local: dict[int, dict] | None = None,
+                fetch_photo: Callable[[int], Path] | None = None) -> dict:
     """Top up the unposted ordinary drafts (drafted or approved) to keep_pending from the observations that are not taken: posted, rejected
     or awaiting an outcome (posting) ever, or already in a pending draft or a themed draft still to be posted.
 
-    The rules (social_rules) shape it, each optional: lower_quality_photos (`local`, local_candidates(): observations with only a cached
-    iNat photo are candidates too, a gallery photo coming first when there is one), month_candidates (only observations photographed in
+    The rules (social_rules) shape it, each optional: lower_quality_photos (`local`, inat_photo_candidates(): observations the gallery does not
+    have are candidates too, with their best iNat photo fetched by `fetch_photo` when the draft is made), month_candidates (only observations photographed in
     `today`'s month of any year),
     month_posting (only this month's drafts count as pending, an earlier month's expired), prints_first (observations with a print
     first), year_rotation (years take turns), skip_casual. The owner's alt-text style is required: style_source() (default: the saved
@@ -759,16 +850,14 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
     from_local = 0
     if rules.on("lower_quality_photos") and local:
         for o, v in local.items():
-            if rules.on("month_candidates") and (v.get("observed_on") or "")[5:7] != f"{today.month:02d}":
-                continue
-            if o in cands:
-                cands[o] = cands[o] + [p for p in v["paths"] if p not in cands[o]]            # the gallery's Stock-quality photos first
-            else:
-                cands[o] = list(v["paths"])
-                years[o] = (v.get("observed_on") or "0000")[:4]
-                from_local += 1
+            if o in cands or (rules.on("month_candidates") and (v.get("observed_on") or "")[5:7] != f"{today.month:02d}"):
+                continue                                                                       # the gallery's Stock-quality photos are the best there is
+            cands[o] = [PHOTO_TOKEN + str(v["photo_id"])]
+            years[o] = (v.get("observed_on") or "0000")[:4]
+            from_local += 1
     model = model or pick_model()
     style = (style_source or default_style)()
+    fetch_photo = fetch_photo or default_photo_fetch(rules)
     order = order_candidates(cands, seen, seed=today.isoformat(), rotate_years=rules.on("year_rotation"), years=years)
     if rules.on("prints_first"):
         order.sort(key=lambda o: o not in prints)                 # observations with a print first (stable: the year rotation is kept inside each group)
@@ -778,9 +867,9 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
         if len(report["drafted"]) >= need:
             break
         try:
-            draft = make_draft(obs_id, cands[obs_id], month=month, gallery_dir=gallery_dir, drafts_dir=drafts_dir, model=model,
-                               fetch=fetch, read_label=read_label, describe_fn=describe_fn, style=style, prints_url=prints.get(obs_id),
-                               skip_casual=rules.on("skip_casual"))
+            draft = make_draft(obs_id, resolve_photos(cands[obs_id], fetch_photo), month=month, gallery_dir=gallery_dir, drafts_dir=drafts_dir,
+                               model=model, fetch=fetch, read_label=read_label, describe_fn=describe_fn, style=style,
+                               prints_url=prints.get(obs_id), skip_casual=rules.on("skip_casual"))
         except SkipObservation as e:
             report["skipped"][obs_id] = str(e)
             audit.log("draft_skipped", obs_id=obs_id, reason=str(e))
@@ -833,7 +922,7 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
                      model: str, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                      describe_fn: Callable[..., str] = describe, style: Callable[[str], dict] | None = None,
                      prints: dict[int, str] | None = None, now: dt.datetime | None = None,
-                     skip_casual: bool = True) -> tuple[dict, dict[int, str]]:
+                     skip_casual: bool = True, fetch_photo: Callable[[int], Path] | None = None) -> tuple[dict, dict[int, str]]:
     """Write drafts_dir/<day>-<theme key>/ (draft.json + 1.jpg..) for the theme on `day`: the first photo of each observation of `obs_ids`
     (in that order, each fetched live and described like an ordinary draft) until theme.max_photos are made; an observation that cannot be
     posted (casual, gone, no taxon) is skipped for the next one. Returns (draft, {skipped obs id: reason}); SkipObservation when fewer than
@@ -848,7 +937,7 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
             if len(picked) >= theme.max_photos:
                 break
             try:
-                picked.append((o, make_draft(o, rels_of[o][:1], month=month, gallery_dir=gallery_dir, drafts_dir=scratch, model=model, fetch=fetch,
+                picked.append((o, make_draft(o, resolve_photos(rels_of[o][:1], fetch_photo), month=month, gallery_dir=gallery_dir, drafts_dir=scratch, model=model, fetch=fetch,
                                              read_label=read_label, describe_fn=describe_fn, style=style, prints_url=prints.get(o), now=now,
                                              skip_casual=skip_casual)))
             except SkipObservation as e:
@@ -876,15 +965,14 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
 
 def theme_candidates(index: dict, taxonomy: dict[int, dict], prints: dict[int, str], local: dict[int, dict] | None = None,
                      ) -> tuple[dict[int, dict], dict[int, list[str]]]:
-    """({obs id: {"entry", "print"}}, {obs id: [photo paths]}) for the indexed observations the taxonomy knows: gallery relpaths first, and
-    with `local` (local_candidates(), the lower_quality_photos rule) the cached iNat photos after them, or alone for an observation the
-    gallery does not have."""
+    """({obs id: {"entry", "print"}}, {obs id: [photo paths]}) for the indexed observations the taxonomy knows: gallery relpaths, and with
+    `local` (inat_photo_candidates(), the lower_quality_photos rule) an inat-photo:<id> token for each observation the gallery does not have."""
     rels_of: dict[int, list[str]] = {}
     for rel, obs in index["files"].items():
         rels_of.setdefault(int(obs), []).append(rel)
     rels_of = {o: sorted(r) for o, r in rels_of.items()}
     for o, v in (local or {}).items():
-        rels_of[o] = rels_of.get(o, []) + [p for p in v["paths"] if p not in rels_of.get(o, [])]
+        rels_of.setdefault(o, [PHOTO_TOKEN + str(v["photo_id"])])
     return {o: {"entry": taxonomy[o], "print": prints.get(o)} for o in rels_of if o in taxonomy}, rels_of
 
 
@@ -893,7 +981,7 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
                  read_label: Callable[[Path], dict] = _read_label, describe_fn: Callable[..., str] = describe,
                  pick_model: Callable[[], str] = vision_model, style_source: Callable[[], Callable[[str], dict]] | None = None,
                  prints: dict[int, str] | None = None, rules: Rules | None = None, audit: Audit | None = None,
-                 local: dict[int, dict] | None = None) -> dict:
+                 local: dict[int, dict] | None = None, fetch_photo: Callable[[int], Path] | None = None) -> dict:
     """Prepare the themed post of each of the next `days_ahead` days (today included) that has an enabled theme and no themed draft yet:
     up to 4 observations of the theme, one photo each (rules: theme_species_first = different species first, species-level IDs before
     coarse ones; prints_first = observations with a print first), none already taken. Nothing happens, and no vision model is loaded,
@@ -907,7 +995,7 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         return report
     prints = load_prints() if prints is None else prints
     known = ledger.drafts()
-    have = {(v["for_date"], v["theme"]) for v in known.values() if v.get("for_date")}
+    have = {(v["for_date"], v["theme"]) for v in known.values() if v.get("for_date") and v["state"] != "withdrawn"}
     taken = {o for v in known.values() if _taken(v, f"{today.year}-{today.month:02d}", today, rules) for o in _obs_of(v)}
     candidates, rels_of = theme_candidates(index, taxonomy, prints if rules.on("prints_first") else {}, local if rules.on("lower_quality_photos") else None)
     audit.log("theme_run", today=today.isoformat(), days_ahead=days_ahead, themes=[t.key for t in themes if t.enabled], candidates=len(candidates),
@@ -929,7 +1017,7 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         try:
             draft, skipped = make_group_draft(ids, rels_of, theme, day, gallery_dir=gallery_dir, drafts_dir=drafts_dir, model=model, fetch=fetch,
                                               read_label=read_label, describe_fn=describe_fn, style=style, prints=prints,
-                                              skip_casual=rules.on("skip_casual"))
+                                              skip_casual=rules.on("skip_casual"), fetch_photo=fetch_photo or default_photo_fetch(rules))
         except SkipObservation as e:
             report["short"][day.isoformat()] = str(e)
             audit.log("theme_short", day=day.isoformat(), theme=theme.key, reason=str(e))

@@ -40,7 +40,7 @@ RULES: tuple[Rule, ...] = (
     Rule("themes", True, None, "Weekday theme posts: up to 4 photos of one kind of organism in one post (Mushroom Monday ...)."),
     Rule("theme_day_only", True, None, "A themed draft posts only on its own day, before the single posts; off: it joins the ordinary queue."),
     Rule("theme_species_first", True, None, "A theme group takes one observation per species, species-level IDs before coarse ones."),
-    Rule("lower_quality_photos", True, None, "Observations that have only lower-quality local photos (the iNat photo cache) are eligible too, no print needed."),
+    Rule("lower_quality_photos", True, 1000, "Observations without a gallery photo are eligible too, no print needed, with their best iNat photo (its original size from iNat's open data, fetched when the draft is made) when it is at least <value> px on the long side; drafts with a smaller photo are withdrawn."),
     Rule("prints_first", True, None, "Observations with a Darkroom print are drafted first."),
     Rule("year_rotation", True, None, "Candidates take turns by year, newest first; off: one shuffled pool."),
     Rule("skip_casual", True, None, "Casual iNat observations are never drafted."),
