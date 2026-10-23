@@ -55,7 +55,8 @@ trap finish EXIT
     --out "$WORK/out/hat_s_lora.pt" --checkpoint-dir "$WORK/checkpoint" \
     --result-json "$WORK/out/result.json" \
     --time-budget-s 5400 --batch-size 4 --train-patch-size 128 \
-    --lr 1.5e-4 --rank 8 --held-out 80 --eval-every 250 --patience 6
+    --lr 1.5e-4 --rank 8 --held-out 80 --eval-every 250 --patience 6 \
+    --cuda-name-substr "T4"
 
   echo "=== $(date -u) done ==="
 } > "$LOG" 2>&1

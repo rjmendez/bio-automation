@@ -172,7 +172,15 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    device = pick_device(args.cuda_name_substr)
+    # On a single-GPU box (every AWS training instance) there's no index-vs-name
+    # ambiguity to resolve, so default to cuda:0 directly -- same pattern as
+    # aws_train.py. Omitting --cuda-name-substr on a real AWS launch previously
+    # fell through to pick_device(None)'s CPU default and refused to train,
+    # burning ~3.5 min of billed instance time before this was caught.
+    if args.cuda_name_substr is None and torch.cuda.is_available() and torch.cuda.device_count() == 1:
+        device = torch.device("cuda:0")
+    else:
+        device = pick_device(args.cuda_name_substr)
     if device.type != "cuda":
         raise SystemExit("GPU-only training (owner standing rule) -- pass --cuda-name-substr")
 
