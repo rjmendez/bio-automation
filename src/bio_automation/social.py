@@ -1395,7 +1395,14 @@ def _local_read_failure(e: OSError, payload: dict) -> OSError:
 def ledger_lock(ledger_path: Path | str) -> Iterator[None]:
     """Hold the ledger's poster lock (an OS byte-range lock on <ledger>.lock, released by the OS if the process dies). A second holder
     raises SocialError at once instead of waiting: two runs that both read the ledger before either appends "posting" would post one draft twice."""
-    path = Path(str(ledger_path) + ".lock")
+    with byte_range_lock(Path(str(ledger_path) + ".lock"), "another social-post run is posting ({path}); nothing was sent by this one"):
+        yield
+
+
+@contextlib.contextmanager
+def byte_range_lock(path: Path, busy: str) -> Iterator[None]:
+    """The OS byte-range lock on `path` (created if missing; released by the OS if the process dies) that ledger_lock and sync_marker share.
+    A second holder raises SocialError(busy.format(path=path)) at once."""
     path.parent.mkdir(parents=True, exist_ok=True)
     f = open(path, "a+b")
     try:
@@ -1410,7 +1417,7 @@ def ledger_lock(ledger_path: Path | str) -> Iterator[None]:
 
                 fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as e:
-            raise SocialError(f"another social-post run is posting ({path}); nothing was sent by this one") from e
+            raise SocialError(busy.format(path=path)) from e
         try:
             yield
         finally:

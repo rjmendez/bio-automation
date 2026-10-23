@@ -1164,13 +1164,14 @@ def _recorded(name: str, fn):
             except OSError:
                 pass
 
+        dry_run, limit = getattr(args, "dry_run", False), getattr(args, "limit", None)       # a parser without the flag is a real, full run
         try:
             code = fn(args)
         except Exception as e:  # noqa: BLE001 -- audited, then re-raised unchanged
-            if not args.dry_run:
+            if not dry_run:
                 audit("qdrant_sync_failed", error=f"{type(e).__name__}: {e}"[:300])
             raise
-        if code == 0 and not args.dry_run and not args.limit:      # a --limit trial writes only some points: it is not a fresh index
+        if code == 0 and not dry_run and not limit:      # a --limit trial writes only some points: it is not a fresh index
             sync_marker.record(name)
             audit("qdrant_sync")
         elif code != 0:

@@ -366,6 +366,8 @@ def offsite_copy(folder: Path, dest_root: Path | str, *, keep: int | None = KEEP
         for fname in [*manifest["files"], MANIFEST]:
             data = (folder / fname).read_bytes()
             (tmp / fname).write_bytes(data)                    # one write, no appends (multi-write appends to F: lose bytes)
+        if (tmp / MANIFEST).read_bytes() != (folder / MANIFEST).read_bytes():
+            raise SocialError(f"{MANIFEST} read back from {dest_root} differs from the source's (a torn copy)")
         for fname, info in manifest["files"].items():
             back = hashlib.sha256((tmp / fname).read_bytes()).hexdigest()
             if back != info["sha256"]:
@@ -516,7 +518,7 @@ def restore_check(name: str | None = None, *, root: Path | None = None, scratch_
     """Restore backup `name` (default the newest) into a scratch folder and validate what came back: every file's sha256 against the manifest,
     the ledger (check_integrity), the audit log (every line a JSON object), and the drafts: for each draft that is approved or posting in the
     restored ledger, the sha256 recorded in drafts_hashes.json must equal the hash the approval was bound to. The newest backup must also be
-    younger than `stale_days`. Touches no live file. Audits restore_check (ok) or restore_check_failed. Returns
+    younger than `stale_days` (only when no `name` was given: asking for an old backup by name is not a failure). Touches no live file. Audits restore_check (ok) or restore_check_failed. Returns
     {"ok", "name", "problems": [...], "notes": [...], "files": {...}}."""
     from .social import Ledger
 
@@ -527,6 +529,7 @@ def restore_check(name: str | None = None, *, root: Path | None = None, scratch_
     notes: list[str] = []
     files: dict[str, str] = {}
     folders = backups(root)
+    explicit = name                      # a backup the caller asked for by name is checked as asked, however old: the age rule is for "the newest"
     if name is None and not folders:
         problems.append(f"no backup in {root}")
     elif name is None:
@@ -537,7 +540,7 @@ def restore_check(name: str | None = None, *, root: Path | None = None, scratch_
         scratch_root.mkdir(parents=True, exist_ok=True)
         scratch = Path(tempfile.mkdtemp(prefix="restore-check-", dir=scratch_root))
         try:
-            _check_into(scratch, root, name, now, stale_days, problems, notes, files, Ledger)
+            _check_into(scratch, root, name, now, stale_days, problems, notes, files, Ledger, check_age=explicit is None)
         except (SocialError, OSError) as e:
             problems.append(str(e))
         finally:
@@ -547,7 +550,7 @@ def restore_check(name: str | None = None, *, root: Path | None = None, scratch_
     return result
 
 
-def _check_into(scratch: Path, root: Path, name: str, now, stale_days, problems, notes, files, Ledger) -> None:
+def _check_into(scratch: Path, root: Path, name: str, now, stale_days, problems, notes, files, Ledger, check_age: bool = True) -> None:
     if not name or name != Path(name).name or name in (".", ".."):
         raise SocialError(f"{name!r} is not a backup name (see `bio social-restore --list`)")
     folder = root / name
@@ -557,7 +560,7 @@ def _check_into(scratch: Path, root: Path, name: str, now, stale_days, problems,
     try:
         created = dt.datetime.fromisoformat(manifest["created"])
         age = (now - created).total_seconds() / 86400
-        if age > stale_days:
+        if check_age and age > stale_days:
             problems.append(f"backup {name} is {age:.1f} days old, more than {stale_days:g}")
     except (KeyError, ValueError, TypeError):
         problems.append(f"backup {name}: manifest has no readable 'created' time")

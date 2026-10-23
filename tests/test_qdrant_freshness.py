@@ -202,3 +202,47 @@ class TestSyncCommands:
         assert wrapped(ns) == 3 and seen == [ns]
         assert self.events() == [("qdrant_sync_failed", "qdrant-sync")] and sync_marker.load() == {}
         assert [r["error"] for r in Audit().records() if r["event"] == "qdrant_sync_failed"] == ["exit code 3"]
+
+
+class TestWrapperWithTheRealParser:
+    def test_the_inat_sync_parser_runs_through_the_wrapper_and_writes_the_marker(self, monkeypatch):
+        seen = []
+        monkeypatch.setitem(cli.SOCIAL_COMMANDS, "qdrant-inat-sync", cli._recorded("qdrant-inat-sync", lambda args: seen.append(args) or 0))
+        monkeypatch.setattr(sys, "argv", ["bio", "qdrant-inat-sync"])
+        assert cli.main() == 0
+        assert [(a.command, a.dry_run, a.limit) for a in seen] == [("qdrant-inat-sync", False, None)]
+        assert list(sync_marker.load()) == ["qdrant-inat-sync"]
+
+    def test_a_namespace_without_dry_run_or_limit_is_a_real_full_run(self):
+        wrapped = cli._recorded("qdrant-sync", lambda args: 0)
+        assert wrapped(type("A", (), {})()) == 0
+        assert list(sync_marker.load()) == ["qdrant-sync"]
+
+    def test_a_namespace_without_dry_run_that_crashes_is_audited_and_the_crash_propagates(self):
+        def boom(args):
+            raise RuntimeError("qdrant down")
+        with pytest.raises(RuntimeError, match="qdrant down"):
+            cli._recorded("qdrant-sync", boom)(type("A", (), {})())
+        assert [r["error"] for r in Audit().records() if r["event"] == "qdrant_sync_failed"] == ["RuntimeError: qdrant down"]
+
+
+class TestMarkerLock:
+    def test_a_marker_locked_by_another_holder_is_waited_for_then_reported_and_the_entry_is_not_lost(self, tmp_path, monkeypatch):
+        from bio_automation.social import SocialError, byte_range_lock
+        path = tmp_path / "m.json"
+        sync_marker.record("qdrant-sync", path=path, now=NOW)
+        monkeypatch.setattr(sync_marker, "LOCK_WAIT_S", 0.2)
+        with byte_range_lock(Path(str(path) + ".lock"), "held"):
+            with pytest.raises(SocialError, match="locked by another sync"):
+                sync_marker.record("qdrant-inat-sync", path=path, now=NOW)
+        assert list(sync_marker.load(path)) == ["qdrant-sync"]
+        sync_marker.record("qdrant-inat-sync", path=path, now=NOW)                    # positive twin: free lock, both entries
+        assert sorted(sync_marker.load(path)) == ["qdrant-inat-sync", "qdrant-sync"]
+
+    def test_two_syncs_recording_at_once_keep_both_entries(self, tmp_path):
+        import threading
+        path = tmp_path / "m.json"
+        threads = [threading.Thread(target=sync_marker.record, args=(n,), kwargs={"path": path, "now": NOW}) for n in ("qdrant-sync", "qdrant-inat-sync") * 4]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        assert sorted(sync_marker.load(path)) == ["qdrant-inat-sync", "qdrant-sync"]

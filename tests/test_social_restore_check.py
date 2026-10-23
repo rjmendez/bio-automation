@@ -310,3 +310,30 @@ class TestCommand:
         code, out = self.run(monkeypatch, capsys, "social-restore-check", "--scratch", str(tmp_path / "s"))
         assert code == 1
         assert "FAILED" in out.splitlines()[0] and "  problem: restored ledger: bad_json at line 1" in out
+
+
+class TestExplicitOldBackupAndTornManifest:
+    def test_an_old_backup_asked_for_by_name_is_not_failed_for_its_age_and_the_newest_unnamed_still_is(self, tmp_path):
+        live = seed_files()
+        write_lines(live["ledger.jsonl"], [rec("drafted", "d1", 0, obs_id=1, month="2026-10")])
+        social_state.make_backup(now=T0)
+        later = T0 + dt.timedelta(days=30)
+        named = social_state.restore_check("20261021-080005", scratch_root=tmp_path / "s", now=later)
+        newest = social_state.restore_check(scratch_root=tmp_path / "s", now=later)
+        assert (named["ok"], named["problems"]) == (True, [])
+        assert newest["problems"] == ["backup 20261021-080005 is 30.0 days old, more than 2"]
+
+    def test_a_torn_manifest_at_the_destination_fails_the_offsite_copy_and_nothing_is_left(self, tmp_path, monkeypatch):
+        seed_files()
+        folder = social_state.make_backup(now=T0)
+        real = Path.write_bytes
+
+        def torn(self, data):                                   # the destination keeps only the first half of MANIFEST.json
+            return real(self, data[: len(data) // 2] if self.name == "MANIFEST.json" and ".tmp-" in str(self) else data)
+        dest = tmp_path / "other"
+        with monkeypatch.context() as m:
+            m.setattr(Path, "write_bytes", torn)
+            assert social_state.offsite_copy(folder, dest, drive_of=drives) is None
+        assert list(dest.iterdir()) == []
+        failed = [r for r in logged() if r["event"] == "backup_offsite_failed"]
+        assert len(failed) == 1 and "MANIFEST.json read back from" in failed[0]["error"]

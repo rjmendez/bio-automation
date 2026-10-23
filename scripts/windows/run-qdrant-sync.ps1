@@ -1,7 +1,12 @@
 # The Qdrant freshness task (Bio-Qdrant-Sync): `bio qdrant-sync`, then `bio qdrant-inat-sync`, daily 05:00.
-# Both syncs embed gallery images with DA-CLIP on the GPU (only files not yet in the vector cache), so this must never overlap GPU-heavy work:
-#   * the named mutex Global\bio-social-run (held by Bio-Social-Prep, 03:00, up to 2 h, and by every post run) is taken for the whole run; a run
-#     that cannot get it within 90 minutes gives up with exit 1 instead of competing for the GPU;
+# Both syncs embed gallery images with DA-CLIP on the GPU (only files not yet in the vector cache), so this must not overlap GPU-heavy work:
+#   * the named mutex Global\bio-social-run (held by Bio-Social-Prep, 03:00, up to 2 h, and by run-social-post.ps1 for each post run: the SAME name) is
+#     taken for the whole run; a run that cannot get it within 90 minutes gives up with exit 1 instead of competing for the GPU. While this script
+#     holds it, a post run waits for it (at most 10 minutes) and then posts anyway: a missed post is worse than a shared GPU. So the guarantee is
+#     "the sync never STARTS during a post run and never runs past BIO_QDRANT_SYNC_MAX_MINUTES (default 150, so 05:00 ends by 07:30, before the
+#     08:00 post)", not "a post can never overlap a sync": the cap is what keeps the post from ever having to wait out the 10 minutes.
+#   * a sync still running at the cap is killed (its process tree, by PID), counted as a failure ("timed out") and alerted; the next run continues
+#     from the vector cache.
 #   * the named mutex Global\bio-qdrant-sync keeps two copies of this script (a manual run plus the task) from running together.
 #   * the NAS pipeline's GPU lane is not a mutex holder; 05:00 is after its nightly window and after prep (03:00 + 2 h limit). Check
 #     nvidia-smi if you move the trigger.
@@ -41,11 +46,22 @@ try {
     }
 
     $ErrorActionPreference = 'Continue'          # python writing to stderr is not a PowerShell error; the exit code decides
+    $maxMin = 150
+    if ($env:BIO_QDRANT_SYNC_MAX_MINUTES -and [double]::TryParse($env:BIO_QDRANT_SYNC_MAX_MINUTES, [ref]$null)) { $maxMin = [double]$env:BIO_QDRANT_SYNC_MAX_MINUTES }
+    $deadline = (Get-Date).AddMinutes($maxMin)
     foreach ($cmd in 'qdrant-sync', 'qdrant-inat-sync') {
         Log "bio $cmd"
-        & $py -m bio_automation.cli $cmd 2>&1 | ForEach-Object { [IO.File]::AppendAllText($log, "$_`n", $utf8) }
-        $c = $LASTEXITCODE
-        if ($c -ne 0) { Log "bio $cmd exited $c"; $failed += "$cmd (exit $c)" } else { Log "bio $cmd finished" }
+        $left = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
+        $out = Join-Path $env:TEMP "bio-qdrant-$PID-$cmd.out"
+        $proc = Start-Process -FilePath $py -ArgumentList @('-m', 'bio_automation.cli', $cmd) -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+        if (-not $proc.WaitForExit($left)) {
+            & "$env:SystemRoot\System32\taskkill.exe" /PID $proc.Id /T /F | Out-Null          # this child only, by PID
+            Log "bio $cmd timed out after the $maxMin minute cap and was stopped"
+            $failed += "$cmd (timed out after $maxMin minutes)"
+            $c = -1
+        } else { $proc.WaitForExit(); $c = $proc.ExitCode }
+        foreach ($f in $out, "$out.err") { try { if (Test-Path $f) { [IO.File]::AppendAllText($log, [IO.File]::ReadAllText($f) , $utf8); Remove-Item $f -Force } } catch { } }
+        if ($c -eq -1) { } elseif ($c -ne 0) { Log "bio $cmd exited $c"; $failed += "$cmd (exit $c)" } else { Log "bio $cmd finished" }
     }
     $ErrorActionPreference = 'Stop'
     $code = if ($failed.Count -eq 0) { 0 } else { 1 }
