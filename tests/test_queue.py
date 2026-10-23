@@ -353,7 +353,7 @@ class TestTimings:
         conn.commit()
         conn.close()
         with Queue(path) as q:
-            assert q.schema_version() == len(MIGRATIONS) == 3
+            assert q.schema_version() == len(MIGRATIONS) == 4
             assert q.counts() == {"done": 1}
             assert q.timings() == {}                                   # finished before finish times were recorded: no made-up duration
 
@@ -454,3 +454,205 @@ class TestPendingPayloads:
         q.claim(["t"], worker_id="w")
         assert q.pending_payloads("t") == [{"day": "b"}]
         assert q.open_payloads("t") == [{"day": "a"}, {"day": "b"}]
+
+
+class TestBoundedRetries:
+    def claimed(self, q, payload=None, lease_s=60.0, worker="w1"):
+        mid = q.publish("t", payload or {"day": "a"})
+        assert q.claim(["t"], worker_id=worker, lease_s=lease_s).id == mid
+        return mid
+
+    def test_a_retried_message_is_not_claimable_until_its_delay_passes(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = self.claimed(q)
+            assert q.retry(mid, "boom", worker_id="w1", delay_s=120.0, max_attempts=3) == "retry"
+            assert q.counts("t") == {"pending": 1}
+            clock.now += 119.0
+            assert q.claim(["t"], worker_id="w2") is None
+            clock.now += 1.0
+            again = q.claim(["t"], worker_id="w2")
+            assert (again.id, again.attempts) == (mid, 2)
+            assert q.peek_failed("t") == []
+
+    def test_the_last_error_is_kept_on_a_retried_message(self, tmp_path):
+        with Queue(tmp_path / "q.sqlite3", clock=Clock()) as q:
+            mid = self.claimed(q)
+            q.retry(mid, "OSError: disk full", worker_id="w1", delay_s=0.0)
+            row = q._db.execute("SELECT status, error, lease_until FROM messages WHERE id=?", (mid,)).fetchone()
+            assert tuple(row) == ("pending", "OSError: disk full", None)
+
+    def test_the_attempt_that_uses_the_last_try_goes_to_the_dead_letter_table(self, tmp_path):
+        with Queue(tmp_path / "q.sqlite3", clock=Clock()) as q:
+            mid = self.claimed(q, {"day": "x"})
+            assert q.retry(mid, "boom", worker_id="w1", delay_s=0.0, max_attempts=1) == "dead"
+            assert q.counts("t") == {} and q.dead_count() == 1 and q.dead_count("other") == 0
+            dead = q.peek_dead("t")[0]
+            assert (dead["id"], dead["payload"], dead["attempts"], dead["error"], dead["reason"], dead["dead_at"]) == (
+                mid, {"day": "x"}, 1, "boom", "1 attempts used up; last error: boom", 1000.0)
+
+    def test_one_attempt_below_the_limit_is_still_retried(self, tmp_path):
+        with Queue(tmp_path / "q.sqlite3", clock=Clock()) as q:
+            mid = self.claimed(q)
+            assert q.retry(mid, "boom", worker_id="w1", delay_s=0.0, max_attempts=2) == "retry"
+            assert q.dead_count() == 0
+
+    def test_only_the_claim_holder_may_retry(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = self.claimed(q, lease_s=10.0)
+            clock.now += 11.0
+            q.claim(["t"], worker_id="w2", lease_s=60.0)
+            with pytest.raises(QueueLeaseLost, match=r"claimed by 'w2', not by 'w1'"):
+                q.retry(mid, "late", worker_id="w1", delay_s=0.0)
+            assert q.counts("t") == {"claimed": 1}
+
+    def test_a_poison_message_whose_worker_keeps_dying_is_dead_lettered_not_redelivered_forever(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            q.publish("t", {"day": "poison"})
+            for n in (1, 2, 3):                                    # three deliveries, each worker dies without acking
+                assert q.claim(["t"], worker_id=f"w{n}", lease_s=60.0, max_attempts=3).attempts == n
+                clock.now += 61.0
+            assert q.claim(["t"], worker_id="w4", lease_s=60.0, max_attempts=3) is None
+            assert q.counts("t") == {} and q.dead_count("t") == 1
+            assert q.peek_dead("t")[0]["reason"] == "delivered 3 times without being acked: the worker died or hung each time (lease expired)"
+
+    def test_without_max_attempts_redelivery_is_unbounded_as_before(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            q.publish("t", {})
+            for n in range(1, 8):
+                assert q.claim(["t"], worker_id="w", lease_s=1.0).attempts == n
+                clock.now += 2.0
+            assert q.dead_count() == 0
+
+    def test_a_message_still_inside_its_lease_is_never_buried(self, tmp_path):
+        with Queue(tmp_path / "q.sqlite3", clock=Clock()) as q:
+            mid = self.claimed(q)
+            q._db.execute("UPDATE messages SET attempts=9 WHERE id=?", (mid,))
+            assert q.claim(["t"], worker_id="w2", max_attempts=3) is None
+            assert q.counts("t") == {"claimed": 1} and q.dead_count() == 0
+
+
+class TestReapExpired:
+    def test_an_expired_claim_goes_back_to_pending_and_a_live_one_is_left(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            dead_owner = q.publish("t", {"day": "a"})
+            q.claim(["t"], worker_id="w1", lease_s=60.0)
+            q.publish("t", {"day": "b"})
+            q.claim(["t"], worker_id="w2", lease_s=600.0)
+            clock.now += 61.0
+            assert q.reap_expired(max_attempts=3) == [(dead_owner, "requeued")]
+            assert q.counts("t") == {"pending": 1, "claimed": 1}
+            assert q.claim(["t"], worker_id="w3").id == dead_owner
+
+    def test_an_expired_claim_that_used_all_its_attempts_is_dead_lettered(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            mid = q.publish("t", {})
+            for delivery in (1, 2, 3):
+                q.claim(["t"], worker_id="w", lease_s=10.0)
+                clock.now += 11.0
+                expected = "requeued" if delivery < 3 else "dead"
+                assert q.reap_expired(max_attempts=3) == [(mid, expected)]
+            assert q.counts("t") == {} and q.dead_count("t") == 1
+
+    def test_the_topic_filter_limits_the_reaper(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            first = q.publish("a", {})
+            q.publish("b", {})
+            q.claim(["a"], worker_id="w", lease_s=1.0)
+            q.claim(["b"], worker_id="w", lease_s=1.0)
+            clock.now += 2.0
+            assert q.reap_expired(max_attempts=3, topic="a") == [(first, "requeued")]
+            assert q.counts() == {"pending": 1, "claimed": 1}
+
+
+class TestRequeueByReason:
+    def failed(self, q, topic, error, payload=None):
+        mid = q.publish(topic, payload or {"n": error})
+        q.claim([topic], worker_id="w")
+        q.fail(mid, error, worker_id="w")
+        return mid
+
+    def test_only_failures_whose_error_contains_the_reason_are_requeued(self, q):
+        panic = self.failed(q, "t", "RuntimeError: a GPU render panicked")
+        self.failed(q, "t", "OSError: disk full")
+        assert [m["id"] for m in q.failed_matching("t", error_contains="gpu render PANICKED")] == [panic]
+        assert q.requeue_failed("t", error_contains="gpu render panicked") == 1
+        assert q.counts("t") == {"pending": 1, "failed": 1}
+        assert q.claim(["t"], worker_id="w2").id == panic
+
+    def test_reset_attempts_zeroes_the_count_and_the_default_keeps_it(self, q):
+        a = self.failed(q, "t", "boom")
+        b = self.failed(q, "t", "boom")
+        assert q.requeue_failed("t", reset_attempts=True) == 2
+        assert [r[0] for r in q._db.execute("SELECT attempts FROM messages WHERE id IN (?, ?)", (a, b))] == [0, 0]
+        self.failed(q, "u", "boom")
+        q.requeue_failed("u")
+        assert q._db.execute("SELECT attempts FROM messages WHERE topic='u'").fetchone()[0] == 1
+
+    def test_dead_letters_are_requeued_under_their_old_id_with_attempts_reset(self, q):
+        mid = q.publish("t", {"day": "z"})
+        q.claim(["t"], worker_id="w")
+        q.retry(mid, "CUDA error 999", worker_id="w", delay_s=0.0, max_attempts=1)
+        assert q.requeue_dead("t", reason_contains="no such thing") == 0
+        assert q.requeue_dead("t", reason_contains="cuda error 999") == 1
+        assert q.dead_count() == 0
+        m = q.claim(["t"], worker_id="w2")
+        assert (m.id, m.payload, m.attempts) == (mid, {"day": "z"}, 1)
+
+
+class TestHealth:
+    def test_health_reports_ages_expired_claims_retrying_and_dead(self, tmp_path):
+        clock = Clock()
+        with Queue(tmp_path / "q.sqlite3", clock=clock) as q:
+            assert q.health() == {"counts": {}, "dead": 0, "retrying": 0, "expired_claims": 0,
+                                  "oldest_claimed_age_s": None, "oldest_pending_age_s": None}
+            q.publish("t", {"n": 1})
+            q.claim(["t"], worker_id="w", lease_s=30.0)                  # claimed at 1000, lease ends 1030
+            clock.now += 100.0
+            q.publish("t", {"n": 2})                                     # created at 1100, claimable now, but n=1 is older and its lease ran out
+            waiting = q.publish("u", {"n": 3})
+            q.claim(["u"], worker_id="w", lease_s=600.0)
+            q.retry(waiting, "x", worker_id="w", delay_s=500.0)          # n=3 waits out a delay
+            clock.now += 10.0
+            assert q.health() == {"counts": {"claimed": 1, "pending": 2}, "dead": 0, "retrying": 1, "expired_claims": 1,
+                                  "oldest_claimed_age_s": 110.0, "oldest_pending_age_s": 10.0}
+
+
+class TestMigrationFromVersion3:
+    def test_a_version_3_queue_keeps_its_messages_and_gains_the_new_columns(self, tmp_path):
+        path = tmp_path / "v3.sqlite3"
+        conn = sqlite3.connect(str(path))
+        for m in MIGRATIONS[:3]:
+            conn.executescript(m)
+        conn.execute("INSERT INTO messages (topic, payload, status, created, attempts, error) VALUES ('t', '{}', 'failed', 1.0, 2, 'boom')")
+        conn.execute("PRAGMA user_version=3")
+        conn.commit()
+        conn.close()
+        with Queue(path) as q:
+            assert q.schema_version() == 4
+            assert q.counts() == {"failed": 1} and q.dead_count() == 0
+            assert q.requeue_failed(error_contains="boom") == 1
+            assert q.claim(["t"], worker_id="w", max_attempts=5).attempts == 3
+
+
+class TestClaimsAndExpire:
+    def test_claims_lists_who_holds_what(self, q):
+        mid = q.publish("t", {})
+        q.claim(["t"], worker_id="nas-tag-42", lease_s=30.0)
+        q.publish("t", {})
+        assert q.claims() == [{"id": mid, "topic": "t", "claimed_by": "nas-tag-42", "claimed_at": 1000.0, "lease_until": 1030.0, "attempts": 1}]
+
+    def test_expire_claim_frees_the_message_for_the_reaper_but_only_for_its_holder(self, q):
+        mid = q.publish("t", {})
+        q.claim(["t"], worker_id="nas-tag-42", lease_s=3600.0)
+        assert q.expire_claim(mid, "someone-else") is False
+        assert q.reap_expired(max_attempts=3) == []
+        assert q.expire_claim(mid, "nas-tag-42") is True
+        assert q.reap_expired(max_attempts=3) == [(mid, "requeued")]
+        assert q.claim(["t"], worker_id="w2").attempts == 2

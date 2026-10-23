@@ -425,9 +425,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_console.add_argument("--host", default="127.0.0.1")
     p_review_console.add_argument("--port", type=int, default=8780)
 
-    from . import disk_guard, social_hooks
+    from . import disk_guard, pipeline_selfcheck, social_hooks
 
     disk_guard.add_parsers(sub)
+    pipeline_selfcheck.add_parsers(sub)
     for ext in social_hooks.load_all():                     # extension modules (social_hooks.EXTENSIONS) add their own commands
         if hasattr(ext, "add_parsers"):
             ext.add_parsers(sub)
@@ -1285,6 +1286,10 @@ def main() -> int:
         from . import disk_guard
 
         return disk_guard.cmd_disk_guard(args)
+    if args.command == "pipeline-selfcheck":
+        from .pipeline_selfcheck import cmd_pipeline_selfcheck
+
+        return cmd_pipeline_selfcheck(args)
     ext_commands = {c: fn for ext in social_hooks.extensions() for c, fn in (getattr(ext, "COMMANDS", None) or {}).items()}
     if args.command in ext_commands or args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
         from .darkroom import DarkroomError
