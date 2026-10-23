@@ -45,6 +45,17 @@ RULES: tuple[Rule, ...] = (
     Rule("year_rotation", True, None, "Candidates take turns by year, newest first; off: one shuffled pool."),
     Rule("skip_casual", True, None, "Casual iNat observations are never drafted."),
     Rule("strip_review_claim", True, None, "Remove the old 'Alt text: local AI model, reviewed.' line from a draft when it is approved."),
+    Rule("alt_text_privacy", True, None, "Alt text never repeats a private place: a draft whose alt text names a place the post does not show is not drafted."),
+    Rule("live_recheck", True, None, "Just before a post is sent its observation is read from iNat again; a deleted, casual or changed one is withdrawn."),
+    Rule("image_floor", True, None, "A draft whose photos fall below the quality floor (size, sharpness) is not drafted or posted."),
+    Rule("pause_switch", True, None, "A PAUSED file in the social folder stops every scheduled post until the file is removed."),
+    Rule("circuit_breaker", True, 3, "After <value> failed runs in a row posting stops until `bio social-breaker-reset` (or the next successful dry check)."),
+    Rule("verify_posts", True, None, "After a post is sent it is read back from Bluesky; a post that is not there is reported."),
+    Rule("alerts", True, None, "A failed run, a blocked post or a tripped breaker is written to the alerts log (and passed to the alert command, if set)."),
+    Rule("ledger_integrity", True, None, "The ledger is checked before a post and backed up daily; a corrupt line stops posting."),
+    Rule("variety", True, 3, "No two of the last <value> posts share a kind of organism, place or day-of-week theme when another draft is eligible."),
+    Rule("seasonal_boost", False, None, "Observations from the current season of any year are drafted first."),
+    Rule("photo_cache_cap", True, 10, "The downloaded iNat photo cache is kept under <value> GB: the oldest photos are deleted first."),
 )
 BY_NAME = {r.name: r for r in RULES}
 

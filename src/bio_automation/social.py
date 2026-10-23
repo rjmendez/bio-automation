@@ -39,7 +39,7 @@ from typing import Callable, Iterator
 
 from PIL import Image, ImageOps
 
-from . import settings
+from . import settings, social_hooks
 from .social_rules import Audit, Rules, load_rules
 
 MAX_IMAGES = 4                     # app.bsky.embed.images: images maxLength 4
@@ -86,6 +86,27 @@ class SkipObservation(SocialError):
     """This observation cannot be posted (casual, deleted, no taxon); the next candidate is tried."""
 
 
+class HookRejected(SkipObservation):
+    """A "draft" hook (a gate) rejected this observation's photo or alt text: it counts against the run's RejectBudget."""
+
+
+MAX_DRAFT_REJECTS = 25               # draft-hook rejects one social-draft run may spend before it stops (each costs a GPU describe, an iNat fetch, a prepare)
+
+
+class RejectBudget:
+    """The draft-hook rejects a run may still spend; shared by the ordinary and the themed drafting of one social-draft run."""
+
+    def __init__(self, limit: int = MAX_DRAFT_REJECTS):
+        self.limit, self.used = limit, 0
+
+    def charge(self) -> None:
+        self.used += 1
+
+    @property
+    def exhausted(self) -> bool:
+        return self.used >= self.limit
+
+
 class UnusableAnswer(SkipObservation):
     """The vision model's answer is not alt text (too short, or JSON it could not be read from): the observation is skipped this run."""
 
@@ -99,13 +120,14 @@ def _exiftool() -> str:
 
 
 def read_titles(paths: list[Path]) -> dict[Path, str]:
-    """{path: embedded XMP-dc title ('' when none)} for many files in one exiftool run (argfile, UTF-8)."""
+    """{path: embedded XMP-dc title ('' when the file has none)} for many files in one exiftool run (argfile, UTF-8). A file exiftool skipped
+    (locked, timed out, empty, corrupt: a record carrying an Error) is absent from the result: that is a miss, not an empty title."""
     if not paths:
         return {}
     with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False, encoding="utf-8", newline="\n") as af:
         af.write("\n".join(str(p) for p in paths) + "\n")
     try:
-        r = subprocess.run([_exiftool(), "-j", "-charset", "utf8", "-charset", "filename=utf8", "-XMP-dc:Title", "-@", af.name],
+        r = subprocess.run([_exiftool(), "-j", "-charset", "utf8", "-charset", "filename=utf8", "-XMP-dc:Title", "-Error", "-@", af.name],
                            capture_output=True)
     finally:
         os.unlink(af.name)
@@ -113,9 +135,13 @@ def read_titles(paths: list[Path]) -> dict[Path, str]:
         raise SocialError(f"exiftool read no titles: {r.stderr.decode('utf-8', 'replace').strip()[:200]}")
     by_name = {}
     for d in json.loads(r.stdout.decode("utf-8")):
+        if d.get("Error"):
+            continue                                     # empty, locked or corrupt: exiftool prints the error only on stderr and a record with no Title (a miss, never '')
         t = d.get("Title")
         by_name[os.path.normcase(os.path.normpath(d["SourceFile"]))] = "" if t is None else str(t)
-    return {p: by_name.get(os.path.normcase(os.path.normpath(str(p))), "") for p in paths}
+    got = {p: by_name[os.path.normcase(os.path.normpath(str(p)))] for p in paths if os.path.normcase(os.path.normpath(str(p))) in by_name}
+    return got                                           # a file exiftool did not report is left OUT (a miss, retried next run), never ''
+
 
 
 def _render_name(row: dict) -> str:
@@ -124,14 +150,59 @@ def _render_name(row: dict) -> str:
     return render_name(row)
 
 
+def _load_title_cache(path: Path) -> dict:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        entries = data["titles"]
+        return entries if isinstance(entries, dict) else {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}                                                # a missing or damaged cache only costs a full read
+
+
+def _cached_titles(gallery_dir: Path, files: list[Path], wanted: list[Path], titles, cache_path: Path) -> dict[Path, str]:
+    entries = _load_title_cache(cache_path)
+    stats = {}
+    for p in wanted:
+        st = p.stat()
+        stats[p] = (st.st_size, st.st_mtime_ns)
+    out: dict[Path, str] = {}
+    stale: list[Path] = []
+    for p in wanted:
+        e = entries.get(p.relative_to(gallery_dir).as_posix())
+        if isinstance(e, dict) and (e.get("size"), e.get("mtime_ns")) == stats[p] and isinstance(e.get("title"), str):
+            out[p] = e["title"]
+        else:
+            stale.append(p)
+    read: dict[Path, str] = titles(stale) if stale else {}
+    out.update(read)
+    present = {p.relative_to(gallery_dir).as_posix() for p in files}
+    fresh = {rel: e for rel, e in entries.items() if rel in present}                      # a deleted file is dropped
+    for p in stale:
+        rel = p.relative_to(gallery_dir).as_posix()
+        if p in read:                                                  # only a successful read is cached; a miss is retried next run
+            fresh[rel] = {"size": stats[p][0], "mtime_ns": stats[p][1], "title": read[p]}
+        else:
+            fresh.pop(rel, None)
+    if fresh != entries or not Path(cache_path).is_file():
+        cache_path = Path(cache_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        tmp.write_text(json.dumps({"version": 1, "titles": fresh}, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, cache_path)
+    return out
+
+
 def build_obs_index(gallery_dir: Path, audit_csvs: list[Path], candidate_csvs: list[Path], *,
-                    titles: Callable[[list[Path]], dict[Path, str]] = read_titles) -> dict:
+                    titles: Callable[[list[Path]], dict[Path, str]] = read_titles, title_cache: Path | None = None) -> dict:
     """{"files": {"<year>/<year-month>/<name>": obs_id}, "unresolved": {relpath: reason}} for every .jpg in the gallery.
 
     Evidence: an audit csv row (file, obs_id: the owner's Lightroom exports, one row per file) and a candidate csv row (a published Stock
     candidate: render_name(row) is its gallery name, obs_id, title). A candidate row counts only when its title equals the title embedded in
     the gallery file -- older matching passes left rows that point the same name at another observation. Exactly one observation left =
-    resolved; none or several = unresolved with the reason."""
+    resolved; none or several = unresolved with the reason.
+
+    title_cache (a JSON file): the embedded titles already read, keyed by relative path, size and mtime_ns, so a run reads only the files that are
+    new or changed (exiftool over the whole gallery took minutes); entries of files that are gone are dropped. The result is the same as without it."""
     gallery_dir = Path(gallery_dir)
     files = sorted(p for p in gallery_dir.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg") and p.is_file())
     by_name: dict[str, list[Path]] = {}
@@ -154,7 +225,8 @@ def build_obs_index(gallery_dir: Path, audit_csvs: list[Path], candidate_csvs: l
             for r in csv.DictReader(f):
                 if r.get("stock_candidate") == "True" and r.get("obs_id") and r.get("raw") and r.get("day") and r.get("id"):
                     add(_render_name(r), r["obs_id"], r.get("title", ""))
-    embedded = titles([p for p in files if any(t is not None for _, t in evidence.get(p, []))])
+    wanted = [p for p in files if any(t is not None for _, t in evidence.get(p, []))]
+    embedded = _cached_titles(gallery_dir, files, wanted, titles, title_cache) if title_cache else titles(wanted)
     out = {"files": {}, "unresolved": {}}
     for p in files:
         rel = p.relative_to(gallery_dir).as_posix()
@@ -279,7 +351,13 @@ def withdraw_small(ledger: "Ledger", drafts_dir: Path, *, min_edge: int, audit: 
                  if max(i.get("width") or 0, i.get("height") or 0) < min_edge}
         if small:
             reason = f"photo(s) under {min_edge} px: " + ", ".join(f"{f} is {e}" for f, e in small.items())
-            ledger.append("withdrawn", did, obs_id=v["obs_id"], month=v["month"], reason=reason)
+            with ledger_lock_wait(ledger.path):                  # a post run may have moved the draft on since the listing above
+                now_v = ledger.drafts().get(did)
+                if now_v is None or now_v["state"] not in ("drafted", "approved"):
+                    audit.log("withdraw_skipped", draft_id=did, state=now_v["state"] if now_v else None,
+                              reason="the draft is no longer pending; it was not withdrawn")
+                    continue
+                ledger.append("withdrawn", did, obs_id=now_v["obs_id"], month=now_v["month"], reason=reason)
             audit.log("withdrawn", draft_id=did, obs_ids=_obs_of(v), reason=reason)
             out.append(did)
     return out
@@ -335,25 +413,113 @@ def order_candidates(cands: dict[int, list[str]], exclude: set[int], seed: str, 
 
 # --------------------------------------------------------------------------------------------------- ledger
 
+_CORRUPT_LOGGED: set[tuple] = set()               # (ledger, run, line, kind) already audited as ledger_corrupt
+LEDGER_LOCK_WAIT_S = 60.0                         # a writer other than the post run waits this long for a running post to release the ledger lock
+LEDGER_LOCK_POLL_S = 0.5
+STALL_AFTER = 2                                   # consecutive NothingSent failures of one draft after which it is skipped for the rest of that day
+STALL_FAIL_DAYS = 3                               # a draft that has been stalled this long is marked failed (the owner re-approves or rejects it)
+MAX_WITHDRAWALS_PER_OBS = 3                       # pre_send gates may take back drafts of one observation this often; then it is no candidate any more
+                                                  # (a draft that fails the gates every time would otherwise be redrafted and withdrawn forever, burning stock and slots)
+
+
 class Ledger:
     """Append-only JSON lines: {"at", "event", "draft_id", ...}. A draft's state is its last event."""
 
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, audit: Audit | None = None):
         self.path = Path(path or settings.SOCIAL_LEDGER)
+        self.audit = audit                              # where a corrupt line is recorded (default: a new Audit() at that moment)
 
     def records(self) -> list[dict]:
         if not self.path.is_file():
             return []
-        return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        out = []
+        text = self.path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for number, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                kind = "torn_tail" if number == len(lines) and not text.endswith(chr(10)) else "bad_json"
+                self._audit_corrupt(number, kind)
+                fix = "`bio social-integrity --repair-tail`" if kind == "torn_tail" else "`bio social-integrity`"
+                raise SocialError(f"the ledger {self.path} is corrupt at line {number} ({kind}: {e.msg}); posting is blocked until it is repaired; "
+                                  f"nothing was changed; run {fix}") from e
+        return out
+
+    def _audit_corrupt(self, line: int, kind: str) -> None:
+        """Audit ledger_corrupt (line number and kind only, no ledger content) once per run and ledger; the alerter reads it from the audit log."""
+        key = (str(self.path), self.audit.run if self.audit is not None else "process", line, kind)
+        if key in _CORRUPT_LOGGED:
+            return
+        _CORRUPT_LOGGED.add(key)
+        reason = f"{kind} at line {line}"
+        with contextlib.suppress(OSError):                 # the block does not depend on the audit line
+            (self.audit or Audit()).log("ledger_corrupt", path=str(self.path), line=line, kind=kind, count=1, problems=[reason], reason=reason)
+
+    def append_locked(self, event: str, draft_id: str, **fields) -> dict:
+        """append() under the ledger's poster lock (waiting up to LEDGER_LOCK_WAIT_S for a running post), for writers other than the post run."""
+        with ledger_lock_wait(self.path):
+            return self.append(event, draft_id, **fields)
+
+    def withdrawal_counts(self) -> dict[int, tuple[int, str]]:
+        """{observation id: (how many times a pre_send hook took a draft of it back, the last reason)}, from the ledger's withdrawn records
+        that carry a `hook` (the withdrawal a gate made at send time); the observations are those of the draft's latest drafted record."""
+        obs_of: dict[str, list[int]] = {}
+        out: dict[int, tuple[int, str]] = {}
+        for r in self.records():
+            if r["event"] == "drafted":
+                obs_of[r["draft_id"]] = _obs_of(r)
+            elif r["event"] == "withdrawn" and r.get("hook"):
+                for o in obs_of.get(r["draft_id"], []):
+                    out[o] = (out.get(o, (0, ""))[0] + 1, str(r.get("reason") or ""))
+        return out
+
+    def nothing_sent_streaks(self) -> dict[str, dict]:
+        """{draft_id: {"count", "first", "last"}}: the "error" notes (a send that sent nothing) of each draft since its last drafted, owner
+        approval, failed, posted, rejected or withdrawn record. A restored approval (the send's own undo) does not end the streak."""
+        out: dict[str, dict] = {}
+        for r in self.records():
+            did, ev = r["draft_id"], r["event"]
+            if ev == "error":
+                s = out.setdefault(did, {"count": 0, "first": r["at"], "last": r["at"]})
+                s["count"] += 1
+                s["last"] = r["at"]
+            elif ev in ("drafted", "failed", "posted", "rejected", "withdrawn") or (ev == "approved" and not r.get("restored")):
+                out.pop(did, None)
+        return out
 
     def append(self, event: str, draft_id: str, *, now: dt.datetime | None = None, **fields) -> dict:
         if event not in STATES + NOTES:
             raise SocialError(f"unknown ledger event {event!r}")
         rec = {"at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds"), "event": event, "draft_id": draft_id, **fields}
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        lead = self._lead_newline()
         with open(self.path, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(rec, sort_keys=True) + "\n")
+            f.write(lead + json.dumps(rec, sort_keys=True) + "\n")
         return rec
+
+    def _lead_newline(self) -> str:
+        """"" when the file is empty, absent or ends with a newline. When the last record has no newline: "\n" if that record is complete (the
+        new one then starts its own line), SocialError if it is torn (appending would bury a damaged line in the middle of the ledger)."""
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return ""
+        if size == 0:
+            return ""
+        with open(self.path, "rb") as f:
+            f.seek(max(0, size - 1_000_000))
+            tail = f.read()
+        if tail.endswith(b"\n"):
+            return ""
+        last = tail.rsplit(b"\n", 1)[-1]
+        try:
+            json.loads(last.decode("utf-8"))
+        except ValueError as e:
+            raise SocialError(f"the ledger {self.path} ends with a torn record (no newline); nothing was appended; run `bio social-integrity --repair-tail`") from e
+        return "\n"
 
     def drafts(self) -> dict[str, dict]:
         """{draft_id: {"state", "obs_id", "month", "drafted_at", "last": <last state record>, "seq": its ledger position, "approved_hash",
@@ -739,12 +905,18 @@ def _read_label(path: Path) -> dict:
 def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, drafts_dir: Path, model: str,
                fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                describe_fn: Callable[..., str] = describe, style: Callable[[str], dict] | None = None,
-               prints_url: str | None = None, now: dt.datetime | None = None, skip_casual: bool = True) -> dict:
+               prints_url: str | None = None, now: dt.datetime | None = None, skip_casual: bool = True,
+               rules: Rules | None = None, audit: Audit | None = None) -> dict:
     """Write drafts_dir/<month>-obs<obs_id>/ (draft.json + 1.jpg..4.jpg) and return the draft. The observation is fetched live: casual,
     deleted and taxon-less observations raise SkipObservation. style(subject) -> {"rules", "examples", ...}: the owner's alt-text style
-    for this photo (social_style.style_for), given to the vision model and recorded per image."""
+    for this photo (social_style.style_for), given to the vision model and recorded per image. The "draft" hooks (social_hooks) see each
+    image with its alt text; a reject raises HookRejected (a SkipObservation) and leaves no folder. Every gate must have loaded: library callers
+    cannot bypass them by skipping the CLI."""
+    from . import social_gates
     from .inat import InatNotFoundError
 
+    _require_gates()
+    rules, audit = rules or load_rules(), audit or Audit()
     try:
         obs = fetch(obs_id)
     except InatNotFoundError as e:
@@ -763,12 +935,16 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
         name = f"{i}.jpg"
         info = prepare_image(src, out / name)
         label = read_label(src)
+        shown = label
+        if rules.on("alt_text_privacy") and social_gates.location_hidden(obs):
+            shown = social_gates.label_without_place(label, obs)         # a hidden place must not reach the vision model through the Stock label
         context = {"common_name": taxon.get("preferred_common_name") or taxon.get("common_name"), "scientific_name": taxon.get("name"),
                    "rank": taxon.get("rank"), "grade": GRADE_TEXT.get(grade or "", grade), "observed_on": format_date(obs.get("observed_on")),
-                   "place": public_place(obs), "title": label.get("title"), "caption": label.get("caption"), "keywords": label.get("keywords")}
+                   "place": None if shown is not label else public_place(obs), "title": shown.get("title"), "caption": shown.get("caption"),
+                   "keywords": shown.get("keywords")}
         if style is not None:
-            subject = " ".join(x for x in (context["common_name"], context["scientific_name"], label.get("title"),
-                                           ", ".join((label.get("keywords") or [])[:10])) if x)
+            subject = " ".join(x for x in (context["common_name"], context["scientific_name"], shown.get("title"),
+                                           ", ".join((shown.get("keywords") or [])[:10])) if x)
             context["style"] = style(subject)
         try:
             context["attempts"] = []
@@ -776,6 +952,12 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
         except SkipObservation:
             shutil.rmtree(out)           # no half-written draft folder is left behind
             raise
+        hooked = social_hooks.run("draft", {"obs": obs, "obs_id": obs_id, "image": out / name, "alt": alt, "label": label, "month": month,
+                                            "rules": rules}, rules=rules, audit=audit)
+        stop = social_hooks.first_non_pass(hooked)
+        if stop is not None:
+            shutil.rmtree(out)
+            raise HookRejected(f"observation {obs_id}: {stop[1].reason or stop[0].name}")
         images.append({"file": name, "source": rel, "alt": alt, **info, "alt_attempts": context["attempts"],
                        **({"style_examples": context["style"]["examples"]} if style is not None else {})})
     draft = {"draft_id": draft_id, "month": month, "obs_id": obs_id, "url": INAT_OBS_URL.format(obs_id), "text": text_segments(obs, prints_url),
@@ -783,6 +965,14 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
              "created_at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds")}
     (out / "draft.json").write_text(json.dumps(draft, indent=1, ensure_ascii=False), encoding="utf-8")
     return draft
+
+
+def _require_gates() -> None:
+    """Load every social extension (idempotent) and refuse to go on when one failed: its gates would be missing."""
+    try:
+        social_hooks.require_loaded()
+    except social_hooks.ExtensionsFailed as e:
+        raise SocialError(str(e)) from e
 
 
 def default_style() -> Callable[[str], dict]:
@@ -812,12 +1002,24 @@ def _taken(v: dict, month: str, today: dt.date, rules: Rules) -> bool:
     return False
 
 
+def _exhausted_by_withdrawals(ledger: Ledger, audit: Audit, *, wanted=None) -> set[int]:
+    """Observations whose drafts the pre_send gates took back MAX_WITHDRAWALS_PER_OBS times: no candidates any more. Each one that is in `wanted`
+    (the candidates of this run; None: all) is audited as draft_skipped "withdrawn N times: <last reason>"."""
+    out = set()
+    for o, (n, last) in sorted(ledger.withdrawal_counts().items()):
+        if n >= MAX_WITHDRAWALS_PER_OBS:
+            out.add(o)
+            if wanted is None or o in wanted or str(o) in wanted:
+                audit.log("draft_skipped", obs_id=o, reason=f"withdrawn {n} times: {last}")
+    return out
+
+
 def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Path, drafts_dir: Path, keep_pending: int | None = None,
                 model: str | None = None, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                 describe_fn: Callable[..., str] = describe, pick_model: Callable[[], str] = vision_model,
                 style_source: Callable[[], Callable[[str], dict]] | None = None, prints: dict[int, str] | None = None,
                 rules: Rules | None = None, audit: Audit | None = None, local: dict[int, dict] | None = None,
-                fetch_photo: Callable[[int], Path] | None = None) -> dict:
+                fetch_photo: Callable[[int], Path] | None = None, rejects: RejectBudget | None = None) -> dict:
     """Top up the unposted ordinary drafts (drafted or approved) to keep_pending from the observations that are not taken: posted, rejected
     or awaiting an outcome (posting) ever, or already in a pending draft or a themed draft still to be posted.
 
@@ -828,8 +1030,11 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
     first), year_rotation (years take turns), skip_casual. The owner's alt-text style is required: style_source() (default: the saved
     profile + the pool's embed model) is loaded once, before any drafting; a missing profile raises and drafts nothing. prints
     ({obs_id: url}, default load_prints()) adds a print link to the observations it lists. Every decision goes to the audit log.
-    Returns {"month", "pending", "drafted", "skipped"}."""
+    Draft-hook rejects are capped (`rejects`, default MAX_DRAFT_REJECTS per call): the run stops there, audits draft_reject_cap and reports
+    "reject_cap". Returns {"month", "pending", "drafted", "skipped"}."""
+    _require_gates()
     rules, audit = rules or load_rules(), audit or Audit()
+    rejects = rejects or RejectBudget()
     keep_pending = settings.SOCIAL_KEEP_PENDING if keep_pending is None else keep_pending
     month = f"{today.year}-{today.month:02d}"
     known = ledger.drafts()
@@ -842,6 +1047,7 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
         audit.log("draft_run", month=month, pending=len(pending), keep_pending=keep_pending, outcome="queue full", rules=rules.snapshot())
         return report
     seen = {int(o) for v in known.values() if _taken(v, month, today, rules) for o in _obs_of(v)}
+    seen |= _exhausted_by_withdrawals(ledger, audit, wanted=set(index["files"].values()))
     prints = load_prints() if prints is None else prints
     if rules.on("month_candidates"):
         cands = month_observations(index, today.month)
@@ -865,20 +1071,32 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
     order = order_candidates(cands, seen, seed=today.isoformat(), rotate_years=rules.on("year_rotation"), years=years)
     if rules.on("prints_first"):
         order.sort(key=lambda o: o not in prints)                 # observations with a print first (stable: the year rotation is kept inside each group)
+    social_hooks.run("order", {"candidates": order, "kind": "single", "taxonomy": None, "ledger": ledger, "today": today, "rules": rules},
+                     rules=rules, audit=audit)                    # the hooks reorder the list in place
     audit.log("draft_run", month=month, pending=len(pending), keep_pending=keep_pending, need=need, candidates=len(cands), local_only=from_local,
               taken=len(seen), eligible=len(order), with_print=sum(1 for o in order if o in prints), rules=rules.snapshot())
     for obs_id in order:
         if len(report["drafted"]) >= need:
             break
+        if rejects.exhausted:
+            report["reject_cap"] = rejects.limit
+            audit.log("draft_reject_cap", scope="single", limit=rejects.limit, drafted=len(report["drafted"]))
+            break
         try:
             draft = make_draft(obs_id, resolve_photos(cands[obs_id], fetch_photo), month=month, gallery_dir=gallery_dir, drafts_dir=drafts_dir,
                                model=model, fetch=fetch, read_label=read_label, describe_fn=describe_fn, style=style,
-                               prints_url=prints.get(obs_id), skip_casual=rules.on("skip_casual"))
+                               prints_url=prints.get(obs_id), skip_casual=rules.on("skip_casual"), rules=rules, audit=audit)
         except SkipObservation as e:
             report["skipped"][obs_id] = str(e)
             audit.log("draft_skipped", obs_id=obs_id, reason=str(e))
+            if isinstance(e, HookRejected):
+                rejects.charge()
+                if rejects.exhausted:
+                    report["reject_cap"] = rejects.limit
+                    audit.log("draft_reject_cap", scope="single", limit=rejects.limit, drafted=len(report["drafted"]))
+                    break
             continue
-        ledger.append("drafted", draft["draft_id"], obs_id=obs_id, month=month, images=len(draft["images"]))
+        ledger.append_locked("drafted", draft["draft_id"], obs_id=obs_id, month=month, images=len(draft["images"]))
         audit.log("drafted", draft_id=draft["draft_id"], obs_id=obs_id, print=obs_id in prints, images=len(draft["images"]))
         report["drafted"].append(draft["draft_id"])
     return report
@@ -926,7 +1144,8 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
                      model: str, fetch: Callable[[int], dict] = _fetch, read_label: Callable[[Path], dict] = _read_label,
                      describe_fn: Callable[..., str] = describe, style: Callable[[str], dict] | None = None,
                      prints: dict[int, str] | None = None, now: dt.datetime | None = None,
-                     skip_casual: bool = True, fetch_photo: Callable[[int], Path] | None = None) -> tuple[dict, dict[int, str]]:
+                     skip_casual: bool = True, fetch_photo: Callable[[int], Path] | None = None, rules: Rules | None = None,
+                     audit: Audit | None = None, rejects: RejectBudget | None = None) -> tuple[dict, dict[int, str]]:
     """Write drafts_dir/<day>-<theme key>/ (draft.json + 1.jpg..) for the theme on `day`: the first photo of each observation of `obs_ids`
     (in that order, each fetched live and described like an ordinary draft) until theme.max_photos are made; an observation that cannot be
     posted (casual, gone, no taxon) is skipped for the next one. Returns (draft, {skipped obs id: reason}); SkipObservation when fewer than
@@ -943,9 +1162,13 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
             try:
                 picked.append((o, make_draft(o, resolve_photos(rels_of[o][:1], fetch_photo), month=month, gallery_dir=gallery_dir, drafts_dir=scratch, model=model, fetch=fetch,
                                              read_label=read_label, describe_fn=describe_fn, style=style, prints_url=prints.get(o), now=now,
-                                             skip_casual=skip_casual)))
+                                             skip_casual=skip_casual, rules=rules, audit=audit)))
             except SkipObservation as e:
                 skipped[o] = str(e)
+                if isinstance(e, HookRejected) and rejects is not None:
+                    rejects.charge()
+                    if rejects.exhausted:
+                        break                                                 # the run's reject budget is spent: stop burning describes
         if len(picked) < theme.min_photos:
             raise SkipObservation(f"{theme.name} on {day}: {len(picked)} postable observation(s) of the {theme.min_photos} needed")
         draft_id = f"{day.isoformat()}-{theme.key}"
@@ -985,14 +1208,19 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
                  read_label: Callable[[Path], dict] = _read_label, describe_fn: Callable[..., str] = describe,
                  pick_model: Callable[[], str] = vision_model, style_source: Callable[[], Callable[[str], dict]] | None = None,
                  prints: dict[int, str] | None = None, rules: Rules | None = None, audit: Audit | None = None,
-                 local: dict[int, dict] | None = None, fetch_photo: Callable[[int], Path] | None = None) -> dict:
+                 local: dict[int, dict] | None = None, fetch_photo: Callable[[int], Path] | None = None,
+                 rejects: RejectBudget | None = None) -> dict:
     """Prepare the themed post of each of the next `days_ahead` days (today included) that has an enabled theme and no themed draft yet:
     up to 4 observations of the theme, one photo each (rules: theme_species_first = different species first, species-level IDs before
     coarse ones; prints_first = observations with a print first), none already taken. Nothing happens, and no vision model is loaded,
-    when the `themes` rule is off or there is nothing to draft. Every decision goes to the audit log. Returns {"drafted", "skipped", "short"}."""
+    when the `themes` rule is off or there is nothing to draft. Every decision goes to the audit log. Draft-hook rejects are capped like
+    draft_month's (`rejects`, shared with it in one social-draft run): at the cap it stops, audits draft_reject_cap and reports "reject_cap".
+    Returns {"drafted", "skipped", "short"}."""
     from . import themes as themes_mod
 
+    _require_gates()
     rules, audit = rules or load_rules(), audit or Audit()
+    rejects = rejects or RejectBudget()
     report: dict = {"drafted": [], "skipped": {}, "short": {}}
     if not rules.on("themes"):
         audit.log("theme_run", outcome="rule themes is off", rules=rules.snapshot())
@@ -1002,15 +1230,25 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
     have = {(v["for_date"], v["theme"]) for v in known.values() if v.get("for_date") and v["state"] != "withdrawn"}
     taken = {o for v in known.values() if _taken(v, f"{today.year}-{today.month:02d}", today, rules) for o in _obs_of(v)}
     candidates, rels_of = theme_candidates(index, taxonomy, prints if rules.on("prints_first") else {}, local if rules.on("lower_quality_photos") else None)
+    taken |= _exhausted_by_withdrawals(ledger, audit, wanted=set(candidates))
     audit.log("theme_run", today=today.isoformat(), days_ahead=days_ahead, themes=[t.key for t in themes if t.enabled], candidates=len(candidates),
               taken=len(taken), rules=rules.snapshot())
     model = style = None
     for k in range(days_ahead):
+        if rejects.exhausted:
+            report["reject_cap"] = rejects.limit
+            audit.log("draft_reject_cap", scope="theme", limit=rejects.limit, drafted=len(report["drafted"]))
+            break
         day = today + dt.timedelta(days=k)
         theme = themes_mod.theme_for(day, themes)
         if theme is None or (day.isoformat(), theme.key) in have:
             continue
-        ids = themes_mod.pick_group(theme, candidates, day=day, taken=taken, species_first=rules.on("theme_species_first"))
+        ids = list(themes_mod.pick_group(theme, candidates, day=day, taken=taken, species_first=rules.on("theme_species_first")))
+        if ids:
+            before = list(ids)
+            social_hooks.run("order", {"candidates": ids, "kind": f"theme:{theme.key}", "taxonomy": taxonomy, "ledger": ledger, "today": today,
+                                       "rules": rules}, rules=rules, audit=audit)
+            ids[:] = [o for o in ids if o in before]              # reordered or thinned by the hooks, never extended
         if not ids:
             report["short"][day.isoformat()] = f"{theme.name}: fewer than {theme.min_photos} observations left"
             audit.log("theme_short", day=day.isoformat(), theme=theme.key, reason=report["short"][day.isoformat()])
@@ -1021,7 +1259,8 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         try:
             draft, skipped = make_group_draft(ids, rels_of, theme, day, gallery_dir=gallery_dir, drafts_dir=drafts_dir, model=model, fetch=fetch,
                                               read_label=read_label, describe_fn=describe_fn, style=style, prints=prints,
-                                              skip_casual=rules.on("skip_casual"), fetch_photo=fetch_photo or default_photo_fetch(rules))
+                                              skip_casual=rules.on("skip_casual"), fetch_photo=fetch_photo or default_photo_fetch(rules),
+                                              rules=rules, audit=audit, rejects=rejects)
         except SkipObservation as e:
             report["short"][day.isoformat()] = str(e)
             audit.log("theme_short", day=day.isoformat(), theme=theme.key, reason=str(e))
@@ -1029,12 +1268,15 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         report["skipped"].update({str(o): r for o, r in skipped.items()})
         for o, reason in skipped.items():
             audit.log("draft_skipped", obs_id=o, theme=theme.key, reason=reason)
-        ledger.append("drafted", draft["draft_id"], obs_id=draft["obs_id"], obs_ids=draft["obs_ids"], month=draft["month"], kind="theme",
-                      theme=theme.key, for_date=draft["for_date"], images=len(draft["images"]))
+        ledger.append_locked("drafted", draft["draft_id"], obs_id=draft["obs_id"], obs_ids=draft["obs_ids"], month=draft["month"], kind="theme",
+                             theme=theme.key, for_date=draft["for_date"], images=len(draft["images"]))
         audit.log("theme_drafted", draft_id=draft["draft_id"], theme=theme.key, for_date=draft["for_date"], obs_ids=draft["obs_ids"],
                   with_print=sum(1 for o in draft["obs_ids"] if o in prints))
         taken |= set(draft["obs_ids"])
         report["drafted"].append(draft["draft_id"])
+    if rejects.exhausted and "reject_cap" not in report:
+        report["reject_cap"] = rejects.limit
+        audit.log("draft_reject_cap", scope="theme", limit=rejects.limit, drafted=len(report["drafted"]))
     return report
 
 
@@ -1182,6 +1424,23 @@ def ledger_lock(ledger_path: Path | str) -> Iterator[None]:
         f.close()
 
 
+@contextlib.contextmanager
+def ledger_lock_wait(ledger_path: Path | str, *, wait: float | None = None) -> Iterator[None]:
+    """ledger_lock, but a busy lock is retried every LEDGER_LOCK_POLL_S for `wait` seconds (default LEDGER_LOCK_WAIT_S) before SocialError:
+    prep and drafting append to the ledger while a post run may hold the lock, and must not interleave with it."""
+    deadline = time.monotonic() + (LEDGER_LOCK_WAIT_S if wait is None else wait)
+    with contextlib.ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(ledger_lock(ledger_path))
+                break
+            except SocialError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(LEDGER_LOCK_POLL_S)
+        yield
+
+
 def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool = False, posts_per_day: int | None = None,
               send: Callable[[dict], tuple[str, str]] = bsky_post, manual: bool = False, draft_id: str | None = None,
               auto_approve: bool | None = None, rules: Rules | None = None, audit: Audit | None = None) -> dict:
@@ -1199,13 +1458,55 @@ def post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool 
     recorded is not acted on. Live: "posting" is recorded in the ledger before the send. A send that stopped before anything went out
     (NothingSent) records an "error" note and the draft stays approved for the next run; any other failure leaves it "posting" (outcome
     unknown -> social-resolve)."""
+    _require_gates()
     rules, audit = rules or load_rules(), audit or Audit()
+    if ledger.audit is None:
+        ledger.audit = audit                                          # a corrupt ledger line is audited in this run's log
     kw = dict(now=now, posts_per_day=posts_per_day, send=send, manual=manual or draft_id is not None, draft_id=draft_id,
               auto_approve=rules.on("auto_approve") if auto_approve is None else auto_approve, rules=rules, audit=audit)
     if not live:
         return _post_next(ledger, drafts_dir, live=False, **kw)
+    after: list[Callable[[], None]] = []
     with ledger_lock(ledger.path):                                    # the checks, the "posting" record and the send are one step
-        return _post_next(ledger, drafts_dir, live=True, **kw)
+        result = _post_next(ledger, drafts_dir, live=True, after=after, **kw)
+    for run_after in after:                                           # the post_send hooks (the verify waits up to a minute for the AppView) run with the lock released:
+        run_after()                                                   # the post is recorded, and the owner's commands and the draft run must not wait for the read-back
+    return result
+
+
+MAX_PRE_SEND_WITHDRAWALS = 3         # drafts the pre_send hooks may take back in one run before it gives up
+
+
+def _withdrawn_report(taken_back: list[str], reasons: dict[str, str]) -> dict:
+    """{"withdrawn": [ids], "withdrawn_count", "withdrawn_reasons": {id: why}} of the drafts the pre_send hooks took back this run, else {}:
+    a withdrawal spends a posting slot, so every result and audit record says how many and why."""
+    if not taken_back:
+        return {}
+    return {"withdrawn": list(taken_back), "withdrawn_count": len(taken_back), "withdrawn_reasons": {d: reasons[d] for d in taken_back}}
+
+
+def stalled_drafts(ledger: Ledger, now: dt.datetime, *, live: bool, audit: Audit) -> set[str]:
+    """The drafts to skip today: STALL_AFTER or more consecutive NothingSent failures, the last one on now's local day (a deterministic failure
+    must not block the queue forever). Live: each is audited as draft_stalled (an alert names it), and one stalled for STALL_FAIL_DAYS days is
+    marked failed (so choose() stops considering it until the owner approves or rejects it)."""
+    out: set[str] = set()
+    states = ledger.drafts()
+    for did, s in sorted(ledger.nothing_sent_streaks().items()):
+        if s["count"] < STALL_AFTER or states.get(did, {}).get("state") not in ("approved", "drafted"):
+            continue
+        first, last = dt.datetime.fromisoformat(s["first"]), dt.datetime.fromisoformat(s["last"])
+        if now - first >= dt.timedelta(days=STALL_FAIL_DAYS):
+            if live:
+                reason = f"{s['count']} sends in a row sent nothing since {s['first']}; marked failed after {STALL_FAIL_DAYS} days"
+                ledger.append("failed", did, obs_id=states[did]["obs_id"], month=states[did]["month"], error=reason, now=now)
+                _audit_or_stop(audit, "draft_stalled", draft_id=did, count=s["count"], action="failed", reason=reason)
+            continue
+        if last.astimezone(now.tzinfo).date() == now.date():
+            out.add(did)
+            if live:
+                _audit_or_stop(audit, "draft_stalled", draft_id=did, count=s["count"], action="skipped",
+                               reason=f"{s['count']} sends in a row sent nothing (last {s['last']}); skipped for the rest of the day")
+    return out
 
 
 def _audit_or_stop(audit: Audit, event: str, *, then: str = "nothing was sent", **fields) -> None:
@@ -1218,9 +1519,10 @@ def _audit_or_stop(audit: Audit, event: str, *, then: str = "nothing was sent", 
 
 def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool, posts_per_day: int | None,
                send: Callable[[dict], tuple[str, str]], manual: bool, draft_id: str | None, auto_approve: bool,
-               rules: Rules, audit: Audit) -> dict:
+               rules: Rules, audit: Audit, after: list[Callable[[], None]] | None = None) -> dict:
     cap = posts_per_day if posts_per_day is not None else rules.value("daily_cap")
     month = f"{now.year}-{now.month:02d}"
+    stalled = stalled_drafts(ledger, now, live=live, audit=audit)
     drafts = ledger.drafts()
     why: list[str] = []
     stuck = [d for d, v in drafts.items() if v["state"] == "posting"]
@@ -1242,38 +1544,77 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
     month_ok = (lambda v: v["month"] == month) if rules.on("month_posting") else (lambda v: True)
     why.append("month_posting: " + ("only drafts of " + month if rules.on("month_posting") else "off, drafts of any month are eligible"))
     explicit = draft_id is not None
-    if draft_id is not None:
-        d = drafts.get(draft_id)
-        if d is None:
-            raise SocialError(f"no draft {draft_id!r} in {ledger.path}")
-        if d["state"] not in ("drafted", "failed", "approved"):
-            raise SocialError(f"draft {draft_id} is {d['state']}; only a drafted, failed or approved draft can be posted")
-        needs_approval = d["state"] != "approved"
-        why.append(f"chosen by the owner: {draft_id}")
-    else:
+    owner_pick = draft_id
+
+    def choose(skip: set[str]):
+        """(draft_id, needs_approval, why) of the draft to post, skipping those the pre_send hooks took back this run; or (None, result, None)."""
+        why_here = list(why)
+        if owner_pick is not None:
+            d = drafts.get(owner_pick)
+            if d is None:
+                raise SocialError(f"no draft {owner_pick!r} in {ledger.path}")
+            if d["state"] not in ("drafted", "failed", "approved"):
+                raise SocialError(f"draft {owner_pick} is {d['state']}; only a drafted, failed or approved draft can be posted")
+            why_here.append(f"chosen by the owner: {owner_pick}")
+            return owner_pick, d["state"] != "approved", why_here
         today_iso = now.date().isoformat()
         day_only = rules.on("theme_day_only")
         # theme_day_only: a themed draft is for its own day only (today's goes first, a past day's never posts, a coming day's waits);
         # off: themed drafts are ordinary drafts
-        themed = [d for d, v in drafts.items() if day_only and v.get("for_date") == today_iso
+        themed = [d for d, v in drafts.items() if d not in skip and day_only and v.get("for_date") == today_iso
                   and (v["state"] == "approved" or (v["state"] == "drafted" and auto_approve))]
         ordinary = lambda v: not (day_only and v.get("for_date"))        # noqa: E731
-        ready = [(v["approved_seq"], d) for d, v in drafts.items() if v["state"] == "approved" and month_ok(v) and ordinary(v)]
+        ready = [(v["approved_seq"], d) for d, v in drafts.items() if d not in skip and v["state"] == "approved" and month_ok(v) and ordinary(v)]
         if themed:
-            draft_id = themed[0]
-            needs_approval = drafts[draft_id]["state"] != "approved"
-            why.append(f"theme_day_only: today's themed draft {draft_id} goes first")
-        elif ready:
-            draft_id, needs_approval = min(ready)[1], False
-            why.append(f"oldest approved draft: {draft_id}")
-        else:
-            fresh = [d for d, v in drafts.items() if v["state"] == "drafted" and month_ok(v) and ordinary(v)]
-            if not (auto_approve and fresh):
-                _audit_or_stop(audit, "post_skipped", live=live, status="nothing approved", auto_approve=auto_approve, drafted=len(fresh),
-                               rules=rules.snapshot())
-                return {"status": "nothing approved", "month": month}
-            draft_id, needs_approval = fresh[0], True
-            why.append(f"auto_approve: nothing approved, the oldest drafted draft {draft_id} is approved by this run")
+            why_here.append(f"theme_day_only: today's themed draft {themed[0]} goes first")
+            return themed[0], drafts[themed[0]]["state"] != "approved", why_here
+        if ready:
+            why_here.append(f"oldest approved draft: {min(ready)[1]}")
+            return min(ready)[1], False, why_here
+        fresh = [d for d, v in drafts.items() if d not in skip and v["state"] == "drafted" and month_ok(v) and ordinary(v)]
+        if not (auto_approve and fresh):
+            _audit_or_stop(audit, "post_skipped", live=live, status="nothing approved", auto_approve=auto_approve, drafted=len(fresh),
+                           rules=rules.snapshot())
+            return None, {"status": "nothing approved", "month": month}, None
+        why_here.append(f"auto_approve: nothing approved, the oldest drafted draft {fresh[0]} is approved by this run")
+        return fresh[0], True, why_here
+
+    taken_back: list[str] = []
+    reasons: dict[str, str] = {}
+    for _attempt in range(MAX_PRE_SEND_WITHDRAWALS):
+        draft_id, needs_approval, why_now = choose(set(taken_back) | (stalled if not explicit else set()))
+        if draft_id is None:
+            return {**needs_approval, **_withdrawn_report(taken_back, reasons)}
+        ddir = Path(drafts_dir) / draft_id
+        pre_ctx = {"draft_id": draft_id, "draft": load_draft(ddir), "draft_dir": ddir, "ledger": ledger, "now": now, "live": live,
+                   "manual": manual, "fetch": _fetch, "rules": rules, "audit": audit, "on_send": []}
+        hooked = social_hooks.run("pre_send", pre_ctx, rules=rules, audit=audit)
+        stop = social_hooks.first_non_pass(hooked)
+        if stop is None:
+            why = why_now
+            break
+        hook, verdict = stop
+        reason = verdict.reason or f"hook {hook.name}"
+        if verdict.action == "block":
+            _audit_or_stop(audit, "post_skipped", live=live, status="blocked", draft_id=draft_id, hook=hook.name, reason=reason, rules=rules.snapshot(),
+                           **_withdrawn_report(taken_back, reasons))
+            return {"status": "blocked", "reason": reason, "draft_id": draft_id, **_withdrawn_report(taken_back, reasons)}
+        reasons[draft_id] = reason
+        # a dry-run only says what a live run would do: "would_withdraw", never "withdrawn" (and nothing in the ledger)
+        _audit_or_stop(audit, "withdrawn" if live else "would_withdraw", live=live, draft_id=draft_id, obs_ids=_obs_of(drafts[draft_id]),
+                       hook=hook.name, reason=reason)
+        if live:
+            ledger.append("withdrawn", draft_id, obs_id=drafts[draft_id]["obs_id"], month=drafts[draft_id]["month"], reason=reason, hook=hook.name, now=now)
+        taken_back.append(draft_id)
+        if explicit:
+            _audit_or_stop(audit, "post_skipped", live=live, status="withdrawn", draft_id=draft_id, reason=reason, rules=rules.snapshot(),
+                           **_withdrawn_report(taken_back, reasons))
+            return {"status": "withdrawn", "draft_id": draft_id, "reason": reason, **_withdrawn_report(taken_back, reasons)}
+    else:
+        _audit_or_stop(audit, "post_skipped", live=live, status="withdrawn", drafts=taken_back, rules=rules.snapshot(),
+                       **_withdrawn_report(taken_back, reasons))
+        return {"status": "withdrawn", **_withdrawn_report(taken_back, reasons),
+                "reason": f"{len(taken_back)} drafts were withdrawn before sending (the cap per run is {MAX_PRE_SEND_WITHDRAWALS}); nothing was posted"}
     ddir = Path(drafts_dir) / draft_id
     if needs_approval and live:
         approve(ledger, drafts_dir, draft_id, rules=rules, audit=audit, by="owner" if explicit else "auto")
@@ -1290,10 +1631,12 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
                "approved_by_this_run": needs_approval}
     _audit_or_stop(audit, "post_decision", live=live, draft_id=draft_id, manual=manual, themed=bool(drafts[draft_id].get("for_date")),
                    obs_ids=_obs_of(drafts[draft_id]), images=len(request["images"]), approved_by_this_run=needs_approval, reasons=why,
-                   rules=rules.snapshot())
+                   rules=rules.snapshot(), **_withdrawn_report(taken_back, reasons))
     if not live:
-        return {"status": "dry-run", **payload}
+        return {"status": "dry-run", **payload, **_withdrawn_report(taken_back, reasons)}
     ledger.append("posting", draft_id, obs_id=draft["obs_id"], month=dmonth, now=now)
+    for started in pre_ctx["on_send"]:                                # effects of pre_send hooks that must wait until a send really starts
+        started()
     try:
         uri, cid = send(request)
     except NothingSent as e:
@@ -1309,9 +1652,18 @@ def _post_next(ledger: Ledger, drafts_dir: Path, *, now: dt.datetime, live: bool
                           f"`bio social-resolve {draft_id} --posted-uri <at:// uri>` or `--not-posted`") from e
     extra = {"manual": True} if manual else {}
     ledger.append("posted", draft_id, obs_id=draft["obs_id"], month=dmonth, uri=uri, cid=cid, now=now, **extra)
-    result = {"status": "posted", "uri": uri, **payload}
+    result = {"status": "posted", "uri": uri, **payload, **_withdrawn_report(taken_back, reasons)}
     try:
         audit.log("posted", draft_id=draft_id, uri=uri, manual=manual)
     except OSError:
         result["audit"] = "the posted record could not be written to the audit log"    # the post exists and the ledger has it: say so, do not raise
+
+    def post_send() -> None:
+        social_hooks.run("post_send", {"draft_id": draft_id, "draft": draft, "uri": uri, "cid": cid, "request": request, "ledger": ledger, "now": now,
+                                       "manual": manual, "rules": rules}, rules=rules, audit=audit)
+
+    if after is None:
+        post_send()
+    else:
+        after.append(post_send)                                       # post_next runs it once the ledger lock is released
     return result
