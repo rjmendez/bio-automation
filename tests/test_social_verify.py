@@ -67,13 +67,14 @@ class TestCompare:
 
         result = verify(get)
 
-        assert result == {"ok": True, "checks": ["author", "text", "image_count", "alts", "facets"], "problems": [], "attempts": 1}
+        assert result == {"ok": True, "checks": ["author", "text", "image_count", "alts", "facets"], "problems": [], "attempts": 1, "unverified": False}
         assert get.urls == [social_verify.APPVIEW_URL + "?uris=" + urllib.parse.quote(URI, safe="")]
 
     def test_a_missing_record_is_reported_after_all_the_attempts(self):
         result = verify(RecordingGet({"posts": []}))
 
-        assert result == {"ok": False, "checks": [], "problems": ["the AppView does not have the post after 6 attempts"], "attempts": 6}
+        assert result == {"ok": False, "checks": [], "problems": ["the AppView does not have the post after 10 attempts"],
+                          "attempts": 10, "unverified": True}
 
     def test_different_text_is_reported_with_both_texts(self):
         result = verify(RecordingGet(appview_post(text=TEXT + "!")))
@@ -138,14 +139,14 @@ class TestCompare:
 
 
 class TestRetries:
-    def test_not_indexed_yet_then_found_sleeps_three_seconds_between_attempts(self):
+    def test_not_indexed_yet_then_found_sleeps_two_then_three_seconds(self):
         get, sleep = RecordingGet({"posts": []}, {"posts": []}, appview_post()), RecordingSleep()
 
         result = verify(get, sleep)
 
         assert result["ok"] is True and result["attempts"] == 3
         assert len(get.urls) == 3
-        assert sleep.calls == [3, 3]
+        assert sleep.calls == [2, 3]
 
     def test_found_at_once_never_sleeps(self):
         sleep = RecordingSleep()
@@ -154,14 +155,15 @@ class TestRetries:
 
         assert sleep.calls == []
 
-    def test_retries_are_exhausted_after_six_attempts_with_five_sleeps(self):
+    def test_retries_are_exhausted_after_ten_attempts_with_growing_sleeps_of_54_seconds(self):
         get, sleep = RecordingGet({"posts": []}), RecordingSleep()
 
         result = verify(get, sleep)
 
-        assert result["ok"] is False and result["attempts"] == 6
-        assert len(get.urls) == 6
-        assert sleep.calls == [3, 3, 3, 3, 3]
+        assert result["ok"] is False and result["attempts"] == 10
+        assert len(get.urls) == 10
+        assert sleep.calls == [2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert sum(sleep.calls) == 54
 
     def test_a_network_error_is_retried_and_then_succeeds(self):
         get = RecordingGet(OSError("connection reset"), appview_post())
@@ -174,7 +176,7 @@ class TestRetries:
         result = verify(RecordingGet(OSError("connection reset")), attempts=2)
 
         assert result == {"ok": False, "checks": [], "problems": ["the AppView call failed (OSError: connection reset) after 2 attempts"],
-                          "attempts": 2}
+                          "attempts": 2, "unverified": True}
 
     def test_content_mismatch_is_not_retried(self):
         get = RecordingGet(appview_post(text="x"))
@@ -216,7 +218,7 @@ class TestHook:
 
         assert len(records) == 1                                  # no hook_error: the hook handled it itself
         assert records[0]["event"] == "post_verify_failed"
-        assert records[0]["problems"] == ["the AppView call failed (OSError: no route to host) after 6 attempts"]
+        assert records[0]["problems"] == ["the AppView call failed (OSError: no route to host) after 10 attempts"]
 
     def test_a_garbled_answer_raises_nothing_and_the_audit_says_why(self, tmp_path):
         records = self.run_hook(tmp_path, RecordingGet({"posts": [{"record": "not a dict", "author": None}]}))
@@ -321,3 +323,35 @@ class TestCommand:
 
         assert (ns.command, ns.last, ns.uri, ns.draft) == ("social-verify", True, None, None)
         assert social_verify.COMMANDS["social-verify"] is social_verify.cmd_social_verify
+
+
+class TestWarnVersusError:
+    def run_hook(self, tmp_path, get):
+        audit = Audit(tmp_path / "audit.jsonl", run="r1", now=lambda: NOW)
+        hook = social_verify.make_hook(get=get, sleep=RecordingSleep(), audit=audit)
+        ctx = {"draft_id": "d1", "draft": {"text": SEGMENTS}, "uri": URI, "cid": "c", "now": NOW, "manual": False, "rules": rules_with(),
+               "request": {"text": TEXT, "langs": ["en"], "images": [{"path": "a", "alt": a, "width": 1, "height": 1} for a in ALTS]}}
+        hook(ctx)
+        return audit.records()
+
+    def test_a_post_the_appview_does_not_have_yet_is_level_warn_and_keeps_its_problems(self, tmp_path):
+        records = self.run_hook(tmp_path, RecordingGet({"posts": []}))
+        assert [(r["event"], r["level"], r["problems"], r["attempts"]) for r in records] == [
+            ("post_verify_failed", "warn", ["the AppView does not have the post after 10 attempts"], 10)]
+
+    def test_an_unreachable_appview_is_level_warn(self, tmp_path):
+        records = self.run_hook(tmp_path, RecordingGet(OSError("no route to host")))
+        assert [(r["event"], r["level"]) for r in records] == [("post_verify_failed", "warn")]
+
+    def test_a_post_that_was_read_back_and_differs_is_level_error(self, tmp_path):
+        records = self.run_hook(tmp_path, RecordingGet(appview_post(text=TEXT + "!")))
+        assert [(r["event"], r["level"], r["attempts"]) for r in records] == [("post_verify_failed", "error", 1)]
+
+    def test_a_good_post_has_no_failed_record(self, tmp_path):
+        assert [r["event"] for r in self.run_hook(tmp_path, RecordingGet(appview_post()))] == ["post_verified"]
+
+    def test_a_crash_inside_the_check_is_level_error(self, tmp_path):
+        hook = social_verify.make_hook(get=RecordingGet({"posts": []}), sleep=RecordingSleep(), audit=Audit(tmp_path / "a.jsonl", run="r1", now=lambda: NOW))
+        hook({"draft_id": "d1", "uri": URI})                                          # no "request" key
+        recs = Audit(tmp_path / "a.jsonl").records()
+        assert [(r["event"], r["level"], r["attempts"]) for r in recs] == [("post_verify_failed", "error", 0)]

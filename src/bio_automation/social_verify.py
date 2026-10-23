@@ -3,6 +3,9 @@
 Checked: the record exists, its author is the DID in the URI, the text is identical to the request text, the number of images and every
 alt text (in order) match, and every link and tag of the draft's text segments is present as a facet over exactly its own text.
 The post_send hook (rule verify_posts) audits post_verified or post_verify_failed; it never raises and never undoes a post.
+The AppView indexes a new post after a while, so the check waits up to about a minute (10 attempts, sleeping 2, 3, 4 ... 10 s). A post that was
+only not found (or whose read failed) is "unverified": its post_verify_failed record has level "warn", not "error". A post that was read and
+differs from what was sent is level "error".
 `bio social-verify [URI | --draft ID | --last]` runs the same check on an existing post."""
 from __future__ import annotations
 
@@ -19,8 +22,8 @@ from .social_rules import Audit
 
 APPVIEW_URL = "https://api.bsky.app/xrpc/app.bsky.feed.getPosts"
 USER_AGENT = "bio-automation-post-verify/0.1"
-ATTEMPTS = 6                      # the AppView indexes a new post a little after it is created
-DELAY_SECONDS = 3
+ATTEMPTS = 10                     # the AppView indexes a new post a little after it is created: 2+3+...+10 = 54 s of waiting in all
+DELAY_SECONDS = 2                 # the first sleep; each later one is a second longer
 LINK_TYPE = "app.bsky.richtext.facet#link"
 TAG_TYPE = "app.bsky.richtext.facet#tag"
 
@@ -110,8 +113,9 @@ def compare(post: dict, *, uri: str, text: str, alts: list[str], segments: list[
 
 def verify_post(uri: str, *, text: str, alts: list[str], segments: list[list[str]], get: Callable[[str], dict] | None = None,
                 sleep: Callable[[float], None] | None = None, attempts: int = ATTEMPTS, delay: float = DELAY_SECONDS) -> dict:
-    """Read `uri` back from the AppView (up to `attempts` times, `delay` seconds apart, while it is not there yet or the call fails) and compare.
-    -> {"ok", "checks", "problems", "attempts"}. Never raises on network or data errors; they become problems."""
+    """Read `uri` back from the AppView (up to `attempts` times while it is not there yet or the call fails; the sleeps are `delay`,
+    delay+1, delay+2 ... seconds) and compare. -> {"ok", "checks", "problems", "attempts", "unverified"}; unverified is True when the post was never
+    read back (not found, or the call failed), so nothing was proven wrong. Never raises on network or data errors; they become problems."""
     get = get or http_get
     sleep = sleep or time.sleep
     url = posts_url(uri)
@@ -119,7 +123,7 @@ def verify_post(uri: str, *, text: str, alts: list[str], segments: list[list[str
     used = 0
     for used in range(1, attempts + 1):
         if used > 1:
-            sleep(delay)
+            sleep(delay + used - 2)
         try:
             posts = get(url).get("posts") or []
         except Exception as e:  # noqa: BLE001 -- any failure to read is a problem to report, never a crash
@@ -131,9 +135,10 @@ def verify_post(uri: str, *, text: str, alts: list[str], segments: list[list[str
         try:
             checks, problems = compare(posts[0], uri=uri, text=text, alts=alts, segments=segments)
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "checks": [], "problems": [f"the AppView answer could not be read ({type(e).__name__}: {e})"[:300]], "attempts": used}
-        return {"ok": not problems, "checks": checks, "problems": problems, "attempts": used}
-    return {"ok": False, "checks": [], "problems": [f"{why} after {used} attempts"], "attempts": used}
+            return {"ok": False, "checks": [], "problems": [f"the AppView answer could not be read ({type(e).__name__}: {e})"[:300]], "attempts": used,
+                    "unverified": False}
+        return {"ok": not problems, "checks": checks, "problems": problems, "attempts": used, "unverified": False}
+    return {"ok": False, "checks": [], "problems": [f"{why} after {used} attempts"], "attempts": used, "unverified": True}
 
 
 def make_hook(*, get=None, sleep=None, audit: Audit | None = None, attempts: int = ATTEMPTS, delay: float = DELAY_SECONDS):
@@ -150,10 +155,11 @@ def make_hook(*, get=None, sleep=None, audit: Audit | None = None, attempts: int
             if result["ok"]:
                 log.log("post_verified", checks=result["checks"], attempts=result["attempts"], **who)
             else:
-                log.log("post_verify_failed", problems=result["problems"], attempts=result["attempts"], **who)
+                log.log("post_verify_failed", level="warn" if result.get("unverified") else "error", problems=result["problems"],
+                        attempts=result["attempts"], **who)
         except Exception as e:  # noqa: BLE001 -- verification never disturbs a post that exists
             try:
-                log.log("post_verify_failed", problems=[f"verification could not run ({type(e).__name__}: {e})"[:300]], attempts=0, **who)
+                log.log("post_verify_failed", level="error", problems=[f"verification could not run ({type(e).__name__}: {e})"[:300]], attempts=0, **who)
             except OSError:
                 pass
         return None
