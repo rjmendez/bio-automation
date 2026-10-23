@@ -237,6 +237,15 @@ def check_gallery_index(now: dt.datetime) -> Check:
     return Check("gallery-index", OK, f"gallery index is {days:.1f} days old, {files} files")
 
 
+def check_qdrant_sync(now: dt.datetime) -> Check:
+    from . import sync_marker
+
+    problems = sync_marker.stale(now)
+    if problems:
+        return Check("qdrant-sync", WARN, "; ".join(m for _, m in problems) + " (run `bio qdrant-sync` and `bio qdrant-inat-sync`, or the Bio-Qdrant-Sync task)")
+    return Check("qdrant-sync", OK, f"both Qdrant syncs wrote within {settings.QDRANT_STALE_DAYS:g} days")
+
+
 def check_taxonomy() -> Check:
     path = Path(settings.OBS_TAXONOMY_FILE)
     if not path.is_file():
@@ -424,7 +433,7 @@ def run_checks(*, online: bool = False, now: dt.datetime | None = None, drives: 
         file_check, file_rules = check_rules("rules-file")
         extra = [file_check, check_themes("themes-file")]
         rules = file_rules
-    checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_secret_scan(), check_bsky_session(), check_gallery_index(now), check_taxonomy(),
+    checks = [rules_check, check_extensions(), *([check_cli()] if deploy else []), check_themes(builtin=deploy), *extra, check_ledger(), check_audit_writable(), check_secret_scan(), check_bsky_session(), check_gallery_index(now), check_qdrant_sync(now), check_taxonomy(),
               check_approved_drafts(), check_pending_quality(rules), check_pause(), *([] if deploy else [check_script_drift()]), *check_disks(drives or default_drives(), free or _free_bytes)]
     if online:
         checks += [check_bsky_online(whoami or default_whoami), check_inat_online(inat_probe or default_inat_probe)]

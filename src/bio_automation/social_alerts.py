@@ -9,7 +9,7 @@ Alert kinds and levels (exit code: 0 none, 1 warnings, 2 errors):
   error    draft_stalled (a draft whose sends keep sending nothing: skipped for the day, later marked failed; the alert names it), post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
            ledger_corrupt (an audit event, or unreadable lines found in the ledger file itself), prep_failed (a prep_step with ok=false),
            selfcheck_failed (a selfcheck event with level fail), expected_post_missing, run_silent, disk (C: under 15 GB)
-  warning  live_recheck_unavailable (iNat could not be asked right before a send; three in one run block the send), post_blocked, hook_error, paused, backup_failed, withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
+  warning  live_recheck_unavailable (iNat could not be asked right before a send; three in one run block the send), post_blocked, hook_error, paused, backup_failed, backup_offsite_failed (the off-drive copy), restore_check_failed (social-restore-check), qdrant_sync_failed, qdrant_stale (a Qdrant sync never recorded or older than QDRANT_STALE_DAYS), withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
            draft_reject_spike (more than 10 draft_skipped by hooks in one run), low_stock, queue_empty, disk (D: under 20 GB)
 De-duplication: a key already in the alerts log less than 12 hours ago is not new. An alert that stands for ONE audit record (an event: post_failed,
 hook_error ...) is new only once, ever, so an old failure still inside the --since window is not announced again after 12 hours.
@@ -47,7 +47,8 @@ NOTIFY_TIMEOUT_S = 30
 NOTIFY_BUDGET_S = 90                           # all the notifications of one scan together: the rest wait for the next scan (the task has a 20 minute limit)
 ERROR_EVENTS = {"post_failed": "error", "post_verify_failed": "error", "circuit_open": "error", "ledger_corrupt": "error",
                 "draft_stalled": "error", "live_recheck_unavailable": "warning", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning",
-                "disk_pause": "warning", "disk_timeout": "error"}      # disk_guard: a worker waiting for disk space (resumes by itself), or one that gave up
+                "disk_pause": "warning", "disk_timeout": "error",
+                "backup_offsite_failed": "warning", "restore_check_failed": "warning", "qdrant_sync_failed": "warning"}      # disk_guard: disk_pause = a worker waiting for disk space (resumes by itself), disk_timeout = one that gave up
 WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
 WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
 DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
@@ -205,7 +206,7 @@ def _load_pool(taxonomy_file: Path, themes_file, drafts: dict[str, dict]) -> tup
 
 def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audit_path: Path | None = None, ledger_path: Path | None = None,
          rules: Rules | None = None, slots: list[dt.time] | None = None, pause_file: Path | None = None, log_file: Path | None = None,
-         taxonomy_file: Path | None = None, themes_file: Path | None = None,
+         taxonomy_file: Path | None = None, themes_file: Path | None = None, qdrant_marker: Path | None = None, qdrant_stale_days: float | None = None,
          disk_free: Callable[[str], int] = lambda p: shutil.disk_usage(p).free) -> tuple[list[Alert], list[str]]:
     """(alerts, notes). Notes say what could not be checked (a missing cache, an unreadable disk); they are not alerts."""
     rules = rules or load_rules()
@@ -323,6 +324,12 @@ def scan(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), audi
                           f"{p['name']}: {p['posts']} post(s) left ({p['observations']} unclaimed observations), under {LOW_STOCK_POSTS}"))
     if not any(d.get("state") in ("drafted", "approved") for d in drafts.values()):
         add(Alert(f"queue_empty:{today.isoformat()}", "queue_empty", "warning", "no drafted or approved draft is left to post"))
+
+    # 4b. the Qdrant indexes: a sync that never ran or has not written for days leaves search answering from old data
+    from . import sync_marker
+
+    for name, message in sync_marker.stale(now, path=qdrant_marker, max_days=qdrant_stale_days):
+        add(Alert(f"qdrant_stale:{name}:{today.isoformat()}", "qdrant_stale", "warning", message))
 
     # 5. disks
     for root, gb, level in DISK_MIN_GB:
