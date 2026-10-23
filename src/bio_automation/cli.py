@@ -730,13 +730,16 @@ def cmd_social_draft(args: argparse.Namespace) -> int:
     import datetime as dt
     import json
 
-    from .social import Ledger, draft_month, load_index, local_candidates
-    from .social_rules import load_rules
+    from .social import Ledger, draft_month, inat_photo_candidates, load_index, withdraw_small
+    from .social_rules import Audit, load_rules
 
     today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
     index, ledger, rules = load_index(Path(args.index)), Ledger(), load_rules()
     drafts_dir = settings.SOCIAL_DIR / "drafts"
-    local = local_candidates() if rules.on("lower_quality_photos") else {}
+    gallery_obs = {int(o) for o in index["files"].values()}
+    min_edge = rules.value("lower_quality_photos") or 1000
+    local = inat_photo_candidates(min_edge=min_edge, exclude=gallery_obs) if rules.on("lower_quality_photos") else {}
+    withdrawn = withdraw_small(ledger, drafts_dir, min_edge=min_edge, audit=Audit()) if rules.on("lower_quality_photos") else []
     if rules.on("themes") and not args.no_themes:                     # themed posts first: their observations are then off the table for the rest
         report = {"themes": _draft_themes(index, ledger, today, Path(args.gallery_dir), drafts_dir, rules, local)}
         report.update(draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir,
@@ -745,6 +748,7 @@ def cmd_social_draft(args: argparse.Namespace) -> int:
         report = draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir, keep_pending=args.keep_pending,
                              rules=rules, local=local)
     report["local_photos"] = len(local)
+    report["withdrawn"] = withdrawn
     print(json.dumps(report, indent=2))
     return 0
 
@@ -804,7 +808,7 @@ def cmd_social_themes(args: argparse.Namespace) -> int:
     import datetime as dt
 
     from . import themes
-    from .social import Ledger, _obs_of, _taken, load_index, load_prints, local_candidates, theme_candidates
+    from .social import Ledger, _obs_of, _taken, inat_photo_candidates, load_index, load_prints, theme_candidates
     from .social_rules import load_rules
 
     path = settings.SOCIAL_THEMES_FILE
@@ -821,7 +825,8 @@ def cmd_social_themes(args: argparse.Namespace) -> int:
     index = load_index(Path(args.index))
     listed = themes.load_themes()
     rules = load_rules()
-    local = local_candidates() if rules.on("lower_quality_photos") else {}
+    local = (inat_photo_candidates(min_edge=rules.value("lower_quality_photos") or 1000, exclude={int(o) for o in index["files"].values()})
+             if rules.on("lower_quality_photos") else {})
     candidates, _ = theme_candidates(index, _taxonomy(index, local), load_prints(), local)
     month = f"{today.year}-{today.month:02d}"
     taken = {o for v in Ledger().drafts().values() if _taken(v, month, today, rules) for o in _obs_of(v)}
