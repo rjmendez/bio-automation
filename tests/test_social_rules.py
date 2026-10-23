@@ -20,13 +20,16 @@ NOWHERE = Path(os.devnull)
 
 
 class TestRuleStates:
-    def test_the_defaults_are_every_rule_on_except_the_two_month_rules(self):
+    def test_the_defaults_are_every_rule_on_except_the_two_month_rules_and_seasonal_boost(self):
         r = load_rules(NOWHERE, env={})
         assert r.snapshot() == {
             "daily_cap": {"on": True, "value": 3}, "manual_exempt_from_cap": {"on": True}, "auto_approve": {"on": True},
             "month_candidates": {"on": False}, "month_posting": {"on": False}, "themes": {"on": True}, "theme_day_only": {"on": True},
             "theme_species_first": {"on": True}, "lower_quality_photos": {"on": True, "value": 1000}, "prints_first": {"on": True}, "year_rotation": {"on": True}, "skip_casual": {"on": True},
-            "strip_review_claim": {"on": True}}
+            "strip_review_claim": {"on": True}, "alt_text_privacy": {"on": True}, "live_recheck": {"on": True}, "image_floor": {"on": True},
+            "pause_switch": {"on": True}, "circuit_breaker": {"on": True, "value": 3}, "verify_posts": {"on": True}, "alerts": {"on": True},
+            "ledger_integrity": {"on": True}, "variety": {"on": True, "value": 3}, "seasonal_boost": {"on": False},
+            "photo_cache_cap": {"on": True, "value": 10}}
         assert [r.state(x.name).source for x in RULES] == ["default"] * len(RULES)
 
     def test_the_older_settings_still_set_the_cap_auto_approve_and_themes(self, monkeypatch):
