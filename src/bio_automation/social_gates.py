@@ -245,25 +245,71 @@ def _transient_errors() -> tuple:
     return (InatTransientError, urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout, socket.gaierror, socket.herror)
 
 
+UNAVAILABLE_BLOCK_AFTER = 3          # unavailable rechecks (observations iNat could not be asked about) in ONE run after which live_recheck blocks the send
+                                     # instead of failing open: with iNat unreachable for that many observations the privacy of a multi-photo draft cannot be
+                                     # shown. A single-observation draft still fails open (one unavailable recheck), as before.
+
+
+def _fresh_alt_leaks(alt: str, then: dict, now: dict) -> list[str]:
+    """alt_leaks against the observation as iNat says it is NOW; when it now hides its location, the place words come from the draft's own
+    observation (iNat no longer reports the place)."""
+    leaks = alt_leaks(alt, now)
+    if not leaks and location_hidden(now):
+        leaks = alt_leaks(alt, {**then, "geoprivacy": "private"})
+    return leaks
+
+
+def _unavailable_in_run(audit, fallback: int) -> int:
+    try:
+        return sum(1 for r in audit.records() if r.get("run") == audit.run and r.get("event") == "live_recheck_unavailable")
+    except (OSError, ValueError):
+        return fallback
+
+
 def live_recheck(ctx: dict) -> Verdict | None:
     """Fail open ONLY when iNat cannot be reached (a transient API error, a network or socket error, a timeout): audited as
-    live_recheck_unavailable. Any other exception (a coding error, an unexpected API answer) propagates, and the framework blocks the send."""
+    live_recheck_unavailable. Any other exception (a coding error, an unexpected API answer) propagates, and the framework blocks the send.
+
+    After the first unavailable answer the draft's remaining observations are not asked (each would spend the transport's whole retry budget,
+    minutes): they are recorded as unavailable too (skipped=true). UNAVAILABLE_BLOCK_AFTER unavailable observations in one run block the send.
+    The stored alt texts are checked against the observations as just fetched, so an alt that names a place is withdrawn when the observation
+    turned private or obscured after drafting."""
     from .inat import InatNotFoundError
 
     draft, audit = ctx["draft"], ctx.get("audit") or Audit()
     text = social.segments_text(draft.get("text") or [])
     unavailable = _transient_errors()
-    for obs_id, then in draft_observations(draft).items():
+    observed = draft_observations(draft)
+    fetched: dict[int, dict] = {}
+    down, count = None, 0
+    for obs_id, then in observed.items():
+        if down is not None:
+            count += 1
+            audit.log("live_recheck_unavailable", draft_id=ctx.get("draft_id"), obs_id=obs_id, error=down, skipped=True)
+            continue
         try:
             now = ctx["fetch"](obs_id)
         except InatNotFoundError:
             return Verdict("withdraw", f"observation {obs_id} no longer exists on iNat")
         except unavailable as e:
-            audit.log("live_recheck_unavailable", draft_id=ctx.get("draft_id"), obs_id=obs_id, error=f"{type(e).__name__}: {e}"[:300])
+            down = f"{type(e).__name__}: {e}"[:300]
+            count += 1
+            audit.log("live_recheck_unavailable", draft_id=ctx.get("draft_id"), obs_id=obs_id, error=down)
             continue
         problem = recheck_problem(obs_id, then, now, text)
         if problem:
             return Verdict("withdraw", problem)
+        fetched[obs_id] = now
+    single = next(iter(observed)) if len(observed) == 1 else None
+    for i, image in enumerate(draft.get("images") or [], 1):
+        obs_id = int(image["obs_id"]) if image.get("obs_id") is not None else (single if single is not None else int(draft.get("obs_id", -1)))
+        if obs_id in fetched and obs_id in observed:
+            leaks = _fresh_alt_leaks(image.get("alt") or "", observed[obs_id], fetched[obs_id])
+            if leaks:
+                return Verdict("withdraw", f"alt text of image {i} leaks {'; '.join(leaks)} now that observation {obs_id} hides its location")
+    if count and _unavailable_in_run(audit, count) >= UNAVAILABLE_BLOCK_AFTER:
+        return Verdict("block", f"iNat could not be asked about {_unavailable_in_run(audit, count)} observations in this run "
+                                f"(limit {UNAVAILABLE_BLOCK_AFTER}); the live recheck cannot vouch for the draft, nothing is sent")
     return None
 
 

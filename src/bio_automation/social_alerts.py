@@ -9,7 +9,7 @@ Alert kinds and levels (exit code: 0 none, 1 warnings, 2 errors):
   error    draft_stalled (a draft whose sends keep sending nothing: skipped for the day, later marked failed; the alert names it), post_failed, post_verify_failed (a warning when the record says level "warn": the post was merely not found yet), circuit_open,
            ledger_corrupt (an audit event, or unreadable lines found in the ledger file itself), prep_failed (a prep_step with ok=false),
            selfcheck_failed (a selfcheck event with level fail), expected_post_missing, run_silent, disk (C: under 15 GB)
-  warning  post_blocked, hook_error, paused, backup_failed, withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
+  warning  live_recheck_unavailable (iNat could not be asked right before a send; three in one run block the send), post_blocked, hook_error, paused, backup_failed, withdrawal_spike (more than 3 withdrawn/would_withdraw events in 24 h),
            draft_reject_spike (more than 10 draft_skipped by hooks in one run), low_stock, queue_empty, disk (D: under 20 GB)
 De-duplication: a key already in the alerts log less than 12 hours ago is not new. An alert that stands for ONE audit record (an event: post_failed,
 hook_error ...) is new only once, ever, so an old failure still inside the --since window is not announced again after 12 hours.
@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable, NamedTuple
 
@@ -43,8 +44,9 @@ SILENT_AFTER = dt.timedelta(minutes=30)        # a slot's run left no trace when
 LOW_STOCK_POSTS = 10
 DISK_MIN_GB = (("C:\\", 15, "error"), ("D:\\", 20, "warning"))
 NOTIFY_TIMEOUT_S = 30
+NOTIFY_BUDGET_S = 90                           # all the notifications of one scan together: the rest wait for the next scan (the task has a 20 minute limit)
 ERROR_EVENTS = {"post_failed": "error", "post_verify_failed": "error", "circuit_open": "error", "ledger_corrupt": "error",
-                "draft_stalled": "error", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning"}
+                "draft_stalled": "error", "live_recheck_unavailable": "warning", "post_blocked": "warning", "hook_error": "warning", "paused": "warning", "backup_failed": "warning"}
 WITHDRAWAL_EVENTS = ("withdrawn", "would_withdraw")
 WITHDRAWAL_SPIKE = 3                           # more than this many in 24 h alerts
 DRAFT_REJECT_SPIKE = 10                        # more than this many draft-hook rejects (draft_skipped) in ONE run alerts
@@ -419,8 +421,11 @@ def run_notifier(argv: list[str], *, input: bytes, timeout: float) -> subprocess
 
 
 def run_alerts(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24), notify: bool = False, command: str | None = None,
-               rules: Rules | None = None, alerts_log: Path | None = None, runner=run_notifier, **scan_args) -> dict:
-    """Scan, record the new alerts, notify. Returns {"alerts", "new", "notified", "notify_failed", "notes", "exit"}."""
+               rules: Rules | None = None, alerts_log: Path | None = None, runner=run_notifier, clock: Callable[[], float] = time.monotonic,
+               **scan_args) -> dict:
+    """Scan, record the new alerts, notify. Returns {"alerts", "new", "notified", "notify_failed", "notes", "exit"}.
+    Notifying stops after the first failed notification (alert_failed: the command is broken or down, more attempts would only wait out their
+    timeouts) and when NOTIFY_BUDGET_S seconds are used up; the alerts not sent stay pending for the next scan."""
     rules = rules or load_rules()
     alerts_log = Path(alerts_log or settings.SOCIAL_ALERTS_LOG)
     command = settings.SOCIAL_ALERT_COMMAND if command is None else command
@@ -440,10 +445,16 @@ def run_alerts(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24)
         notes.append("--notify given but no alert command is set (BIO_SOCIAL_ALERT_COMMAND)")
         return report
     audit = Audit(scan_args.get("audit_path") or settings.SOCIAL_AUDIT_LOG, now=lambda: now)
-    for a in pending_notify(found, read_jsonl(alerts_log), now):
+    started = clock()
+    pending = pending_notify(found, read_jsonl(alerts_log), now)
+    for n, a in enumerate(pending):
+        left = NOTIFY_BUDGET_S - (clock() - started)
+        if left <= 0:
+            notes.append(f"notification stopped: the {NOTIFY_BUDGET_S} s budget is used up; {len(pending) - n} alert(s) wait for the next scan")
+            break
         try:
             argv = split_command(command)
-            res = runner(argv, input=f"[{a.level}] {a.kind}: {a.message}\n".encode("utf-8"), timeout=NOTIFY_TIMEOUT_S)
+            res = runner(argv, input=f"[{a.level}] {a.kind}: {a.message}\n".encode("utf-8"), timeout=min(NOTIFY_TIMEOUT_S, left))
             err = res.stderr.decode("utf-8", "replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
             ok, error = res.returncode == 0, f"exit code {res.returncode}: {err.strip()[:200]}"
         except subprocess.TimeoutExpired:
@@ -456,6 +467,10 @@ def run_alerts(now: dt.datetime, *, since: dt.timedelta = dt.timedelta(hours=24)
         except OSError:
             pass                                                                   # the alerts log above already has it
         (report["notified"] if ok else report["notify_failed"]).append(a)
+        if not ok:
+            if len(pending) - n - 1:
+                notes.append(f"notification stopped after the first failure ({a.key}); {len(pending) - n - 1} alert(s) wait for the next scan")
+            break
     return report
 
 

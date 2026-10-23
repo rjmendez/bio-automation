@@ -291,10 +291,70 @@ class TestLiveRecheck:
         v, fetch = recheck(draft, {10: observation(10), 11: observation(11)}, audit)
         assert v is None and fetch.calls == [10, 11]
 
-    def test_a_themed_draft_continues_past_an_unavailable_fetch_to_check_the_rest(self, audit):
+    def test_after_the_first_unavailable_answer_the_rest_of_the_draft_is_not_asked_but_recorded(self, audit):
         draft = themed_draft({10: observation(10), 11: observation(11)})
         v, fetch = recheck(draft, {10: InatTransientError("503"), 11: observation(11, grade="casual")}, audit)
+        assert v is None and fetch.calls == [10]
+        assert [(r["obs_id"], r["error"], r.get("skipped")) for r in audit.records()] == [(10, "InatTransientError: 503", None),
+                                                                                           (11, "InatTransientError: 503", True)]
+
+    def test_positive_twin_with_iNat_up_every_observation_is_asked(self, audit):
+        draft = themed_draft({10: observation(10), 11: observation(11)})
+        v, fetch = recheck(draft, {10: observation(10), 11: observation(11, grade="casual")}, audit)
         assert v == Verdict("withdraw", "observation 11 is now casual") and fetch.calls == [10, 11]
+
+    def test_three_unavailable_observations_in_a_run_block_the_send(self, audit):
+        draft = themed_draft({10: observation(10), 11: observation(11), 12: observation(12)})
+        v, fetch = recheck(draft, {10: InatTransientError("503")}, audit)
+        assert v == Verdict("block", "iNat could not be asked about 3 observations in this run (limit 3); the live recheck cannot vouch for the draft, nothing is sent")
+        assert fetch.calls == [10] and len(audit.records()) == 3
+
+    def test_two_unavailable_observations_still_fail_open(self, audit):
+        draft = themed_draft({10: observation(10), 11: observation(11)})
+        v, _ = recheck(draft, {10: InatTransientError("503")}, audit)
+        assert v is None and len(audit.records()) == 2
+
+    def test_the_unavailable_count_is_per_run(self, tmp_path):
+        first = Audit(tmp_path / "audit.jsonl", run="r1")
+        recheck(themed_draft({10: observation(10), 11: observation(11)}), {10: InatTransientError("503")}, first)
+        second = Audit(tmp_path / "audit.jsonl", run="r2")
+        v, _ = recheck(single_draft(), {42: InatTransientError("503")}, second)
+        assert v is None                                              # 2 earlier unavailable records belong to another run: this run has 1
+
+    def test_the_runs_audit_from_the_context_receives_the_record(self, tmp_path):
+        mine = Audit(tmp_path / "mine.jsonl", run="run-xyz")
+        recheck(single_draft(), {42: InatTransientError("503")}, mine)
+        assert [r["run"] for r in mine.records()] == ["run-xyz"]
+
+    def alt_draft(self, alt):
+        then = observation(place="Hickory Run State Park, PA, USA")
+        draft = single_draft(then)
+        draft["text"] = [["text", "A lattice orbweaver"]]                 # the post text shows no place: only the alt can leak it
+        draft["images"] = [{"file": "1.jpg", "alt": alt}]
+        return draft
+
+    def test_an_alt_naming_the_place_is_withdrawn_when_the_observation_turned_private_since(self, audit):
+        draft = self.alt_draft("A lattice orbweaver in the Hickory woods.")
+        v, _ = recheck(draft, {42: observation(place="", geoprivacy="private")}, audit)
+        assert v == Verdict("withdraw", "alt text of image 1 leaks hidden place name now that observation 42 hides its location")
+
+    def test_the_same_alt_passes_while_the_observation_is_still_public(self, audit):
+        v, _ = recheck(self.alt_draft("A lattice orbweaver in the Hickory woods."), {42: observation(place="Hickory Run State Park, PA, USA")}, audit)
+        assert v is None
+
+    def test_an_alt_without_the_place_passes_when_the_observation_turned_private(self, audit):
+        v, _ = recheck(self.alt_draft("A lattice orbweaver in the woods."), {42: observation(place="", geoprivacy="private")}, audit)
+        assert v is None
+
+    def test_a_themed_drafts_alt_is_checked_against_its_own_observation(self, audit):
+        then10, then11 = observation(10, place="Hickory Run State Park, PA, USA"), observation(11)
+        draft = themed_draft({10: then10, 11: then11})
+        draft["images"] = [{"file": "1.jpg", "obs_id": 11, "alt": "A spider by the Hickory trail."}, {"file": "2.jpg", "obs_id": 10, "alt": "A spider on a leaf."}]
+        v, _ = recheck(draft, {10: observation(10, place="", geoprivacy="private"), 11: observation(11)}, audit)
+        assert v is None                                              # the Hickory alt belongs to observation 11, which is still public and never had that place
+        draft["images"][1]["alt"] = "A spider on a Hickory leaf."
+        v, _ = recheck(draft, {10: observation(10, place="", geoprivacy="private"), 11: observation(11)}, audit)
+        assert v == Verdict("withdraw", "alt text of image 2 leaks hidden place name now that observation 10 hides its location")
 
     def test_through_the_framework_the_withdraw_is_audited_and_the_rule_can_switch_it_off(self, gates, audit):
         social_hooks._hooks[:] = [h for h in social_hooks._hooks if h.name == "live_recheck"]

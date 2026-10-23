@@ -90,7 +90,8 @@ def test_quiet_state_has_no_alert_and_says_the_taxonomy_was_not_checked(env):
 
 @pytest.mark.parametrize("event,level", [("post_failed", "error"), ("post_verify_failed", "error"), ("circuit_open", "error"),
                                          ("ledger_corrupt", "error"), ("post_blocked", "warning"), ("hook_error", "warning"),
-                                         ("paused", "warning"), ("backup_failed", "warning")])
+                                         ("paused", "warning"), ("backup_failed", "warning"), ("live_recheck_unavailable", "warning"),
+                                         ("draft_stalled", "error")])
 def test_each_event_kind_alerts_with_its_level(env, event, level):
     env.add_audit({"at": at(12, 6), "event": event, "draft_id": "b", "reason": "because"})
     alerts, _ = env.scan()
@@ -466,6 +467,60 @@ def test_a_failing_command_is_recorded_and_never_raised(env, runner, expected):
     rows = social_alerts.read_jsonl(env.alerts)
     assert [(r["record"], r.get("error")) for r in rows] == [("alert", None), ("notify_failed", expected)]
     assert rows[1]["key"] == rows[0]["key"]
+
+
+def three_alerts(env):
+    two_alerts(env)
+    env.add_audit({"at": at(12, 8), "event": "hook_error", "name": "h", "error": "x"})
+
+
+def test_notifying_stops_after_the_first_failure_and_the_rest_wait_for_the_next_scan(env):
+    three_alerts(env)
+    failing = RecordingRunner(returncode=1, stderr="down")
+    rep = run(env, failing, notify=True, command="notify.exe")
+    assert len(failing.calls) == 1 and len(rep["notify_failed"]) == 1 and rep["notified"] == []
+    assert rep["notes"][-1].endswith("; 2 alert(s) wait for the next scan") and rep["notes"][-1].startswith("notification stopped after the first failure")
+    assert [r["event"] for r in social_alerts.read_jsonl(env.audit) if r["event"] in ("alert_sent", "alert_failed")] == ["alert_failed"]
+    healthy = RecordingRunner()
+    rep2 = run(env, healthy, notify=True, command="notify.exe")
+    assert len(healthy.calls) == 3 and len(rep2["notified"]) == 3                      # all three are still pending and now go out
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+class SlowRunner(RecordingRunner):
+    def __init__(self, clock, seconds):
+        super().__init__()
+        self.clock, self.seconds = clock, seconds
+
+    def __call__(self, argv, **kw):
+        self.clock.t += self.seconds
+        return super().__call__(argv, **kw)
+
+
+def test_the_notify_budget_is_ninety_seconds_in_total_and_each_command_gets_what_is_left(env):
+    three_alerts(env)
+    clock = FakeClock()
+    runner = SlowRunner(clock, 40)
+    rep = run(env, runner, notify=True, command="notify.exe", clock=clock)
+    assert [c[1]["timeout"] for c in runner.calls] == [30, 30, 10.0] and len(rep["notified"]) == 3      # 0, 40, 80 s used: the third gets the 10 s left
+
+
+def test_a_scan_that_used_its_budget_leaves_the_rest_pending(env):
+    three_alerts(env)
+    clock = FakeClock()
+    runner = SlowRunner(clock, 50)
+    rep = run(env, runner, notify=True, command="notify.exe", clock=clock)
+    assert [c[1]["timeout"] for c in runner.calls] == [30, 30] and len(rep["notified"]) == 2
+    assert rep["notes"][-1] == "notification stopped: the 90 s budget is used up; 1 alert(s) wait for the next scan"
+    again = RecordingRunner()
+    assert len(run(env, again, notify=True, command="notify.exe")["notified"]) == 1
 
 
 def test_a_failed_notification_is_retried_by_the_next_scan_and_then_not_again(env):
