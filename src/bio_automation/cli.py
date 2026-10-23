@@ -230,6 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_social_index.add_argument("--audit", nargs="*", default=[], help="audit csv(s) with file,obs_id columns (glob patterns allowed)")
     p_social_index.add_argument("--candidates", nargs="*", default=[], help="Stock candidate csv(s) (glob patterns allowed)")
     p_social_index.add_argument("--out", default=str(settings.GALLERY_OBS_INDEX))
+    p_social_index.add_argument("--full", action="store_true", help="ignore the title cache and read every file's embedded title")
 
     p_darkroom = sub.add_parser(
         "darkroom-sync",
@@ -723,7 +724,8 @@ def cmd_social_index(args: argparse.Namespace) -> int:
 
     from .social import build_obs_index, write_index
 
-    index = build_obs_index(Path(args.gallery_dir), _expand(args.audit), _expand(args.candidates))
+    cache = None if getattr(args, "full", False) else settings.GALLERY_TITLE_CACHE      # --full re-reads every title
+    index = build_obs_index(Path(args.gallery_dir), _expand(args.audit), _expand(args.candidates), title_cache=cache)
     write_index(index, Path(args.out))
     reasons = Counter(r.split(":")[0] for r in index["unresolved"].values())
     print(f"{len(index['files'])} files mapped to {len(set(index['files'].values()))} observations, {len(index['unresolved'])} unresolved "

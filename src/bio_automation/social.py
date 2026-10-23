@@ -124,14 +124,55 @@ def _render_name(row: dict) -> str:
     return render_name(row)
 
 
+def _load_title_cache(path: Path) -> dict:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        entries = data["titles"]
+        return entries if isinstance(entries, dict) else {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}                                                # a missing or damaged cache only costs a full read
+
+
+def _cached_titles(gallery_dir: Path, files: list[Path], wanted: list[Path], titles, cache_path: Path) -> dict[Path, str]:
+    entries = _load_title_cache(cache_path)
+    stats = {}
+    for p in wanted:
+        st = p.stat()
+        stats[p] = (st.st_size, st.st_mtime_ns)
+    out: dict[Path, str] = {}
+    stale: list[Path] = []
+    for p in wanted:
+        e = entries.get(p.relative_to(gallery_dir).as_posix())
+        if isinstance(e, dict) and (e.get("size"), e.get("mtime_ns")) == stats[p] and isinstance(e.get("title"), str):
+            out[p] = e["title"]
+        else:
+            stale.append(p)
+    if stale:
+        out.update(titles(stale))
+    present = {p.relative_to(gallery_dir).as_posix() for p in files}
+    fresh = {rel: e for rel, e in entries.items() if rel in present}                      # a deleted file is dropped
+    for p in stale:
+        fresh[p.relative_to(gallery_dir).as_posix()] = {"size": stats[p][0], "mtime_ns": stats[p][1], "title": out.get(p, "")}
+    if fresh != entries or not Path(cache_path).is_file():
+        cache_path = Path(cache_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        tmp.write_text(json.dumps({"version": 1, "titles": fresh}, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, cache_path)
+    return out
+
+
 def build_obs_index(gallery_dir: Path, audit_csvs: list[Path], candidate_csvs: list[Path], *,
-                    titles: Callable[[list[Path]], dict[Path, str]] = read_titles) -> dict:
+                    titles: Callable[[list[Path]], dict[Path, str]] = read_titles, title_cache: Path | None = None) -> dict:
     """{"files": {"<year>/<year-month>/<name>": obs_id}, "unresolved": {relpath: reason}} for every .jpg in the gallery.
 
     Evidence: an audit csv row (file, obs_id: the owner's Lightroom exports, one row per file) and a candidate csv row (a published Stock
     candidate: render_name(row) is its gallery name, obs_id, title). A candidate row counts only when its title equals the title embedded in
     the gallery file -- older matching passes left rows that point the same name at another observation. Exactly one observation left =
-    resolved; none or several = unresolved with the reason."""
+    resolved; none or several = unresolved with the reason.
+
+    title_cache (a JSON file): the embedded titles already read, keyed by relative path, size and mtime_ns, so a run reads only the files that are
+    new or changed (exiftool over the whole gallery took minutes); entries of files that are gone are dropped. The result is the same as without it."""
     gallery_dir = Path(gallery_dir)
     files = sorted(p for p in gallery_dir.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg") and p.is_file())
     by_name: dict[str, list[Path]] = {}
@@ -154,7 +195,8 @@ def build_obs_index(gallery_dir: Path, audit_csvs: list[Path], candidate_csvs: l
             for r in csv.DictReader(f):
                 if r.get("stock_candidate") == "True" and r.get("obs_id") and r.get("raw") and r.get("day") and r.get("id"):
                     add(_render_name(r), r["obs_id"], r.get("title", ""))
-    embedded = titles([p for p in files if any(t is not None for _, t in evidence.get(p, []))])
+    wanted = [p for p in files if any(t is not None for _, t in evidence.get(p, []))]
+    embedded = _cached_titles(gallery_dir, files, wanted, titles, title_cache) if title_cache else titles(wanted)
     out = {"files": {}, "unresolved": {}}
     for p in files:
         rel = p.relative_to(gallery_dir).as_posix()

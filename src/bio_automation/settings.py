@@ -105,6 +105,13 @@ INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 # --- social posts (Bluesky): drafts the owner approves, one posted a day, from the current month of every year in the gallery
 SOCIAL_DIR = env_path("BIO_SOCIAL_DIR", RESULTS_DIR / "social")                     # drafts/<draft id>/: draft.json + the post's images
 SOCIAL_LEDGER = env_path("BIO_SOCIAL_LEDGER", CACHE_DIR / "state" / "social_ledger.jsonl")   # append-only draft/approve/post events
+GALLERY_TITLE_CACHE = env_path("BIO_GALLERY_TITLE_CACHE", CACHE_DIR / "state" / "gallery_titles_cache.json")   # social-index: embedded titles by (path, size, mtime)
+SOCIAL_PREP_MIN_FREE_C_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_C_GB", 15))    # social-prep stops below this (the NAS pipeline pauses there too)
+SOCIAL_PREP_MIN_FREE_D_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_D_GB", 20))
+SOCIAL_INDEX_AUDIT = env("BIO_SOCIAL_INDEX_AUDIT", "D:/bio-cache/photos/adobe_ready_audit.csv")       # social-prep's social-index inputs, ';' separated (globs ok)
+SOCIAL_INDEX_CANDIDATES = env("BIO_SOCIAL_INDEX_CANDIDATES", ";".join([
+    "D:/bio-cache/photos/stock_candidates_*.csv", "F:/bio-automation-data/nas_pipeline/candidates/*.csv",
+    "D:/bio-results/nas_pipeline/candidates/*.csv", "D:/bio-results/nas_pipeline/candidates-gaps/*.csv"]))
 GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gallery_obs_index.json")   # gallery file -> iNat observation
 SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
 SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 3))    # scheduled posts a day (08:00, 12:00, 20:00); manual posts are not counted
