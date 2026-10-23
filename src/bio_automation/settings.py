@@ -120,6 +120,8 @@ DARKROOM_URL = env("BIO_DARKROOM_URL", "https://rjmendez.darkroom.com")         
 DARKROOM_DIR = env_path("BIO_DARKROOM_DIR", CACHE_DIR / "darkroom")                 # product images, vectors, the sync state, the review csv
 DARKROOM_MARGIN = env_float("BIO_DARKROOM_MARGIN", 0.005)                           # a print matches only if no other observation is this close
 DARKROOM_PAUSE_S = env_float("BIO_DARKROOM_PAUSE_S", 1.0)                           # between storefront page requests
+QDRANT_COLLECTION = env("BIO_QDRANT_COLLECTION", "bio_observations")                # gallery images with iNat + Stock data (url/key: BIO_QDRANT_URL/_API_KEY or Loci's backends.toml)
+QDRANT_INAT_CACHE = env_path("BIO_QDRANT_INAT_CACHE", CACHE_DIR / "state" / "obs_inat.json")   # observation id -> taxon, lineage, grade, place, license, tags
 # Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
 # @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
 # rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
