@@ -62,20 +62,26 @@ class TestAltTextPrivacy:
 
     def test_a_hidden_places_name_is_rejected(self):
         v = social_gates.alt_text_privacy(self.ctx("A spider found in Berks woodland.", hidden_obs()))
-        assert v == Verdict("reject", "alt text leaks hidden place name")
+        assert v == Verdict("reject", "alt text leaks place finer than the county")
 
     def test_the_same_place_name_is_fine_when_the_location_is_shown(self):
         assert social_gates.alt_text_privacy(self.ctx("A spider found in Berks woodland.", observation(place="Berks County, US-PA, US"))) is None
 
-    def test_taxon_geoprivacy_hides_the_place_too(self):
-        obs = observation(place="Pennsylvania, US")
+    def test_an_obscured_taxon_may_name_the_county_and_state_but_nothing_finer(self):
+        obs = observation(place="Hawk Mountain, Berks County, PA, US")
         obs["taxon_geoprivacy"] = "obscured"
-        assert social_gates.alt_text_privacy(self.ctx("Seen in Pennsylvania.", obs)) == Verdict("reject", "alt text leaks hidden place name")
+        assert social_gates.alt_text_privacy(self.ctx("Seen at Hawk Mountain.", obs)) == Verdict("reject", "alt text leaks place finer than the county")
+        assert social_gates.alt_text_privacy(self.ctx("Seen in Berks County, Pennsylvania.", obs)) is None
+
+    def test_a_state_level_place_leaks_nothing_because_nothing_finer_than_the_county_is_in_it(self):
+        obs = observation(place="Pennsylvania, US", geoprivacy="obscured")
+        assert social_gates.forbidden_tokens(obs) == []
+        assert social_gates.alt_text_privacy(self.ctx("Seen in Pennsylvania.", obs)) is None
 
     def test_a_lowercase_word_that_is_also_a_place_token_is_not_a_leak(self):
         obs = observation(place="Black Rock Road, Berks County, PA", geoprivacy="private")
         assert social_gates.alt_text_privacy(self.ctx("A black spider on a rock.", obs)) is None
-        assert social_gates.alt_text_privacy(self.ctx("A spider on Black Rock.", obs)) == Verdict("reject", "alt text leaks hidden place name")
+        assert social_gates.alt_text_privacy(self.ctx("A spider on Black Rock.", obs)) == Verdict("reject", "alt text leaks place finer than the county")
 
     def test_generic_place_words_and_short_tokens_are_not_leaks(self):
         obs = observation(place="Ono County, PA, USA", geoprivacy="private")
@@ -88,7 +94,7 @@ class TestAltTextPrivacy:
 
     def test_several_leaks_are_all_named(self):
         v = social_gates.alt_text_privacy(self.ctx("Berks spider at 40.1234, -75.5678 behind 9 Elm Street.", hidden_obs()))
-        assert v.reason == "alt text leaks coordinates; street address; hidden place name"
+        assert v.reason == "alt text leaks coordinates; street address; place finer than the county"
 
     def test_through_the_framework_the_rule_switches_the_gate_and_the_reject_is_audited(self, gates, audit):
         ctx = {"obs": hidden_obs(), "obs_id": 42, "alt": "In Berks woods.", "image": Path("unused")}
@@ -96,10 +102,10 @@ class TestAltTextPrivacy:
         off = run_draft(ctx, audit, alt_text_privacy=False)
         assert [(h.name, v.action) for h, v in off] == []
         on = run_draft(ctx, audit, alt_text_privacy=True)
-        assert [(h.name, v) for h, v in on] == [("alt_text_privacy", Verdict("reject", "alt text leaks hidden place name"))]
+        assert [(h.name, v) for h, v in on] == [("alt_text_privacy", Verdict("reject", "alt text leaks place finer than the county"))]
         rec = [r for r in audit.records() if r["event"] == "hook"]
         assert [(r["name"], r["stage"], r["action"], r["reason"], r["obs_id"]) for r in rec] == [
-            ("alt_text_privacy", "draft", "reject", "alt text leaks hidden place name", 42)]
+            ("alt_text_privacy", "draft", "reject", "alt text leaks place finer than the county", 42)]
 
 
 # ----------------------------------------------------------------------------------------------------------------- image_floor
@@ -336,10 +342,18 @@ class TestLiveRecheck:
     def test_an_alt_naming_the_place_is_withdrawn_when_the_observation_turned_private_since(self, audit):
         draft = self.alt_draft("A lattice orbweaver in the Hickory woods.")
         v, _ = recheck(draft, {42: observation(place="", geoprivacy="private")}, audit)
-        assert v == Verdict("withdraw", "alt text of image 1 leaks hidden place name now that observation 42 hides its location")
+        assert v == Verdict("withdraw", "alt text of image 1 leaks place finer than the county now that observation 42 hides its location")
 
-    def test_the_same_alt_passes_while_the_observation_is_still_public(self, audit):
+    def test_the_same_alt_is_withdrawn_while_the_observation_is_still_public_because_the_place_is_finer_than_the_county(self, audit):
         v, _ = recheck(self.alt_draft("A lattice orbweaver in the Hickory woods."), {42: observation(place="Hickory Run State Park, PA, USA")}, audit)
+        assert v == Verdict("withdraw", "alt text of image 1 leaks place finer than the county")        # no "now hides its location": it does not
+
+    def test_an_alt_naming_only_the_county_passes_while_the_observation_is_still_public(self, audit):
+        then = observation(place="Berks County, PA, USA")
+        draft = single_draft(then)
+        draft["text"] = [["text", "A lattice orbweaver"]]
+        draft["images"] = [{"file": "1.jpg", "alt": "A lattice orbweaver in Berks County woods."}]
+        v, _ = recheck(draft, {42: observation(place="Berks County, PA, USA")}, audit)
         assert v is None
 
     def test_an_alt_without_the_place_passes_when_the_observation_turned_private(self, audit):
@@ -354,7 +368,7 @@ class TestLiveRecheck:
         assert v is None                                              # the Hickory alt belongs to observation 11, which is still public and never had that place
         draft["images"][1]["alt"] = "A spider on a Hickory leaf."
         v, _ = recheck(draft, {10: observation(10, place="", geoprivacy="private"), 11: observation(11)}, audit)
-        assert v == Verdict("withdraw", "alt text of image 2 leaks hidden place name now that observation 10 hides its location")
+        assert v == Verdict("withdraw", "alt text of image 2 leaks place finer than the county now that observation 10 hides its location")
 
     def test_through_the_framework_the_withdraw_is_audited_and_the_rule_can_switch_it_off(self, gates, audit):
         social_hooks._hooks[:] = [h for h in social_hooks._hooks if h.name == "live_recheck"]
@@ -446,41 +460,43 @@ class TestLabelPlace:
     def test_a_private_observation_cannot_name_the_place_the_label_carries(self):
         obs = observation(place=None, geoprivacy="private")
         v = social_gates.alt_text_privacy(self.ctx("A spider near the Hawk Mountain Sanctuary visitor lot.", obs, stock_label()))
-        assert v == Verdict("reject", "alt text leaks hidden place name")
+        assert v == Verdict("reject", "alt text leaks place finer than the county")
 
-    def test_the_same_alt_passes_without_the_place_and_when_the_location_is_shown(self):
+    def test_the_label_place_is_a_leak_for_a_public_observation_too_but_the_county_is_not(self):
         hidden = observation(place=None, geoprivacy="private")
         assert social_gates.alt_text_privacy(self.ctx("A spider on a leaf near a parking lot.", hidden, stock_label())) is None
-        assert social_gates.alt_text_privacy(self.ctx("A spider near the Hawk Mountain Sanctuary visitor lot.", observation(), stock_label())) is None
+        shown = observation()
+        assert social_gates.alt_text_privacy(self.ctx("A spider near the Hawk Mountain Sanctuary visitor lot.", shown, stock_label())) == Verdict(
+            "reject", "alt text leaks place finer than the county")
+        assert social_gates.alt_text_privacy(self.ctx("A spider in Bucks County woods.", shown, stock_label())) is None
 
-    def test_an_obscured_observation_is_hidden_for_the_alt_check(self):
+    def test_an_obscured_observation_may_name_its_state_but_not_the_labels_finer_places(self):
         obs = observation(place="Pennsylvania, US", geoprivacy="obscured")
         assert social_gates.alt_text_privacy(self.ctx("Brambles at Hawk Mountain Sanctuary in Kempton.", obs, stock_label())).reason == (
-            "alt text leaks hidden place name")
-        assert social_gates.alt_text_privacy(self.ctx("A spider somewhere in Pennsylvania.", obs, stock_label())).reason == (
-            "alt text leaks hidden place name")
+            "alt text leaks place finer than the county")
+        assert social_gates.alt_text_privacy(self.ctx("A spider somewhere in Pennsylvania.", obs, stock_label())) is None
         assert social_gates.alt_text_privacy(self.ctx("A spider on a leaf.", obs, stock_label())) is None
 
     def test_a_token_with_digits_from_the_caption_is_found(self):
         obs = observation(place=None, geoprivacy="private")
         label = stock_label("SGL220 , PA, USA")
         assert social_gates.forbidden_tokens(obs, label) == ["SGL220"]
-        assert social_gates.alt_text_privacy(self.ctx("A spider by the sgl220 gate.", obs, label)).reason == "alt text leaks hidden place name"
+        assert social_gates.alt_text_privacy(self.ctx("A spider by the sgl220 gate.", obs, label)).reason == "alt text leaks place finer than the county"
 
     @pytest.mark.parametrize("alt", ["Seen in KEMPTON.", "seen in kempton.", "Seen in Kempton!"])
     def test_place_names_match_in_any_case(self, alt):
         obs = observation(place="Kempton, PA, USA", geoprivacy="private")
-        assert social_gates.alt_leaks(alt, obs) == ["hidden place name"]
+        assert social_gates.alt_leaks(alt, obs) == ["place finer than the county"]
 
     @pytest.mark.parametrize("alt", ["Near Río Grande.", "Near RIO GRANDE.", "Near rio grande."])
     def test_place_names_match_across_accents(self, alt):
         obs = observation(place="Río Grande, TX, USA", geoprivacy="private")
-        assert social_gates.alt_leaks(alt, obs) == ["hidden place name"]
+        assert social_gates.alt_leaks(alt, obs) == ["place finer than the county"]
 
     def test_an_ordinary_word_in_a_place_name_leaks_only_when_capitalised(self):
         obs = observation(place="Black Rock Road, PA", geoprivacy="private")
         assert social_gates.alt_leaks("A black spider on a rock.", obs) == []
-        assert social_gates.alt_leaks("A spider on Black Rock.", obs) == ["hidden place name"]
+        assert social_gates.alt_leaks("A spider on Black Rock.", obs) == ["place finer than the county"]
 
     def test_label_without_place_strips_the_title_context_caption_and_place_keywords(self):
         obs = observation(place=None, geoprivacy="private")
@@ -516,14 +532,15 @@ class TestMakeDraftHidesLabelPlace:
         assert seen == [{"place": None, "title": "Lattice Orbweaver (Araneus thaddeus)", "caption": None,
                          "keywords": ["spider", "araneus", "pennsylvania"]}]
 
-    def test_an_obscured_location_does_the_same(self, tmp_path):
+    def test_an_obscured_location_gives_the_model_no_place_either_and_keeps_only_the_state_word(self, tmp_path):
         seen = self.draft(tmp_path, observation(place="Pennsylvania, US", geoprivacy="obscured"), alt_text_privacy=True)
-        assert seen == [{"place": None, "title": "Lattice Orbweaver (Araneus thaddeus)", "caption": None, "keywords": ["spider", "araneus"]}]
+        assert seen == [{"place": None, "title": "Lattice Orbweaver (Araneus thaddeus)", "caption": None,
+                         "keywords": ["spider", "araneus", "pennsylvania"]}]       # "pennsylvania" is the state, allowed; only SGL220 is finer
 
-    def test_a_shown_location_gives_the_model_the_whole_label(self, tmp_path):
+    def test_a_shown_location_gives_the_model_the_county_but_not_the_labels_finer_place(self, tmp_path):
         seen = self.draft(tmp_path, observation(), alt_text_privacy=True)
-        label = stock_label("SGL220 , PA, USA")
-        assert seen == [{"place": "Bucks County, PA, USA", "title": label["title"], "caption": label["caption"], "keywords": label["keywords"]}]
+        assert seen == [{"place": "Bucks County, PA, USA", "title": "Lattice Orbweaver (Araneus thaddeus)", "caption": None,
+                         "keywords": ["spider", "araneus", "pennsylvania"]}]
 
     def test_with_the_rule_off_the_label_goes_through_unchanged(self, tmp_path):
         seen = self.draft(tmp_path, observation(place=None, geoprivacy="private"), alt_text_privacy=False)
@@ -556,9 +573,9 @@ class TestGateRescreen:
         obs = observation(place="Kempton, PA, USA", geoprivacy="private")
         d, draft = stored_draft(tmp_path, ["A spider on a leaf.", "A spider in Kempton at 40.4123, -75.9876."], obs)
         v = rescreen(social_gates.rescreen_privacy, d, draft, audit)
-        assert v == Verdict("withdraw", "alt text of image 2 leaks coordinates; hidden place name")
+        assert v == Verdict("withdraw", "alt text of image 2 leaks coordinates; place finer than the county")
         assert [(r["event"], r["draft_id"], r["gate"], r["reason"]) for r in audit.records()] == [
-            ("gate_rescreen", "2026-10-obs42", "alt_text_privacy", "alt text of image 2 leaks coordinates; hidden place name")]
+            ("gate_rescreen", "2026-10-obs42", "alt_text_privacy", "alt text of image 2 leaks coordinates; place finer than the county")]
 
     def test_a_clean_stored_draft_passes_and_audits_nothing(self, tmp_path, audit):
         obs = observation(place="Kempton, PA, USA", geoprivacy="private")
@@ -569,7 +586,7 @@ class TestGateRescreen:
         d, draft = stored_draft(tmp_path, ["A spider in Kempton.", "A spider in Kempton."])
         draft["images"][0]["obs_id"], draft["images"][1]["obs_id"] = 10, 11
         draft["observations"] = {"10": observation(10), "11": observation(11, place="Kempton, PA, USA", geoprivacy="private")}
-        assert rescreen(social_gates.rescreen_privacy, d, draft, audit) == Verdict("withdraw", "alt text of image 2 leaks hidden place name")
+        assert rescreen(social_gates.rescreen_privacy, d, draft, audit) == Verdict("withdraw", "alt text of image 2 leaks place finer than the county")
 
     def test_every_image_file_is_measured_and_the_black_one_withdraws(self, tmp_path, audit):
         d, draft = stored_draft(tmp_path, ["a", "b"], black=(2,))

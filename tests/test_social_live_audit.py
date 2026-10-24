@@ -158,14 +158,24 @@ class TestHiddenPlace:
         write_ledger(world, [{"event": "posted", "uri": uri(1), "draft_id": "d1"}])
         write_draft(world, "d1", HIDDEN_OBS)
         r = run(world, self.feed())
-        assert r["problems"] == [{"uri": uri(1), "kinds": ["hidden place name in alt of image 1"]}]
+        assert r["problems"] == [{"uri": uri(1), "kinds": ["place finer than the county in alt of image 1"]}]
         assert r["place_unchecked"] == 1                       # post 2 has no draft on record: only coordinates and addresses could be checked
         assert "Quillwood" not in json.dumps(r)
 
-    def test_the_same_words_are_fine_for_an_observation_with_a_public_place(self, world):    # twin
+    def test_the_same_words_are_a_leak_for_an_observation_with_a_public_place_too(self, world):    # owner rule 2026-10-24: never finer than the county
         write_ledger(world, [{"event": "posted", "uri": uri(1), "draft_id": "d1"}])
         write_draft(world, "d1", OPEN_OBS)
         r = run(world, self.feed())
+        assert r["problems"] == [{"uri": uri(1), "kinds": ["place finer than the county in alt of image 1"]}]
+        assert r["place_unchecked"] == 1
+        assert "Quillwood" not in json.dumps(r)
+
+    @pytest.mark.parametrize("obs", [HIDDEN_OBS, OPEN_OBS], ids=["hidden", "public"])
+    def test_the_county_and_state_are_fine_for_a_hidden_and_for_a_public_place(self, world, obs):    # twin
+        feed = [post(1, alts=("A phoebe in Berks County, Pennsylvania",)), post(2, alts=("A phoebe in Berks County, Pennsylvania",))]
+        write_ledger(world, [{"event": "posted", "uri": uri(1), "draft_id": "d1"}])
+        write_draft(world, "d1", obs)
+        r = run(world, feed)
         assert (r["problem_posts"], r["place_unchecked"]) == (0, 1)
 
     def test_a_themed_draft_checks_every_one_of_its_observations(self, world):
@@ -173,7 +183,7 @@ class TestHiddenPlace:
         d = world / "social" / "drafts" / "d1"
         d.mkdir(parents=True)
         (d / "draft.json").write_text(json.dumps({"observations": {"1": OPEN_OBS, "2": HIDDEN_OBS}}), encoding="utf-8")
-        assert run(world, [self.feed()[0]])["problems"][0]["kinds"] == ["hidden place name in alt of image 1"]
+        assert run(world, [self.feed()[0]])["problems"][0]["kinds"] == ["place finer than the county in alt of image 1"]
 
     def test_a_missing_or_corrupt_draft_counts_as_unchecked_not_as_a_problem(self, world):
         write_ledger(world, [{"event": "posted", "uri": uri(1), "draft_id": "gone"}, {"event": "posted", "uri": uri(2), "draft_id": "bad"}])

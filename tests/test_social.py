@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from bio_automation import social
+from bio_automation import social, social_gates
 from bio_automation.inat import InatNotFoundError
 from bio_automation.inat_stock import embed_label
 from bio_automation.social import Ledger, SkipObservation, SocialError, VisionError
@@ -310,6 +310,12 @@ class TestDescribe:
 
 # ----------------------------------------------------------------------------------------------------------- post text
 
+def long_place(n: int) -> str:
+    """A county-level place of exactly n characters ("PPP... County, PA, USA"): posts only ever show the county, so a limit test needs a long county name."""
+    suffix = " County, PA, USA"
+    return "P" * (n - len(suffix)) + suffix
+
+
 class TestText:
     def test_full_post(self):
         segs = social.text_segments(observation())
@@ -335,10 +341,10 @@ class TestText:
 
     def test_tags_are_dropped_from_the_end_to_fit_300(self):
         # with a 105-character place the post is exactly 300 characters with every Fungi tag ("fungi" is #Fungi already); one more drops the last
-        exact = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 105)))
+        exact = social.segments_text(social.text_segments(observation(iconic="Fungi", place=long_place(105))))
         assert len(exact) == 300
         assert exact.endswith("\n#macrophotography #nature #inaturalist #Fungi #mycology #mushrooms #fungifriends")
-        over = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 106)))
+        over = social.segments_text(social.text_segments(observation(iconic="Fungi", place=long_place(106))))
         assert len(over) == 287
         assert over.endswith("\n#macrophotography #nature #inaturalist #Fungi #mycology #mushrooms")
 
@@ -352,15 +358,15 @@ class TestText:
 
     def test_tags_go_before_the_print_link_and_come_back_when_it_has_to_go(self):
         # a 130-character place fits with the print link and no tags (300); at 131 the link goes and the tags that fit return (291)
-        kept = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 130), PRINT))
+        kept = social.segments_text(social.text_segments(observation(iconic="Fungi", place=long_place(130)), PRINT))
         assert len(kept) == 300 and kept.endswith("Prints: " + PRINT + "\n")
-        dropped = social.segments_text(social.text_segments(observation(iconic="Fungi", place="P" * 131), PRINT))
+        dropped = social.segments_text(social.text_segments(observation(iconic="Fungi", place=long_place(131)), PRINT))
         assert len(dropped) == 291 and "Prints:" not in dropped
         assert dropped.endswith("\n#macrophotography #nature #inaturalist #Fungi")
 
     def test_too_long_without_tags_raises(self):
         with pytest.raises(SocialError, match=r"observation 42: post text is \d+ characters even without hashtags"):
-            social.text_segments(observation(place="P" * 400))
+            social.text_segments(observation(place=long_place(400)))
 
 
 class TestPrints:
@@ -1780,3 +1786,82 @@ class TestWithdrawalCap:
         (rec,) = [r for r in ledger.records() if r["event"] == "withdrawn"]
         assert (rec["hook"], rec["reason"]) == ("floor", "too small")
         assert ledger.withdrawal_counts() == {1: (1, "too small")}
+
+
+class TestCountyLevel:
+    """Owner rule (2026-10-24): a post is only ever as specific as the county."""
+
+    @pytest.mark.parametrize("guess, expected", [
+        ("Lancaster County, PA, USA", "Lancaster County, PA, USA"),
+        ("Mill Creek Township, Lancaster County, PA, USA", "Lancaster County, PA, USA"),
+        ("Pottsville Borough, Schuylkill County, PA, US", "Schuylkill County, PA, US"),       # a Pennsylvania borough is a town, finer than the county
+        ("Reinholds, PA, USA", "PA, USA"),
+        ("SGL220 , PA, USA", "PA, USA"),
+        ("Pennsylvania, US", "Pennsylvania, US"),
+        ("PA, USA", "PA, USA"),
+        ("Cabo San Lucas, Baja California Sur, Mexico", "Mexico"),
+        ("Some Park, Costa Rica", None),                                                       # nothing that coarse can be told: no place, never a guess
+        ("", None),
+        (None, None),
+    ])
+    def test_the_place_is_cut_back_to_the_county(self, guess, expected):
+        assert social.county_level(guess) == expected
+
+    def test_public_place_is_the_county_level_place_and_nothing_for_a_private_observation(self):
+        assert social.public_place({"geoprivacy": None, "place_guess": "Mill Creek Township, Lancaster County, PA, USA"}) == "Lancaster County, PA, USA"
+        assert social.public_place({"geoprivacy": "obscured", "place_guess": "Mill Creek Township, Lancaster County, PA, USA"}) == "Lancaster County, PA, USA"
+        assert social.public_place({"geoprivacy": "private", "place_guess": "Mill Creek Township, Lancaster County, PA, USA"}) is None
+
+    def test_the_post_text_shows_the_county_and_not_the_finer_place(self):
+        text = social.segments_text(social.text_segments(observation(place="Mill Creek Township, Lancaster County, PA, USA")))
+        assert "October 1, 2024 · Lancaster County, PA, USA\n" in text
+        assert "Mill Creek" not in text
+        town = social.segments_text(social.text_segments(observation(place="Reinholds, PA, USA")))
+        assert "October 1, 2024 · PA, USA\n" in town and "Reinholds" not in town
+
+    def test_an_unknown_place_leaves_the_place_out_of_the_post_instead_of_showing_a_guess(self):
+        text = social.segments_text(social.text_segments(observation(place="Some Park, Costa Rica")))
+        assert text.splitlines()[2] == "October 1, 2024" and "Costa" not in text
+
+    def test_the_gate_forbids_the_words_finer_than_the_county_and_allows_the_county_and_state(self):
+        obs = observation(place="Hawk Mountain, Berks County, PA, USA")
+        assert social_gates.forbidden_tokens(obs) == ["Hawk", "Mountain"]
+        assert social_gates.alt_leaks("Seen on Hawk Mountain.", obs) == ["place finer than the county"]
+        assert social_gates.alt_leaks("Seen in Berks County, Pennsylvania.", obs) == []
+        private = observation(place="Hawk Mountain, Berks County, PA, USA", geoprivacy="private")
+        assert social_gates.alt_leaks("Seen in Berks County.", private) == ["place finer than the county"]    # private: no place at all, county included
+
+
+class TestConsoleEncoding:
+    """`bio social-list` crashed on the first emoji of a draft in a cp1252 console (UnicodeEncodeError)."""
+
+    def _strict_cp1252(self):
+        import io
+        raw = io.BytesIO()
+        return raw, io.TextIOWrapper(raw, encoding="cp1252", errors="strict", write_through=True, newline="\n")
+
+    def test_without_the_guard_a_cp1252_stream_raises_on_an_emoji(self, monkeypatch):
+        _, stream = self._strict_cp1252()
+        with pytest.raises(UnicodeEncodeError, match="can't encode character"):
+            print("Fungi Friday \U0001F344", file=stream)
+
+    def test_with_the_guard_the_emoji_prints_as_a_question_mark_and_the_rest_is_intact(self, monkeypatch):
+        import sys
+        from bio_automation import cli
+        raw, out = self._strict_cp1252()
+        err_raw, err = self._strict_cp1252()
+        monkeypatch.setattr(sys, "stdout", out)
+        monkeypatch.setattr(sys, "stderr", err)
+        cli.tolerate_console_encoding()
+        print("Fungi Friday \U0001F344 caf\u00e9")
+        print("warning \U0001F7E1", file=sys.stderr)
+        assert raw.getvalue() == b"Fungi Friday ? caf\xe9\n"
+        assert err_raw.getvalue() == b"warning ?\n"
+
+    def test_a_stream_that_cannot_be_reconfigured_is_left_alone(self, monkeypatch):
+        import io, sys
+        from bio_automation import cli
+        monkeypatch.setattr(sys, "stdout", io.StringIO())          # a StringIO has no reconfigure(): the guard must not raise
+        cli.tolerate_console_encoding()
+        print("still works")
+        assert sys.stdout.getvalue() == "still works\n"
