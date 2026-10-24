@@ -1,0 +1,2340 @@
+[
+  {
+    "obs_id": 214921071,
+    "iconic": "Plantae",
+    "taxon": "Solanum lycopersicum",
+    "common": "tomato",
+    "observed_on": "2024-05-10",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-10_DSC_7274-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Nightshades on soil",
+    "informed_prompt": "tomato",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.5576286315917969
+  },
+  {
+    "obs_id": 278192411,
+    "iconic": "Plantae",
+    "taxon": "Taraxacum",
+    "common": "dandelions",
+    "observed_on": "2025-05-03",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-03_DSC_9424-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Dandelions on wood",
+    "informed_prompt": "dandelions",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.90625,
+        "mask_area_frac": 0.3743726313114166
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6767058372497559
+  },
+  {
+    "obs_id": 274122060,
+    "iconic": "Plantae",
+    "taxon": "Berberis thunbergii",
+    "common": "Japanese barberry",
+    "observed_on": "2025-04-26",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2025-04-26_DSC_8704-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Japanese barberry flower on wood",
+    "informed_prompt": "japanese barberry",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 4,
+        "top_score": 0.73828125,
+        "mask_area_frac": 0.0015787496231496334
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.1607236862182617
+  },
+  {
+    "obs_id": 202296153,
+    "iconic": "Plantae",
+    "taxon": "Salix babylonica",
+    "common": "weeping willow",
+    "observed_on": "2024-03-13",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-03-13_DSC_3530-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Willows on wood",
+    "informed_prompt": "weeping willow",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.85546875,
+        "mask_area_frac": 0.06939687579870224
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.0475151538848877
+  },
+  {
+    "obs_id": 365215764,
+    "iconic": "Plantae",
+    "taxon": "Elaeagnus umbellata",
+    "common": "autumn olive",
+    "observed_on": "2026-05-16",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-16_DSC_2860.jpg",
+    "title": "Autumn olive",
+    "informed_prompt": "autumn olive",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9406282901763916
+  },
+  {
+    "obs_id": 209375579,
+    "iconic": "Plantae",
+    "taxon": "Vaccinium",
+    "common": "blueberries, cranberries, and allies",
+    "observed_on": "2024-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-25_DSC_6233-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Blueberries, cranberries, and allies flower on branch",
+    "informed_prompt": "blueberries, cranberries, and allies",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.609375,
+        "mask_area_frac": 0.14705242216587067
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6383512020111084
+  },
+  {
+    "obs_id": 259819602,
+    "iconic": "Plantae",
+    "taxon": "Celastrus orbiculatus",
+    "common": "Asian bittersweet",
+    "observed_on": "2025-01-27",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-01-27_DSC_5337-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Asian bittersweet on wood",
+    "informed_prompt": "asian bittersweet",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.032728910446167
+  },
+  {
+    "obs_id": 222040145,
+    "iconic": "Plantae",
+    "taxon": "Potentilla indica",
+    "common": "mock strawberry",
+    "observed_on": "2024-06-10",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-10_DSC_1664-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Mock strawberry flower in meadow",
+    "informed_prompt": "mock strawberry",
+    "generic_prompt": "plant",
+    "prompts": {
+      "informed": {
+        "n_instances": 3,
+        "top_score": 0.67578125,
+        "mask_area_frac": 0.0036306180991232395
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.546875,
+        "mask_area_frac": 0.9823731184005737
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.1393084526062012
+  },
+  {
+    "obs_id": 281656157,
+    "iconic": "Fungi",
+    "taxon": "Agaricales",
+    "common": "Common Gilled Mushrooms and Allies",
+    "observed_on": "2025-05-16",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-16_DSC_0470-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Common Gilled Mushrooms and Allies on wood",
+    "informed_prompt": "common gilled mushrooms and allies",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.27405500411987305
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.2741832733154297
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6679682731628418
+  },
+  {
+    "obs_id": 285837983,
+    "iconic": "Fungi",
+    "taxon": "Tremella mesenterica",
+    "common": "witch's butter",
+    "observed_on": "2025-05-31",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-31_DSC_3576-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Tremella mushroom on wood",
+    "informed_prompt": "witch's butter",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8775603771209717
+  },
+  {
+    "obs_id": 253805466,
+    "iconic": "Fungi",
+    "taxon": "Exidia",
+    "common": null,
+    "observed_on": "2024-12-01",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-12-01_DSC_4563-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Exidia mushroom on bark",
+    "informed_prompt": "exidia",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.769777774810791
+  },
+  {
+    "obs_id": 260658879,
+    "iconic": "Fungi",
+    "taxon": "Trichaptum biforme",
+    "common": "violet-toothed polypore",
+    "observed_on": "2025-02-04",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-02-04_DSC_5381-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Violet-toothed polypore mushroom on bark",
+    "informed_prompt": "violet-toothed polypore",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.91796875,
+        "mask_area_frac": 0.06256091594696045
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.0358264446258545
+  },
+  {
+    "obs_id": 278192442,
+    "iconic": "Fungi",
+    "taxon": "Fomitopsis betulina",
+    "common": "birch polypore",
+    "observed_on": "2025-05-03",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-03_DSC_9446-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Birch polypore mushroom on bark",
+    "informed_prompt": "birch polypore",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.54296875,
+        "mask_area_frac": 0.11189749836921692
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.07913294434547424
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.308272123336792
+  },
+  {
+    "obs_id": 205782056,
+    "iconic": "Fungi",
+    "taxon": "Tremella",
+    "common": null,
+    "observed_on": "2024-04-06",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-06_DSC_4818-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Tremella mushroom on bark",
+    "informed_prompt": "tremella",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5179460048675537
+  },
+  {
+    "obs_id": 252213111,
+    "iconic": "Fungi",
+    "taxon": "Chlorociboria",
+    "common": null,
+    "observed_on": "2024-11-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-18_DSC_4316-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Chlorociboria on wood",
+    "informed_prompt": "chlorociboria",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7726292610168457
+  },
+  {
+    "obs_id": 233570725,
+    "iconic": "Fungi",
+    "taxon": "Leccinum longicurvipes",
+    "common": null,
+    "observed_on": "2024-08-03",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-08-03_DSC_5830.jpg",
+    "title": "Boletes mushroom on moss",
+    "informed_prompt": "leccinum longicurvipes",
+    "generic_prompt": "mushroom",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.96875,
+        "mask_area_frac": 0.020346174016594887
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8618450164794922
+  },
+  {
+    "obs_id": 281385267,
+    "iconic": "Insecta",
+    "taxon": "Zelus luridus",
+    "common": "Pale Green Assassin Bug",
+    "observed_on": "2025-05-15",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-15_DSC_0346-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Pale Green Assassin Bug on metal surface",
+    "informed_prompt": "pale green assassin bug",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.69921875,
+        "mask_area_frac": 0.059680573642253876
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.06097140535712242
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.531447172164917
+  },
+  {
+    "obs_id": 240414203,
+    "iconic": "Insecta",
+    "taxon": "Diapheromera femorata",
+    "common": "Northern Walkingstick",
+    "observed_on": "2024-09-06",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-06_DSC_7460-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Northern Walkingstick on wood",
+    "informed_prompt": "northern walkingstick",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.5859375,
+        "mask_area_frac": 0.40934544801712036
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9845316410064697
+  },
+  {
+    "obs_id": 232800938,
+    "iconic": "Insecta",
+    "taxon": "Neotibicen canicularis",
+    "common": "Northern Dog-day Cicada",
+    "observed_on": "2024-07-29",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-07-29_DSC_5179-Enhanced-NR (2024_08_13 19_33_25 UTC).jpg",
+    "title": "Dog-day Cicadas on plant stem",
+    "informed_prompt": "northern dog-day cicada",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.97265625,
+        "mask_area_frac": 0.16839595139026642
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.16841793060302734
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.719569206237793
+  },
+  {
+    "obs_id": 217411297,
+    "iconic": "Insecta",
+    "taxon": "Euschistus",
+    "common": "Brown Stink Bugs",
+    "observed_on": "2024-05-21",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-21_DSC_9061-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Brown Stink Bugs in woodland",
+    "informed_prompt": "brown stink bugs",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.90625,
+        "mask_area_frac": 0.0035677996929734945
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.95703125,
+        "mask_area_frac": 0.0035887728445231915
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8343684673309326
+  },
+  {
+    "obs_id": 219130633,
+    "iconic": "Insecta",
+    "taxon": "Eudioctria",
+    "common": null,
+    "observed_on": "2024-05-28",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-28_DSC_0463-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Robber Flies in woodland",
+    "informed_prompt": "eudioctria",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 3,
+        "top_score": 0.890625,
+        "mask_area_frac": 0.003564981045201421
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.4553406238555908
+  },
+  {
+    "obs_id": 249248235,
+    "iconic": "Insecta",
+    "taxon": "Tachinidae",
+    "common": "Tachinid Flies",
+    "observed_on": "2024-10-26",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-26_DSC_1166-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Tachinid Flies in forest floor",
+    "informed_prompt": "tachinid flies",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.828125,
+        "mask_area_frac": 0.03870302438735962
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.9296875,
+        "mask_area_frac": 0.0386543832719326
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5456328392028809
+  },
+  {
+    "obs_id": 263310683,
+    "iconic": "Insecta",
+    "taxon": "Eurosta solidaginis",
+    "common": "Goldenrod Gall Fly",
+    "observed_on": "2025-02-27",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-02-27_DSC_6499-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Goldenrod Gall Fly on wood",
+    "informed_prompt": "goldenrod gall fly",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8128671646118164
+  },
+  {
+    "obs_id": 224791722,
+    "iconic": "Insecta",
+    "taxon": "Bombus vagans",
+    "common": "Half-black Bumble Bee",
+    "observed_on": "2024-06-23",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-23_DSC_1964-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Bumble Bees on flower",
+    "informed_prompt": "half-black bumble bee",
+    "generic_prompt": "insect",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.95703125,
+        "mask_area_frac": 0.03859417513012886
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.03846900537610054
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.35855627059936523
+  },
+  {
+    "obs_id": 230586680,
+    "iconic": "Mammalia",
+    "taxon": "Canis familiaris",
+    "common": "Domestic Dog",
+    "observed_on": "2024-07-19",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-07-19_DSC_4243-Enhanced-NR (2024_08_13 19_33_25 UTC).jpg",
+    "title": "Wolves and Dogs on wood",
+    "informed_prompt": "domestic dog",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.921875,
+        "mask_area_frac": 0.37480950355529785
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.90234375,
+        "mask_area_frac": 0.37688156962394714
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.1130964756011963
+  },
+  {
+    "obs_id": 231184992,
+    "iconic": "Mammalia",
+    "taxon": "Canis familiaris",
+    "common": "Domestic Dog",
+    "observed_on": "2024-07-21",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-07-21_DSC_4352-Enhanced-NR (2024_08_13 19_33_25 UTC).jpg",
+    "title": "Wolves and Dogs on wood",
+    "informed_prompt": "domestic dog",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.06192580610513687
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.94921875,
+        "mask_area_frac": 0.06210183724761009
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.0007879734039307
+  },
+  {
+    "obs_id": 243909278,
+    "iconic": "Mammalia",
+    "taxon": "Canis familiaris",
+    "common": "Domestic Dog",
+    "observed_on": "2024-09-24",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-09-24_DSC_9165-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Wolves and Dogs on leaf litter",
+    "informed_prompt": "domestic dog",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.87890625,
+        "mask_area_frac": 0.12446081638336182
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.84765625,
+        "mask_area_frac": 0.12492429465055466
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5778036117553711
+  },
+  {
+    "obs_id": 255800264,
+    "iconic": "Mammalia",
+    "taxon": "Canis familiaris",
+    "common": "Domestic Dog",
+    "observed_on": "2024-12-21",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-12-21_DSC_4932-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Wolves and Dogs on snow",
+    "informed_prompt": "domestic dog",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.953125,
+        "mask_area_frac": 0.26252812147140503
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.921875,
+        "mask_area_frac": 0.263087660074234
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5683038234710693
+  },
+  {
+    "obs_id": 250030380,
+    "iconic": "Mammalia",
+    "taxon": "Canis familiaris",
+    "common": "Domestic Dog",
+    "observed_on": "2024-11-01",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-11-01_DSC_1820-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Wolves and Dogs on car seat",
+    "informed_prompt": "domestic dog",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.87890625,
+        "mask_area_frac": 0.1036527007818222
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.86328125,
+        "mask_area_frac": 0.10865305364131927
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9047486782073975
+  },
+  {
+    "obs_id": 316514624,
+    "iconic": "Mammalia",
+    "taxon": "Odocoileus virginianus",
+    "common": "White-tailed Deer",
+    "observed_on": "2025-09-24",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-09-24_DSC_9387.jpg",
+    "title": "White-tailed Deer on leaf litter",
+    "informed_prompt": "white-tailed deer",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7563903331756592
+  },
+  {
+    "obs_id": 240414368,
+    "iconic": "Mammalia",
+    "taxon": "Odocoileus virginianus",
+    "common": "White-tailed Deer",
+    "observed_on": "2024-09-07",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-07_DSC_7661-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "White-tailed Deer on bark",
+    "informed_prompt": "white-tailed deer",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7791929244995117
+  },
+  {
+    "obs_id": 210563411,
+    "iconic": "Mammalia",
+    "taxon": "Bos taurus",
+    "common": "Domestic Cattle",
+    "observed_on": "2024-04-27",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-27_DSC_6281-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Cattle and bison on grass",
+    "informed_prompt": "domestic cattle",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 7,
+        "top_score": 0.9296875,
+        "mask_area_frac": 0.001396799460053444
+      },
+      "generic": {
+        "n_instances": 7,
+        "top_score": 0.9453125,
+        "mask_area_frac": 0.0014009587466716766
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.6284685134887695
+  },
+  {
+    "obs_id": 248910528,
+    "iconic": "Arachnida",
+    "taxon": "Aculus tetanothrix",
+    "common": "Willow Bead Gall Mite",
+    "observed_on": "2024-10-24",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-24_DSC_1031-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Willow Bead Gall Mite on branch",
+    "informed_prompt": "willow bead gall mite",
+    "generic_prompt": "spider",
+    "prompts": {},
+    "error": "CUDA out of memory. Tried to allocate 7.77 GiB. GPU 0 has a total capacity of 11.99 GiB of which 3.04 GiB is free. Of the allocated memory 6.26 GiB is allocated by PyTorch, and 1.45 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+  },
+  {
+    "obs_id": 201497338,
+    "iconic": "Arachnida",
+    "taxon": "Linyphiidae",
+    "common": "Sheetweb and Dwarf Weavers",
+    "observed_on": "2024-03-06",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-03-06_DSC_2749-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Sheetweb and Dwarf Weavers on twigs",
+    "informed_prompt": "sheetweb and dwarf weavers",
+    "generic_prompt": "spider",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8584470748901367
+  },
+  {
+    "obs_id": 291636219,
+    "iconic": "Arachnida",
+    "taxon": "Leiobunum",
+    "common": null,
+    "observed_on": "2025-06-21",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-06-21_DSC_5460-Enhanced-NR.jpg",
+    "title": "Sclerosomatid Harvestmen in woodland",
+    "informed_prompt": "leiobunum",
+    "generic_prompt": "spider",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9061257839202881
+  },
+  {
+    "obs_id": 365204976,
+    "iconic": "Arachnida",
+    "taxon": "Leucauge venusta",
+    "common": "Orchard Orbweaver",
+    "observed_on": "2026-05-09",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-09_DSC_2146.jpg",
+    "title": "Orchard Orbweaver on web",
+    "informed_prompt": "orchard orbweaver",
+    "generic_prompt": "spider",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.0033485160674899817
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.0562381744384766
+  },
+  {
+    "obs_id": 221719475,
+    "iconic": "Arachnida",
+    "taxon": "Leucauge venusta",
+    "common": "Orchard Orbweaver",
+    "observed_on": "2024-06-09",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-09_DSC_1678-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Orchard Orbweaver on web",
+    "informed_prompt": "orchard orbweaver",
+    "generic_prompt": "spider",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.83203125,
+        "mask_area_frac": 0.002114477101713419
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.001441240310669
+  },
+  {
+    "obs_id": 220674453,
+    "iconic": "Arachnida",
+    "taxon": "Phidippus audax",
+    "common": "Bold Jumping Spider",
+    "observed_on": "2024-06-04",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-04_DSC_0994-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Bold Jumping Spider on wood",
+    "informed_prompt": "bold jumping spider",
+    "generic_prompt": "spider",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.06845474988222122
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.953125,
+        "mask_area_frac": 0.06887930631637573
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.4429738521575928
+  },
+  {
+    "obs_id": 273567989,
+    "iconic": "Arachnida",
+    "taxon": "Schizocosa",
+    "common": "Brush-legged Spiders",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8322-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Brush-legged Spiders on wood",
+    "informed_prompt": "brush-legged spiders",
+    "generic_prompt": "spider",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.5859375,
+        "mask_area_frac": 0.07501368969678879
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.97265625,
+        "mask_area_frac": 0.07628165930509567
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.43509650230407715
+  },
+  {
+    "obs_id": 206341015,
+    "iconic": "Arachnida",
+    "taxon": "Araneae",
+    "common": "Spiders",
+    "observed_on": "2024-04-09",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-09_DSC_5007-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Spiders on wood",
+    "informed_prompt": "spiders",
+    "generic_prompt": "spider",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.6953125,
+        "mask_area_frac": 0.0074408031068742275
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.734375,
+        "mask_area_frac": 0.007467061746865511
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.4579286575317383
+  },
+  {
+    "obs_id": 247405987,
+    "iconic": "Protozoa",
+    "taxon": "Lycogala",
+    "common": "Wolfs Milk",
+    "observed_on": "2024-10-14",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-14_DSC_0249-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Wolfs Milk on wood",
+    "informed_prompt": "wolfs milk",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8239524364471436
+  },
+  {
+    "obs_id": 253805456,
+    "iconic": "Protozoa",
+    "taxon": "Metatrichia vesparia",
+    "common": "Wasp's Nest Slime Mold",
+    "observed_on": "2024-12-01",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-12-01_DSC_4549 (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Wasp's Nest Slime Mold on bark",
+    "informed_prompt": "wasp's nest slime mold",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8878433704376221
+  },
+  {
+    "obs_id": 289243674,
+    "iconic": "Protozoa",
+    "taxon": "Lycogala",
+    "common": "Wolfs Milk",
+    "observed_on": "2025-06-07",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-06-07_DSC_4167-Enhanced-NR (2025_06_13 12_26_52 UTC).jpg",
+    "title": "Wolfs Milk on wood",
+    "informed_prompt": "wolfs milk",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5722899436950684
+  },
+  {
+    "obs_id": 341173547,
+    "iconic": "Protozoa",
+    "taxon": "Lycogala",
+    "common": "Wolfs Milk",
+    "observed_on": "2026-03-01",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-03-01_DSC_1599.jpg",
+    "title": "Wolfs Milk on wood",
+    "informed_prompt": "wolfs milk",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8576397895812988
+  },
+  {
+    "obs_id": 329900298,
+    "iconic": "Protozoa",
+    "taxon": "Lycogala",
+    "common": "Wolfs Milk",
+    "observed_on": "2025-11-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-11-18_DSC_1142.jpg",
+    "title": "Wolfs Milk on moss",
+    "informed_prompt": "wolfs milk",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8665709495544434
+  },
+  {
+    "obs_id": 216751083,
+    "iconic": "Protozoa",
+    "taxon": "Ceratiomyxa fruticulosa",
+    "common": "Common Coral Slime",
+    "observed_on": "2024-05-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-18_DSC_7913-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Common Coral Slime on wood",
+    "informed_prompt": "common coral slime",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5615673065185547
+  },
+  {
+    "obs_id": 252213105,
+    "iconic": "Protozoa",
+    "taxon": "Lycogala flavofuscum",
+    "common": null,
+    "observed_on": "2024-11-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-18_DSC_4299-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Wolfs Milk on wood",
+    "informed_prompt": "lycogala flavofuscum",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8583364486694336
+  },
+  {
+    "obs_id": 281656205,
+    "iconic": "Protozoa",
+    "taxon": "Mycetozoa",
+    "common": "slime molds",
+    "observed_on": "2025-05-16",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-16_DSC_0595-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Slime molds on bark",
+    "informed_prompt": "slime molds",
+    "generic_prompt": "organism",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8187539577484131
+  },
+  {
+    "obs_id": 215752513,
+    "iconic": "Mollusca",
+    "taxon": "Arion",
+    "common": "Arion Slugs",
+    "observed_on": "2024-05-14",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-14_DSC_7447-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Arion Slugs on wood",
+    "informed_prompt": "arion slugs",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.94921875,
+        "mask_area_frac": 0.014293516054749489
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.79296875,
+        "mask_area_frac": 0.014355111867189407
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9795963764190674
+  },
+  {
+    "obs_id": 216751061,
+    "iconic": "Mollusca",
+    "taxon": "Megapallifera mutabilis",
+    "common": "Changeable Mantleslug",
+    "observed_on": "2024-05-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-18_DSC_7772-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Mantleslugs on bark",
+    "informed_prompt": "changeable mantleslug",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.62109375,
+        "mask_area_frac": 0.03774785250425339
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.921663761138916
+  },
+  {
+    "obs_id": 325583275,
+    "iconic": "Mollusca",
+    "taxon": "Megapallifera mutabilis",
+    "common": "Changeable Mantleslug",
+    "observed_on": "2025-11-08",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-11-08_DSC_0943.jpg",
+    "title": "Changeable Mantleslug on moss",
+    "informed_prompt": "changeable mantleslug",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.640625,
+        "mask_area_frac": 0.02856205403804779
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9110288619995117
+  },
+  {
+    "obs_id": 273580223,
+    "iconic": "Mollusca",
+    "taxon": "Gastropoda",
+    "common": "Gastropods",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8623-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Gastropods on wood",
+    "informed_prompt": "gastropods",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.81640625,
+        "mask_area_frac": 0.08882160484790802
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.93359375,
+        "mask_area_frac": 0.02689647674560547
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.47689270973205566
+  },
+  {
+    "obs_id": 228362419,
+    "iconic": "Mollusca",
+    "taxon": "Pyganodon cataracta",
+    "common": "Eastern Floater",
+    "observed_on": "2024-07-09",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-09_DSC_2758-Enhanced-NR (2024_07_10 02_44_25 UTC).jpg",
+    "title": "Eastern Floater on grass",
+    "informed_prompt": "eastern floater",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7357137203216553
+  },
+  {
+    "obs_id": 228022197,
+    "iconic": "Mollusca",
+    "taxon": "Arion",
+    "common": "Arion Slugs",
+    "observed_on": "2024-07-07",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-07_DSC_2638-Enhanced-NR (2024_07_08 14_46_08 UTC).jpg",
+    "title": "Arion Slugs on mushroom",
+    "informed_prompt": "arion slugs",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.051805831491947174
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.85546875,
+        "mask_area_frac": 0.051874205470085144
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.1169612407684326
+  },
+  {
+    "obs_id": 228924099,
+    "iconic": "Mollusca",
+    "taxon": "Arion",
+    "common": "Arion Slugs",
+    "observed_on": "2024-07-12",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-12_DSC_3576-Enhanced-NR (2024_07_12 23_27_10 UTC).jpg",
+    "title": "Arion Slugs on wood",
+    "informed_prompt": "arion slugs",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.009004242718219757
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.88671875,
+        "mask_area_frac": 0.00902407057583332
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.03511381149292
+  },
+  {
+    "obs_id": 274122132,
+    "iconic": "Mollusca",
+    "taxon": "Gastrodontidae",
+    "common": null,
+    "observed_on": "2025-04-26",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-26_DSC_8730-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Common Land Snails and Slugs on wood",
+    "informed_prompt": "gastrodontidae",
+    "generic_prompt": "snail",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.8984375,
+        "mask_area_frac": 0.008122451603412628
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5375912189483643
+  },
+  {
+    "obs_id": 365204996,
+    "iconic": "Amphibia",
+    "taxon": "Notophthalmus viridescens",
+    "common": "Eastern Newt",
+    "observed_on": "2026-05-09",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-09_DSC_2159.jpg",
+    "title": "Eastern Newt on rocky ground",
+    "informed_prompt": "eastern newt",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.93359375,
+        "mask_area_frac": 0.045134104788303375
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8847658634185791
+  },
+  {
+    "obs_id": 273580165,
+    "iconic": "Amphibia",
+    "taxon": "Notophthalmus viridescens",
+    "common": "Eastern Newt",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8564-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Eastern Newt on mud",
+    "informed_prompt": "eastern newt",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.73046875,
+        "mask_area_frac": 0.02122458815574646
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.0208625793457031
+  },
+  {
+    "obs_id": 233385575,
+    "iconic": "Amphibia",
+    "taxon": "Notophthalmus viridescens",
+    "common": "Eastern Newt",
+    "observed_on": "2024-08-02",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-08-02_DSC_5414.jpg",
+    "title": "Eastern Newt on wood",
+    "informed_prompt": "eastern newt",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.94140625,
+        "mask_area_frac": 0.07526256889104843
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.46708154678344727
+  },
+  {
+    "obs_id": 226022202,
+    "iconic": "Amphibia",
+    "taxon": "Notophthalmus viridescens",
+    "common": "Eastern Newt",
+    "observed_on": "2024-06-29",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-29_DSC_2267-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Eastern Newt on leaf litter",
+    "informed_prompt": "eastern newt",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.91015625,
+        "mask_area_frac": 0.06674160808324814
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6230711936950684
+  },
+  {
+    "obs_id": 240414305,
+    "iconic": "Amphibia",
+    "taxon": "Anaxyrus americanus",
+    "common": "American Toad",
+    "observed_on": "2024-09-07",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-07_DSC_7610-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "American Toad on soil",
+    "informed_prompt": "american toad",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9375,
+        "mask_area_frac": 0.08921151608228683
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.9453125,
+        "mask_area_frac": 0.09071913361549377
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.4680910110473633
+  },
+  {
+    "obs_id": 365205109,
+    "iconic": "Amphibia",
+    "taxon": "Notophthalmus viridescens",
+    "common": "Eastern Newt",
+    "observed_on": "2026-05-10",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-10_DSC_2398.jpg",
+    "title": "Eastern Newt on leaf litter",
+    "informed_prompt": "eastern newt",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9453125,
+        "mask_area_frac": 0.053162071853876114
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9784965515136719
+  },
+  {
+    "obs_id": 307646866,
+    "iconic": "Amphibia",
+    "taxon": "Anaxyrus americanus",
+    "common": "American Toad",
+    "observed_on": "2025-07-15",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-07-15_DSC_5853.jpg",
+    "title": "American Toad on soil",
+    "informed_prompt": "american toad",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.94921875,
+        "mask_area_frac": 0.022693656384944916
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.8828125,
+        "mask_area_frac": 0.022951925173401833
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.2090203762054443
+  },
+  {
+    "obs_id": 273580211,
+    "iconic": "Amphibia",
+    "taxon": "Notophthalmus viridescens",
+    "common": "Eastern Newt",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8612-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Eastern Newt on mud",
+    "informed_prompt": "eastern newt",
+    "generic_prompt": "frog",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.7890625,
+        "mask_area_frac": 0.02861786261200905
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.6328125,
+        "mask_area_frac": 0.029174936935305595
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.0681755542755127
+  },
+  {
+    "obs_id": 209375594,
+    "iconic": "Aves",
+    "taxon": "Turdus migratorius",
+    "common": "American Robin",
+    "observed_on": "2024-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-25_DSC_6255-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "American Robin on twigs",
+    "informed_prompt": "american robin",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7923150062561035
+  },
+  {
+    "obs_id": 263553046,
+    "iconic": "Aves",
+    "taxon": "Anatidae",
+    "common": "Ducks, Geese, and Swans",
+    "observed_on": "2025-03-01",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-01_DSC_6526-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Ducks, Geese, and Swans on wood",
+    "informed_prompt": "ducks, geese, and swans",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8752996921539307
+  },
+  {
+    "obs_id": 263553039,
+    "iconic": "Aves",
+    "taxon": "Hirundo rustica",
+    "common": "Barn Swallow",
+    "observed_on": "2025-03-01",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-01_DSC_6523-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Barn Swallow on wood",
+    "informed_prompt": "barn swallow",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6768417358398438
+  },
+  {
+    "obs_id": 243697713,
+    "iconic": "Aves",
+    "taxon": "Ardea herodias",
+    "common": "Great Blue Heron",
+    "observed_on": "2024-09-23",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-23_DSC_8934-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Great Blue Heron on wood",
+    "informed_prompt": "great blue heron",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.94921875,
+        "mask_area_frac": 0.004375436808913946
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.9296875,
+        "mask_area_frac": 0.004398254211992025
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5035741329193115
+  },
+  {
+    "obs_id": 205782076,
+    "iconic": "Aves",
+    "taxon": "Sialia sialis",
+    "common": "Eastern Bluebird",
+    "observed_on": "2024-04-06",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-06_DSC_4846-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Eastern Bluebird on bark",
+    "informed_prompt": "eastern bluebird",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9140625,
+        "mask_area_frac": 0.001504287007264793
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.93359375,
+        "mask_area_frac": 0.0015143577475100756
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.3885965347290039
+  },
+  {
+    "obs_id": 314352000,
+    "iconic": "Aves",
+    "taxon": "Cathartes aura",
+    "common": "Turkey Vulture",
+    "observed_on": "2025-09-12",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2025-09-12_DSC_9043.jpg",
+    "title": "Turkey Vulture on metal",
+    "informed_prompt": "turkey vulture",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.8515625,
+        "mask_area_frac": 0.0003086858196184039
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.90234375,
+        "mask_area_frac": 0.00031249294988811016
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.0867347717285156
+  },
+  {
+    "obs_id": 250030326,
+    "iconic": "Aves",
+    "taxon": "Cathartes aura",
+    "common": "Turkey Vulture",
+    "observed_on": "2024-11-01",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-01_DSC_1753-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Turkey Vulture on air",
+    "informed_prompt": "turkey vulture",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.009179558604955673
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.009226547554135323
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5796084403991699
+  },
+  {
+    "obs_id": 254567793,
+    "iconic": "Aves",
+    "taxon": "Meleagris gallopavo",
+    "common": "Wild Turkey",
+    "observed_on": "2024-12-08",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-12-08_DSC_4709-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Wild Turkey on leaf litter",
+    "informed_prompt": "wild turkey",
+    "generic_prompt": "bird",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9167234897613525
+  },
+  {
+    "obs_id": 233385619,
+    "iconic": "Reptilia",
+    "taxon": "Plestiodon fasciatus",
+    "common": "Common Five-lined Skink",
+    "observed_on": "2024-08-02",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-08-02_DSC_5340.jpg",
+    "title": "Common Five-lined Skink on bark",
+    "informed_prompt": "common five-lined skink",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.89453125,
+        "mask_area_frac": 0.02585984766483307
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6409080028533936
+  },
+  {
+    "obs_id": 222355742,
+    "iconic": "Reptilia",
+    "taxon": "Thamnophis sirtalis",
+    "common": "Common Garter Snake",
+    "observed_on": "2024-06-11",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-11_DSC_1696-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Common Garter Snake on leaf litter",
+    "informed_prompt": "common garter snake",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.78515625,
+        "mask_area_frac": 0.02648087404668331
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9196784496307373
+  },
+  {
+    "obs_id": 365215852,
+    "iconic": "Reptilia",
+    "taxon": "Chrysemys picta",
+    "common": "Painted Turtle",
+    "observed_on": "2026-05-16",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-16_DSC_2858.jpg",
+    "title": "Painted Turtle on wood",
+    "informed_prompt": "painted turtle",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 4,
+        "top_score": 0.828125,
+        "mask_area_frac": 0.0007789657101966441
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.819774866104126
+  },
+  {
+    "obs_id": 273568173,
+    "iconic": "Reptilia",
+    "taxon": "Terrapene carolina",
+    "common": "Common Box Turtle",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8446-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Box Turtles on wood chips",
+    "informed_prompt": "common box turtle",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.7734375,
+        "mask_area_frac": 0.05277448520064354
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.380495548248291
+  },
+  {
+    "obs_id": 391297888,
+    "iconic": "Reptilia",
+    "taxon": "Pantherophis alleghaniensis",
+    "common": "Central Ratsnake",
+    "observed_on": "2026-06-07",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-06-07_DSC_3088.jpg",
+    "title": "Central Ratsnake on wood",
+    "informed_prompt": "central ratsnake",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.76953125,
+        "mask_area_frac": 0.035001080483198166
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7602825164794922
+  },
+  {
+    "obs_id": 280792553,
+    "iconic": "Reptilia",
+    "taxon": "Nerodia sipedon",
+    "common": "Common Watersnake",
+    "observed_on": "2025-05-12",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-12_DSC_9821-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Watersnakes on leaf litter",
+    "informed_prompt": "common watersnake",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7827150821685791
+  },
+  {
+    "obs_id": 319749304,
+    "iconic": "Reptilia",
+    "taxon": "Thamnophis sirtalis",
+    "common": "Common Garter Snake",
+    "observed_on": "2025-10-01",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2025-10-01_DSC_9721.jpg",
+    "title": "Common Garter Snake on leaf litter",
+    "informed_prompt": "common garter snake",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.8046875,
+        "mask_area_frac": 0.08144623041152954
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8185122013092041
+  },
+  {
+    "obs_id": 208407068,
+    "iconic": "Reptilia",
+    "taxon": "Thamnophis sirtalis",
+    "common": "Common Garter Snake",
+    "observed_on": "2024-04-20",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-20_DSC_5721-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Common Garter Snake on leaf litter",
+    "informed_prompt": "common garter snake",
+    "generic_prompt": "lizard",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.9375,
+        "mask_area_frac": 0.06068725511431694
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9355554580688477
+  },
+  {
+    "obs_id": 285838019,
+    "iconic": "Animalia",
+    "taxon": "Apheloria corrugata",
+    "common": "Aromatic Cherry Millipede",
+    "observed_on": "2025-05-31",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-31_DSC_3634-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Aromatic Cherry Millipede on wood",
+    "informed_prompt": "aromatic cherry millipede",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.5234375,
+        "mask_area_frac": 0.07037431746721268
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8554396629333496
+  },
+  {
+    "obs_id": 273567948,
+    "iconic": "Animalia",
+    "taxon": "Apheloria corrugata",
+    "common": "Aromatic Cherry Millipede",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8298-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Aromatic Cherry Millipede on leaf litter",
+    "informed_prompt": "aromatic cherry millipede",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.82421875,
+        "mask_area_frac": 0.031174518167972565
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9022219181060791
+  },
+  {
+    "obs_id": 240414316,
+    "iconic": "Animalia",
+    "taxon": "Litylenchus crenatae",
+    "common": "Beech Leaf Disease",
+    "observed_on": "2024-09-07",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-07_DSC_7616-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Chromadoreans on branch",
+    "informed_prompt": "beech leaf disease",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 3,
+        "top_score": 0.64453125,
+        "mask_area_frac": 0.14039091765880585
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8712642192840576
+  },
+  {
+    "obs_id": 278192521,
+    "iconic": "Animalia",
+    "taxon": "Litylenchus crenatae",
+    "common": "Beech Leaf Disease",
+    "observed_on": "2025-05-03",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-03_DSC_9522-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Beech Leaf Disease on branch",
+    "informed_prompt": "beech leaf disease",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7660098075866699
+  },
+  {
+    "obs_id": 216751040,
+    "iconic": "Animalia",
+    "taxon": "Juliformia",
+    "common": "Round-backed Millipedes",
+    "observed_on": "2024-05-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-18_DSC_7697-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Round-backed Millipedes on soil",
+    "informed_prompt": "round-backed millipedes",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8999526500701904
+  },
+  {
+    "obs_id": 244781648,
+    "iconic": "Animalia",
+    "taxon": "Ptyoiulus impressus",
+    "common": "Flocculent Tailed Millipede",
+    "observed_on": "2024-09-29",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-29_DSC_9643-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Flocculent Tailed Millipede on leaf litter",
+    "informed_prompt": "flocculent tailed millipede",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8027198314666748
+  },
+  {
+    "obs_id": 273580174,
+    "iconic": "Animalia",
+    "taxon": "Cylindroiulus",
+    "common": "Barrel Millipedes",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8573-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Barrel Millipedes on wood",
+    "informed_prompt": "barrel millipedes",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7852060794830322
+  },
+  {
+    "obs_id": 268302174,
+    "iconic": "Animalia",
+    "taxon": "Julida",
+    "common": "Snake Millipedes",
+    "observed_on": "2025-04-02",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-02_DSC_7581-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Snake Millipedes on wood",
+    "informed_prompt": "snake millipedes",
+    "generic_prompt": "animal",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.55078125,
+        "mask_area_frac": 0.2372749000787735
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.42627644538879395
+  },
+  {
+    "obs_id": 212965819,
+    "iconic": "Actinopterygii",
+    "taxon": "Actinopterygii",
+    "common": "Ray-finned Fishes",
+    "observed_on": "2024-05-02",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-02_DSC_6449-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Ray-finned Fishes on mud",
+    "informed_prompt": "ray-finned fishes",
+    "generic_prompt": "fish",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.43886613845825195
+  },
+  {
+    "obs_id": 201633640,
+    "iconic": "Actinopterygii",
+    "taxon": "Betta splendens",
+    "common": "Siamese Fighting Fish",
+    "observed_on": "2024-03-07",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-03-07_DSC_2770-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Betta Fishes on water",
+    "informed_prompt": "siamese fighting fish",
+    "generic_prompt": "fish",
+    "prompts": {
+      "informed": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "generic": {
+        "n_instances": 15,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.027954233810305595
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.223055362701416
+  },
+  {
+    "obs_id": 214676339,
+    "iconic": "Actinopterygii",
+    "taxon": "Poecilia reticulata",
+    "common": "Guppy",
+    "observed_on": "2024-05-08",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-08_DSC_6890-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Mollies on water",
+    "informed_prompt": "guppy",
+    "generic_prompt": "fish",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.93359375,
+        "mask_area_frac": 0.004194249864667654
+      },
+      "generic": {
+        "n_instances": 2,
+        "top_score": 0.9453125,
+        "mask_area_frac": 0.004205450881272554
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.9374198913574219
+  },
+  {
+    "obs_id": 248138907,
+    "iconic": "Actinopterygii",
+    "taxon": "Micropterus nigricans",
+    "common": "Largemouth Bass",
+    "observed_on": "2024-10-19",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-19_DSC_0723-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Largemouth Bass on water",
+    "informed_prompt": "largemouth bass",
+    "generic_prompt": "fish",
+    "prompts": {
+      "informed": {
+        "n_instances": 1,
+        "top_score": 0.63671875,
+        "mask_area_frac": 0.001712373341433704
+      },
+      "generic": {
+        "n_instances": 1,
+        "top_score": 0.66015625,
+        "mask_area_frac": 0.00169661664403975
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.2149415016174316
+  },
+  {
+    "obs_id": 212965814,
+    "iconic": "Actinopterygii",
+    "taxon": "Lepomis",
+    "common": "Common Sunfishes",
+    "observed_on": "2024-05-02",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-02_DSC_6443-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Common Sunfishes on water",
+    "informed_prompt": "common sunfishes",
+    "generic_prompt": "fish",
+    "prompts": {
+      "informed": {
+        "n_instances": 2,
+        "top_score": 0.65625,
+        "mask_area_frac": 0.0009104548371396959
+      },
+      "generic": {
+        "n_instances": 5,
+        "top_score": 0.828125,
+        "mask_area_frac": 0.0009193454752676189
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.2175545692443848
+  },
+  {
+    "obs_id": 255800266,
+    "iconic": "Actinopterygii",
+    "taxon": "Poecilia reticulata",
+    "common": "Guppy",
+    "observed_on": "2024-12-21",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-12-21_DSC_5047-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Mollies on water",
+    "informed_prompt": "guppy",
+    "generic_prompt": "fish",
+    "prompts": {
+      "informed": {
+        "n_instances": 3,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.059239309281110764
+      },
+      "generic": {
+        "n_instances": 3,
+        "top_score": 0.96484375,
+        "mask_area_frac": 0.060007642954587936
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5237219333648682
+  }
+]

@@ -1,0 +1,534 @@
+[
+  {
+    "obs_id": 319858787,
+    "iconic": "Plantae",
+    "taxon": "Cichorium intybus",
+    "common": "chicory",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-10-09_DSC_0338.jpg",
+    "topaz_mask_area_frac": 0.9612131539993465,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 295362007,
+    "iconic": "Plantae",
+    "taxon": "Heliantheae",
+    "common": "Sunflowers and Allies",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2025-07-02_DSC_5643.jpg",
+    "topaz_mask_area_frac": 0.052245039157259456,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9999162268576695,
+      0.9998743402865041
+    ],
+    "width": 11937,
+    "height": 7958,
+    "error": null
+  },
+  {
+    "obs_id": 264436952,
+    "iconic": "Plantae",
+    "taxon": "Polystichum acrostichoides",
+    "common": "Christmas fern",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-07_DSC_6691-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.5133743905066928,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 213868558,
+    "iconic": "Plantae",
+    "taxon": "Hesperis matronalis",
+    "common": "dame's rocket",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-05_DSC_6755-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.06814978465274021,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.039607558139534885,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 223737143,
+    "iconic": "Plantae",
+    "taxon": "Morus alba",
+    "common": "white mulberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-18_DSC_1844-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 278192515,
+    "iconic": "Plantae",
+    "taxon": "Rubus flagellaris",
+    "common": "Common Dewberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-03_DSC_9516-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9999157149275509,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 249950658,
+    "iconic": "Plantae",
+    "taxon": "Rubus phoenicolasius",
+    "common": "wineberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-31_DSC_1724-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.315199076068482,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.04813163155466708,
+      0.09427542033626901,
+      0.9998462248193142,
+      0.9997998398718975
+    ],
+    "width": 6503,
+    "height": 4996,
+    "error": null
+  },
+  {
+    "obs_id": 209182052,
+    "iconic": "Plantae",
+    "taxon": "Veronica persica",
+    "common": "bird's-eye speedwell",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-24_DSC_6128-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.7722221884788512,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 248796106,
+    "iconic": "Plantae",
+    "taxon": "Quercus",
+    "common": "white oaks",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-23_DSC_0886-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 278192537,
+    "iconic": "Plantae",
+    "taxon": "Lonicera maackii",
+    "common": "Amur honeysuckle",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-03_DSC_9535-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.8475431803649496,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 248796124,
+    "iconic": "Plantae",
+    "taxon": "Quercus",
+    "common": "white oaks",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-23_DSC_0892-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9999331441122453,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 247406016,
+    "iconic": "Plantae",
+    "taxon": "Symphyotrichum",
+    "common": "American asters",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-14_DSC_0299-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9648521344941522,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 210563454,
+    "iconic": "Plantae",
+    "taxon": "Malus",
+    "common": "apples and crabapples",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-27_DSC_6309-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.6719257030827475,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 365215508,
+    "iconic": "Plantae",
+    "taxon": "Hesperis matronalis",
+    "common": "dame's rocket",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-16_DSC_2840.jpg",
+    "topaz_mask_area_frac": 0.013895241445263206,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.2447311046511628,
+      0.14171511627906977,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 217408879,
+    "iconic": "Plantae",
+    "taxon": "Erigeron",
+    "common": "fleabanes and horseweeds",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-21_DSC_8912-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.8076479086386785,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 205162899,
+    "iconic": "Plantae",
+    "taxon": "Liriodendron tulipifera",
+    "common": "American tuliptree",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-02_DSC_4581-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.04361373986642555,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.3949854651162791,
+      0.36712693798449614,
+      0.5928415697674418,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 267122062,
+    "iconic": "Plantae",
+    "taxon": "Bryophyta",
+    "common": "Mosses",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-26_DSC_7215-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.8601546919365197,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 265896675,
+    "iconic": "Plantae",
+    "taxon": "Veronica persica",
+    "common": "bird's-eye speedwell",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-09_DSC_6819-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 314465173,
+    "iconic": "Plantae",
+    "taxon": "Rhus glabra",
+    "common": "smooth sumac",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-09-15_DSC_9122.jpg",
+    "topaz_mask_area_frac": 0.9175083290376554,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 273511439,
+    "iconic": "Plantae",
+    "taxon": "Scrophulariaceae",
+    "common": "figwort family",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-24_DSC_8237-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9993660354132865,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 208407128,
+    "iconic": "Plantae",
+    "taxon": "Valerianella locusta",
+    "common": "common cornsalad",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-20_DSC_5837 (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.9430121116988913,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 268302142,
+    "iconic": "Plantae",
+    "taxon": "Sanguinaria canadensis",
+    "common": "bloodroot",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-02_DSC_7538-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9553729832122599,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 2883,
+    "height": 2962,
+    "error": null
+  },
+  {
+    "obs_id": 271111867,
+    "iconic": "Plantae",
+    "taxon": "Chrysosplenium americanum",
+    "common": "American golden saxifrage",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-17_DSC_8110-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.4395637701522583,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.006836204539239814,
+      0.9996675531914894,
+      0.9997265518184304
+    ],
+    "width": 3008,
+    "height": 3657,
+    "error": null
+  },
+  {
+    "obs_id": 264576287,
+    "iconic": "Plantae",
+    "taxon": "Scilloideae",
+    "common": "Hyacinth subfamily",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-08_DSC_6790-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 263553012,
+    "iconic": "Plantae",
+    "taxon": "Pycnanthemum",
+    "common": "mountain mints",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-01_DSC_6495-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.4987105044111682,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.035852713178294575,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 236635974,
+    "iconic": "Plantae",
+    "taxon": "Cucurbita pepo",
+    "common": "American pumpkin",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-08-18_DSC_6339-Enhanced-NR (2024_08_19 01_25_13 UTC).jpg",
+    "topaz_mask_area_frac": 0.960401002406988,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 217722817,
+    "iconic": "Plantae",
+    "taxon": "Dactylis glomerata",
+    "common": "orchard grass",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-22_DSC_9420-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.015487393065790066,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.2154796511627907,
+      0.21693313953488372,
+      0.8477470930232558,
+      0.9272044573643411
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 281385229,
+    "iconic": "Plantae",
+    "taxon": "Parthenocissus quinquefolia",
+    "common": "Virginia creeper",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-15_DSC_0291-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 223821016,
+    "iconic": "Plantae",
+    "taxon": "Rubus allegheniensis",
+    "common": "Allegheny blackberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-19_DSC_1866-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.2858293249627968,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9997891629770188,
+      0.9996837444655281
+    ],
+    "width": 4743,
+    "height": 3162,
+    "error": null
+  },
+  {
+    "obs_id": 240414237,
+    "iconic": "Plantae",
+    "taxon": "Allium tricoccum",
+    "common": "wide leek",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-07_DSC_7516-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.5357312150359992,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 247843447,
+    "iconic": "Plantae",
+    "taxon": "Verbena hastata",
+    "common": "blue vervain",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-17_DSC_0689-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.21133546638385614,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9969718992248062,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 391297891,
+    "iconic": "Plantae",
+    "taxon": "Monotropa uniflora",
+    "common": "Ghost Pipe",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-06-07_DSC_3094.jpg",
+    "topaz_mask_area_frac": 0.05771126548556652,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.18459302325581395,
+      0.9998183139534884,
+      0.9481589147286822
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 221210057,
+    "iconic": "Plantae",
+    "taxon": "Trifolium pratense",
+    "common": "Red Clover",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-07_DSC_1449-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.13551679793168264,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.20258349086326402,
+      0.9997637051039697,
+      0.9998424700693131
+    ],
+    "width": 4232,
+    "height": 6348,
+    "error": null
+  },
+  {
+    "obs_id": 247843445,
+    "iconic": "Plantae",
+    "taxon": "Helenium autumnale",
+    "common": "common sneezeweed",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-17_DSC_0684-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9879445718476767,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  }
+]

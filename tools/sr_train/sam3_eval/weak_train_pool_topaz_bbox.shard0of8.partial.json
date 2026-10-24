@@ -1,0 +1,567 @@
+[
+  {
+    "obs_id": 249248331,
+    "iconic": "Plantae",
+    "taxon": "Dendrolycopodium obscurum",
+    "common": "flat-branched tree-clubmoss",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-26_DSC_1257-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.14463270017858754,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.11518895348837209,
+      0.2688953488372093,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 219643508,
+    "iconic": "Plantae",
+    "taxon": "Linum usitatissimum",
+    "common": "common flax",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-30_DSC_0554-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.4588024028683861,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9001937984496124,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 309729991,
+    "iconic": "Plantae",
+    "taxon": "Eurybia",
+    "common": "wood asters",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-08-24_DSC_7483.jpg",
+    "topaz_mask_area_frac": 0.846502226710384,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 366526418,
+    "iconic": "Plantae",
+    "taxon": "Rubus",
+    "common": "brambles",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-29_DSC_3003.jpg",
+    "topaz_mask_area_frac": 0.3308592693685776,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 325583340,
+    "iconic": "Plantae",
+    "taxon": "Trentepohlia",
+    "common": null,
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-11-08_DSC_1071.jpg",
+    "topaz_mask_area_frac": 0.48230273155816206,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 295361982,
+    "iconic": "Plantae",
+    "taxon": "Cirsium arvense",
+    "common": "creeping thistle",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2025-07-02_DSC_5603.jpg",
+    "topaz_mask_area_frac": 0.14639399782594062,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9999162268576695,
+      0.9998743402865041
+    ],
+    "width": 11937,
+    "height": 7958,
+    "error": null
+  },
+  {
+    "obs_id": 268140844,
+    "iconic": "Plantae",
+    "taxon": "Muscari botryoides",
+    "common": "common grape hyacinth",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-01_DSC_7474-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.1417513917104799,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.06213364595545135,
+      0.9997801714662563,
+      0.9998534583821805
+    ],
+    "width": 4549,
+    "height": 6824,
+    "error": null
+  },
+  {
+    "obs_id": 273567975,
+    "iconic": "Plantae",
+    "taxon": "Prunus serotina",
+    "common": "black cherry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8313-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.07596261475093519,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.1537063953488372,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 309330669,
+    "iconic": "Plantae",
+    "taxon": "Asclepias incarnata",
+    "common": "swamp milkweed",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-07-23_DSC_6380.jpg",
+    "topaz_mask_area_frac": 0.18178624231707455,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.16472868217054262,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 279435489,
+    "iconic": "Plantae",
+    "taxon": "Viburnum",
+    "common": "viburnums",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-07_DSC_9631-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.6620731522247386,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 242010925,
+    "iconic": "Plantae",
+    "taxon": "Symphyotrichum novae-angliae",
+    "common": "New England aster",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-15_DSC_8116-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9991771391275811,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5106,
+    "height": 3404,
+    "error": null
+  },
+  {
+    "obs_id": 250030347,
+    "iconic": "Plantae",
+    "taxon": "Symphyotrichum",
+    "common": "American asters",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-01_DSC_1771-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9995717526083919,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 254567771,
+    "iconic": "Plantae",
+    "taxon": "Ligustrum obtusifolium",
+    "common": "border privet",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-12-08_DSC_4661-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9790738870673337,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 289243581,
+    "iconic": "Plantae",
+    "taxon": "Plantago",
+    "common": "plantains",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-06-07_DSC_4047-Enhanced-NR.jpg",
+    "topaz_mask_area_frac": 0.9565536639315171,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 271111876,
+    "iconic": "Plantae",
+    "taxon": "Viola",
+    "common": "Violets",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-17_DSC_8125-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.7296888798467204,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9996456413890857,
+      0.9996845425867508
+    ],
+    "width": 2822,
+    "height": 3170,
+    "error": null
+  },
+  {
+    "obs_id": 215752523,
+    "iconic": "Plantae",
+    "taxon": "Ranunculus",
+    "common": "buttercups",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-14_DSC_7453-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.8507301684046557,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 317776136,
+    "iconic": "Plantae",
+    "taxon": "Symphyotrichum",
+    "common": "American asters",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-09-29_DSC_9542.jpg",
+    "topaz_mask_area_frac": 0.5484782649264242,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 261760418,
+    "iconic": "Plantae",
+    "taxon": "Setaria",
+    "common": "foxtails and bristlegrasses",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-02-13_DSC_5867-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9877779382788557,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 242010940,
+    "iconic": "Plantae",
+    "taxon": "Symphyotrichum",
+    "common": "American asters",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-15_DSC_8125-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.03436405065706153,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.36736533693937345,
+      0.009465855307640297,
+      0.9997746224926752,
+      0.9996619337390128
+    ],
+    "width": 4437,
+    "height": 2958,
+    "error": null
+  },
+  {
+    "obs_id": 205782074,
+    "iconic": "Plantae",
+    "taxon": "Stellaria",
+    "common": "chickweeds",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-06_DSC_4840-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.3803980327995214,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.03484513274336283,
+      0.9995852343425964,
+      0.9997234513274337
+    ],
+    "width": 2411,
+    "height": 3616,
+    "error": null
+  },
+  {
+    "obs_id": 252100338,
+    "iconic": "Plantae",
+    "taxon": "Lonicera maackii",
+    "common": "Amur honeysuckle",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-17_DSC_4197-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9996583043551132,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 225337781,
+    "iconic": "Plantae",
+    "taxon": "Circaea canadensis",
+    "common": "broadleaf enchanter's nightshade",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-25_DSC_2113-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.2671337971382075,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9997841571336067,
+      0.9998560944020722
+    ],
+    "width": 4633,
+    "height": 6949,
+    "error": null
+  },
+  {
+    "obs_id": 322293390,
+    "iconic": "Plantae",
+    "taxon": "Catharanthus",
+    "common": "Periwinkle",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-10-20_DSC_0647.jpg",
+    "topaz_mask_area_frac": 0.9988371300787587,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 212965832,
+    "iconic": "Plantae",
+    "taxon": "Oxalis",
+    "common": "Woodsorrels",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-02_DSC_6471-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.947257935912836,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 2595,
+    "height": 3893,
+    "error": null
+  },
+  {
+    "obs_id": 221210034,
+    "iconic": "Plantae",
+    "taxon": "Trifolium campestre",
+    "common": "hop trefoil",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-07_DSC_1353-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.2792121809978053,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.09505252456794307,
+      0.9997458703939008,
+      0.9998305659098611
+    ],
+    "width": 3935,
+    "height": 5902,
+    "error": null
+  },
+  {
+    "obs_id": 297591793,
+    "iconic": "Plantae",
+    "taxon": "Cichorium intybus",
+    "common": "chicory",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-07-12_DSC_5765.jpg",
+    "topaz_mask_area_frac": 0.32253527121219805,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.2915455426356589,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 205782069,
+    "iconic": "Plantae",
+    "taxon": "Liliopsida",
+    "common": "monocots",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-06_DSC_4832-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 226799414,
+    "iconic": "Plantae",
+    "taxon": "Vaccinium pallidum",
+    "common": "Early Lowbush Blueberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-02_DSC_2484-Enhanced-NR (2024_07_03 01_35_04 UTC).jpg",
+    "topaz_mask_area_frac": 0.9839765054590319,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 270922653,
+    "iconic": "Plantae",
+    "taxon": "Muscari botryoides",
+    "common": "common grape hyacinth",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-16_DSC_7995-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.09006025838108266,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.2708691910499139,
+      0.16514875531268974,
+      0.6985800344234079,
+      0.7549079133778588
+    ],
+    "width": 4648,
+    "height": 4941,
+    "error": null
+  },
+  {
+    "obs_id": 222040183,
+    "iconic": "Plantae",
+    "taxon": "Apocynum cannabinum",
+    "common": "hemp dogbane",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-10_DSC_1717-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.6199802297934698,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9996937212863706,
+      0.999795793342863
+    ],
+    "width": 3265,
+    "height": 4897,
+    "error": null
+  },
+  {
+    "obs_id": 269169429,
+    "iconic": "Plantae",
+    "taxon": "Veronica persica",
+    "common": "bird's-eye speedwell",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-04_DSC_7628-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9965841438784478,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 309508729,
+    "iconic": "Plantae",
+    "taxon": "Chamaecrista fasciculata",
+    "common": "partridge pea",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-07-27_DSC_6565.jpg",
+    "topaz_mask_area_frac": 0.5714513167661011,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 219130630,
+    "iconic": "Plantae",
+    "taxon": "Thalictrum",
+    "common": "meadow-rues",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-28_DSC_0455-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.9944487166486389,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 201633645,
+    "iconic": "Plantae",
+    "taxon": "Sambucus nigra",
+    "common": "European black elderberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-03-07_DSC_2791-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.02320984227820218,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.37839147286821706,
+      0.4253270348837209,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 249248247,
+    "iconic": "Plantae",
+    "taxon": "Hamamelis virginiana",
+    "common": "common witch-hazel",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-26_DSC_1183-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.2393803669565193,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "family": "raw_denoise",
+  "task": "denoise",
+  "model_dir": "C:\\TopazModels\\dnt_beta-v5-fp32-512x512-ov",
+  "backend": "openvino",
+  "elapsed_sec": 234.11,
+  "n_pairs": 34,
+  "skipped": {
+    "decode_error": 0,
+    "shape_mismatch": 0,
+    "bit_identical": 6
+  },
+  "model_psnr_db": 40.141,
+  "plain_psnr_db": 55.956,
+  "delta_db": -15.815,
+  "wins": 0,
+  "model_lpips": 0.16325,
+  "model_dists": 0.071,
+  "plain_lpips": 0.00599,
+  "plain_dists": 0.00068,
+  "beats_plain_decode_psnr_and_perceptual": false
+}
