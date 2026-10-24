@@ -8,6 +8,7 @@ from . import settings
 from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
 from .bundle import DEFAULT_DOWNLOAD_DIR, BundleError, build_bundle
 from .inat import fetch_inat_observation
+from .inat_gallery import DEFAULT_MIN_ACCURACY
 from .models import Asset, Observation
 from .paths import make_observation_path
 from .pipeline import (
@@ -234,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inat_gallery.add_argument("--prefix", default="g",
                                 help="one lower-case letter naming this queue's folders (g<group> for the LightCraft queue, e<group> for the exported-files queue) so two queues never share a folder or a manifest")
     p_inat_gallery.add_argument("--min-share", type=float, default=0.5, help="nearest-neighbour vote share an iconic group needs to name a folder when no species is named")
-    p_inat_gallery.add_argument("--min-accuracy", type=float, default=0.6, help="measured accuracy (nearest-neighbour or zero-shot, whichever is better calibrated) a species needs to be named in a folder name")
+    p_inat_gallery.add_argument("--min-accuracy", type=float, default=DEFAULT_MIN_ACCURACY, help="measured accuracy (nearest-neighbour or zero-shot, whichever is better calibrated) a species needs to be named in a folder name")
     p_inat_gallery.add_argument("--no-prune", action="store_true", help="keep links the plan no longer contains")
     p_inat_gallery.add_argument("--dry-run", action="store_true", help="print what would be linked and touch nothing")
     p_inat_gallery.add_argument("--no-queue", action="store_true", help="don't enqueue a gallery.reindex message")
