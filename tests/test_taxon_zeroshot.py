@@ -472,3 +472,72 @@ class TestMainWithZeroShot:
     def test_the_same_run_without_a_zero_shot_index_writes_no_zero_shot_key_and_no_index_in_meta(self, stage, tmp_path, monkeypatch):
         out, meta = self._run(tmp_path, stage, monkeypatch, None)
         assert "zero_shot" not in out["7"] and meta["zero_shot_index"] is None
+
+
+# ---------------------------------------------------------------- drift: the earlier calibration against observations posted since
+
+def _bins(acc, n):
+    return [{"lo": lo, "hi": hi, "n": n if i == 6 else 0, "accuracy": acc if i == 6 else None}
+            for i, (lo, hi) in enumerate(((0.0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5), (0.5, 0.7), (0.7, 0.9), (0.9, 1.01)))]
+
+
+class TestDriftWarnings:
+    def test_a_bin_that_is_worse_than_calibrated_by_more_than_the_tolerance_is_named_with_both_numbers(self, stage):
+        tz = stage("taxon_zeroshot")
+        assert tz.drift_warnings(_bins(0.95, 40), _bins(0.60, 12)) == [
+            "pooled p 0.9-1.0: calibrated 0.95, but 0.60 on 12 newly posted observations"]
+
+    def test_exactly_at_the_tolerance_is_not_a_warning_and_just_past_it_is(self, stage):
+        tz = stage("taxon_zeroshot")
+        assert tz.drift_warnings(_bins(0.75, 40), _bins(0.50, 12), tolerance=0.25) == []              # a drop of exactly 0.25 (exact in binary)
+        assert len(tz.drift_warnings(_bins(0.75, 40), _bins(0.4375, 12), tolerance=0.25)) == 1        # 0.3125 is past it
+        assert tz.drift_warnings(_bins(0.90, 40), _bins(0.80, 12)) == []                              # and the default tolerance is 0.10
+
+    def test_too_few_observations_on_either_side_or_an_unmeasured_bin_never_warn(self, stage):
+        tz = stage("taxon_zeroshot")
+        assert tz.drift_warnings(_bins(0.95, 40), _bins(0.0, 9)) == []                  # only 9 recent observations
+        assert tz.drift_warnings(_bins(0.95, 9), _bins(0.0, 40)) == []                  # only 9 in the old calibration
+        assert tz.drift_warnings(_bins(None, 0), _bins(0.0, 40)) == []                  # the old bin was empty
+
+    def test_a_better_than_calibrated_bin_is_not_a_warning(self, stage):
+        tz = stage("taxon_zeroshot")
+        assert tz.drift_warnings(_bins(0.70, 40), _bins(1.0, 12)) == []
+
+
+class TestCalibrateDrift:
+    def _run(self, tmp_path, stage, new_true, prev=None):
+        tz = stage("taxon_zeroshot")
+        idx = TestZeroShotPredict()._index(tmp_path)
+        (tmp_path / "index" / "meta.json").write_text(json.dumps({"source": "dwca.zip", "species": 3, "dim": 3}), encoding="utf-8")
+        photos = [([1.0, 0.0, 0.0], {"rank": "species", "taxon": "Aramus guarauna", "obs_id": 1})]            # an old observation: right
+        photos += [([0.0, 0.0, 1.0], {"rank": "species", "taxon": new_true, "obs_id": 100 + i}) for i in range(10)]   # ten new ones, all predicted Amanita
+        prev_path = None
+        if prev is not None:
+            prev_path = str(tmp_path / "prev.json")
+            json.dump(prev, open(prev_path, "w", encoding="utf-8"))
+        out = str(tmp_path / "zeroshot_bins.json")
+        tz.calibrate(idx, photos, 10.0, NpTorch(), "cuda:1", out, prev_path=prev_path)
+        return json.load(open(out, encoding="utf-8"))
+
+    PREV = {"max_obs_id": 50, "bins": _bins(0.95, 40)}
+
+    def test_new_observations_that_are_all_wrong_produce_the_drift_warning_and_are_scored_on_their_own(self, stage, tmp_path):
+        r = self._run(tmp_path, stage, "Bubo virginianus", self.PREV)
+        assert r["max_obs_id"] == 109
+        assert r["recent"]["since_obs_id"] == 50 and (r["recent"]["photos"], r["recent"]["observations"]) == (10, 10)
+        assert [(b["lo"], b["n"], b["accuracy"]) for b in r["recent"]["bins"] if b["n"]] == [(0.9, 10, 0.0)]
+        assert r["recent"]["warnings"] == ["pooled p 0.9-1.0: calibrated 0.95, but 0.00 on 10 newly posted observations"]
+
+    def test_the_same_run_with_new_observations_that_are_all_right_has_no_warning(self, stage, tmp_path):
+        r = self._run(tmp_path, stage, "Amanita muscaria", self.PREV)
+        assert [(b["lo"], b["n"], b["accuracy"]) for b in r["recent"]["bins"] if b["n"]] == [(0.9, 10, 1.0)]
+        assert r["recent"]["warnings"] == []
+
+    def test_without_an_earlier_calibration_there_is_no_recent_block_and_the_high_water_mark_is_still_recorded(self, stage, tmp_path):
+        r = self._run(tmp_path, stage, "Bubo virginianus", None)
+        assert "recent" not in r and r["max_obs_id"] == 109
+        assert r["observations"] == 11
+
+    def test_observations_not_newer_than_the_earlier_calibration_are_not_counted_as_recent(self, stage, tmp_path):
+        r = self._run(tmp_path, stage, "Bubo virginianus", {"max_obs_id": 105, "bins": _bins(0.95, 40)})
+        assert (r["recent"]["observations"], r["recent"]["warnings"]) == (4, [])        # obs 106..109 only: below the 10-observation minimum
