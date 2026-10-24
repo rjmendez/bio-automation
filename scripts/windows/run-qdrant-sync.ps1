@@ -54,6 +54,7 @@ try {
         $left = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
         $out = Join-Path $env:TEMP "bio-qdrant-$PID-$cmd.out"
         $proc = Start-Process -FilePath $py -ArgumentList @('-m', 'bio_automation.cli', $cmd) -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+        $null = $proc.Handle          # cache the handle now: under Windows PowerShell 5.1 Start-Process -PassThru -NoNewWindow otherwise leaves ExitCode EMPTY after WaitForExit, which read as "exited " (a failure) although the sync had written
         if (-not $proc.WaitForExit($left)) {
             & "$env:SystemRoot\System32\taskkill.exe" /PID $proc.Id /T /F | Out-Null          # this child only, by PID
             Log "bio $cmd timed out after the $maxMin minute cap and was stopped"
@@ -61,6 +62,7 @@ try {
             $c = -1
         } else { $proc.WaitForExit(); $c = $proc.ExitCode }
         foreach ($f in $out, "$out.err") { try { if (Test-Path $f) { [IO.File]::AppendAllText($log, [IO.File]::ReadAllText($f) , $utf8); Remove-Item $f -Force } } catch { } }
+        if ($null -eq $c) { Log "bio ${cmd}: the exit code was not available; counted as a failure"; $c = -2 }
         if ($c -eq -1) { } elseif ($c -ne 0) { Log "bio $cmd exited $c"; $failed += "$cmd (exit $c)" } else { Log "bio $cmd finished" }
     }
     $ErrorActionPreference = 'Stop'
