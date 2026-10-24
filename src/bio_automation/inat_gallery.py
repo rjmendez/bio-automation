@@ -2,7 +2,7 @@
 
 Layout, under one top-level folder that is NOT a ``<year>/<year-month>`` folder (the Bluesky poster draws from those and must never see iNat's
 2048 px upload copies): ``inat-pending/<predicted iconic group>/g<group>[_<Species>_a<accuracy %>]/<file>``. The folder names carry the
-suggestion, so no file is modified. A species is named only when its MEASURED accuracy reaches ``min_accuracy`` (default 0.6), and that accuracy is
+suggestion, so no file is modified. A species is named only when its MEASURED accuracy reaches ``min_accuracy`` (default 0.75), and that accuracy is
 part of the name. It comes from whichever source is better calibrated for this group: the nearest-neighbour vote over the owner's own photos
 (suggest_bins.json) or the whole-taxonomy zero-shot probability (zeroshot_bins.json, per observation). The iconic folder is the named species' group;
 without a named species it is the nearest-neighbour iconic vote when it reaches ``min_share``, else ``Unsure``.
@@ -20,6 +20,9 @@ from pathlib import Path
 
 ROOT_NAME = "inat-pending"
 UNSURE = "Unsure"
+# 0.75, the owner's choice (2026-10-24): the first out-of-sample check found the 0.3-0.7 pooled-probability bins about 0.14 too optimistic, so a name
+# in a folder needs a measured accuracy above those bins
+DEFAULT_MIN_ACCURACY = 0.75
 
 
 class GalleryLinkError(RuntimeError):
@@ -54,7 +57,7 @@ def best_species(suggestion: dict, min_accuracy: float) -> dict | None:
     return max(cands, key=lambda c: c["measured_accuracy"]) if cands else None
 
 
-def group_folder(group, suggestion: dict | None, min_share: float = 0.5, min_accuracy: float = 0.6, prefix: str = "g") -> str:
+def group_folder(group, suggestion: dict | None, min_share: float = 0.5, min_accuracy: float = DEFAULT_MIN_ACCURACY, prefix: str = "g") -> str:
     """'inat-pending/<Iconic or Unsure>/<prefix><group>[_<Species>_a<accuracy%>]' for one proposed observation (prefix: one letter per queue, so two queues'
     group numbers never meet in one folder). The species is named when its measured accuracy
     reaches min_accuracy and the iconic folder is that species' group; otherwise the iconic folder is the nearest-neighbour iconic vote when it reaches
@@ -72,7 +75,7 @@ def group_folder(group, suggestion: dict | None, min_share: float = 0.5, min_acc
     return f"{ROOT_NAME}/{iconic}/{prefix}{int(group):04d}{species}"
 
 
-def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5, min_accuracy: float = 0.6, prefix: str = "g") -> tuple[dict[str, str], list[dict]]:
+def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5, min_accuracy: float = DEFAULT_MIN_ACCURACY, prefix: str = "g") -> tuple[dict[str, str], list[dict]]:
     """({gallery-relative path: source copy path}, [queue entries skipped because their copy is not on disk]).
     Two copies with the same file name in one group folder is an error: the second would silently shadow the first."""
     links: dict[str, str] = {}
