@@ -206,13 +206,21 @@ class TestLock:
         lock = str(tmp_path / "x.lock")
         sr.acquire_lock(lock, pid=lambda: 111)
         assert open(lock).read().split()[0] == "111"
-        with pytest.raises(sr.LockError, match=r"x\.lock is held \(0 min old\): another refresh is running"):
-            sr.acquire_lock(lock, pid=lambda: 222)
+        held_for = lambda seconds: (lambda: os.path.getmtime(lock) + seconds)   # noqa: E731  (a clock that reads `seconds` after the lock was made)
+        with pytest.raises(sr.LockError, match=r"x\.lock is held \(5 min old\): another refresh is running"):
+            sr.acquire_lock(lock, now=held_for(300), pid=lambda: 222)
         assert open(lock).read().split()[0] == "111"                          # the holder's lock was not disturbed
-        old = time.time() - sr.LOCK_STALE_S - 60
-        os.utime(lock, (old, old))
-        sr.acquire_lock(lock, pid=lambda: 333)                                # twin: the same call succeeds once the lock is stale
+        sr.acquire_lock(lock, now=held_for(sr.LOCK_STALE_S + 60), pid=lambda: 333)    # twin: the same call succeeds once the lock is stale
         assert open(lock).read().split()[0] == "333"
+
+    def test_a_lock_stamped_a_moment_in_the_future_is_zero_minutes_old_and_still_held(self, stage, tmp_path):
+        sr = stage("suggest_refresh")
+        lock = str(tmp_path / "x.lock")
+        sr.acquire_lock(lock, pid=lambda: 111)
+        behind = lambda: os.path.getmtime(lock) - 5                               # noqa: E731  (the runner's clock reads before the file's timestamp)
+        with pytest.raises(sr.LockError, match=r"x\.lock is held \(0 min old\): another refresh is running"):
+            sr.acquire_lock(lock, now=behind, pid=lambda: 222)
+        assert open(lock).read().split()[0] == "111"
 
 
 class TestMain:

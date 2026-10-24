@@ -64,7 +64,7 @@ class LockError(RuntimeError):
 def acquire_lock(path, now=time.time, pid=os.getpid):
     """Create the lock file, or raise LockError when another run holds it. A lock older than LOCK_STALE_S is a crashed run's: it is replaced."""
     try:
-        age = now() - os.path.getmtime(path)
+        age = max(0.0, now() - os.path.getmtime(path))               # a file stamped a moment in the future (timestamp granularity, clock skew) is 0 min old, not -0
     except FileNotFoundError:
         age = None
     if age is not None:
