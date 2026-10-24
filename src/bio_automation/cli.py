@@ -231,7 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_inat_gallery.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
     p_inat_gallery.add_argument("--manifest", default=str(settings.CACHE_DIR / "state" / "inat_gallery_manifest.json"),
                                 help="the links this command made (only these are ever pruned)")
-    p_inat_gallery.add_argument("--min-share", type=float, default=0.5, help="vote share a species or iconic group needs to be named in a folder name")
+    p_inat_gallery.add_argument("--min-share", type=float, default=0.5, help="nearest-neighbour vote share an iconic group needs to name a folder when no species is named")
+    p_inat_gallery.add_argument("--min-accuracy", type=float, default=0.6, help="measured accuracy (nearest-neighbour or zero-shot, whichever is better calibrated) a species needs to be named in a folder name")
     p_inat_gallery.add_argument("--no-prune", action="store_true", help="keep links the plan no longer contains")
     p_inat_gallery.add_argument("--dry-run", action="store_true", help="print what would be linked and touch nothing")
     p_inat_gallery.add_argument("--no-queue", action="store_true", help="don't enqueue a gallery.reindex message")
@@ -737,7 +738,7 @@ def cmd_inat_gallery(args: argparse.Namespace) -> int:
 
     queue = json.load(open(args.queue, encoding="utf-8"))
     suggestions = json.load(open(args.suggestions, encoding="utf-8"))
-    links, skipped = inat_gallery.plan(queue, suggestions, args.min_share)
+    links, skipped = inat_gallery.plan(queue, suggestions, args.min_share, args.min_accuracy)
     if args.dry_run:
         folders = sorted({rel.rsplit("/", 1)[0] for rel in links})
         print(json.dumps({"would_link": len(links), "folders": len(folders), "queue_entries_without_a_copy": len(skipped)}, indent=2))

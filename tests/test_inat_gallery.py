@@ -12,30 +12,57 @@ from bio_automation.inat_gallery import GalleryLinkError, apply, group_folder, p
 from bio_automation.queue import Queue
 
 
-def sug(iconic, iconic_share, species=None, species_share=0.0):
-    return {"photos": 3, "iconic": [{"iconic": iconic, "vote_share": iconic_share}],
-            "species": [{"taxon": species, "vote_share": species_share}] if species else []}
+def sug(iconic, iconic_share, species=None, acc=None, zero=None):
+    """A suggestion: the nearest-neighbour top species with its measured accuracy, and optionally ``zero=(taxon, accuracy, iconic)`` for the zero-shot top."""
+    out = {"photos": 3, "iconic": [{"iconic": iconic, "vote_share": iconic_share}],
+           "species": [{"taxon": species, "vote_share": 0.9, "iconic": iconic, "measured_accuracy": acc}] if species else []}
+    if zero:
+        out["zero_shot"] = [{"taxon": zero[0], "prob": 0.8, "iconic": zero[2], "measured_accuracy": zero[1]}]
+    return out
 
 
 class TestGroupFolder:
-    def test_names_the_species_and_its_share_when_both_reach_the_threshold(self):
-        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.62)) == "inat-pending/Fungi/g0007_Amanita-muscaria_p62"
+    def test_names_the_species_and_its_measured_accuracy_when_it_reaches_the_threshold(self):
+        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.62)) == "inat-pending/Fungi/g0007_Amanita-muscaria_a62"
 
-    def test_the_threshold_is_inclusive_and_just_under_it_names_no_species(self):
-        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.5)) == "inat-pending/Fungi/g0007_Amanita-muscaria_p50"
-        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.499)) == "inat-pending/Fungi/g0007"
+    def test_the_accuracy_threshold_is_inclusive_and_just_under_it_names_no_species(self):
+        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.6)) == "inat-pending/Fungi/g0007_Amanita-muscaria_a60"
+        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.599)) == "inat-pending/Fungi/g0007"
 
-    def test_an_iconic_group_under_the_threshold_goes_under_unsure_and_just_at_it_is_named(self):
+    def test_a_species_whose_accuracy_was_never_measured_is_not_named(self):
+        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", None)) == "inat-pending/Fungi/g0007"
+
+    def test_the_better_calibrated_source_wins_and_a_tie_goes_to_the_nearest_neighbour_vote(self):
+        zs_wins = sug("Fungi", 0.9, "Amanita muscaria", 0.7, zero=("Boletus edulis", 0.91, "Fungi"))
+        assert group_folder(7, zs_wins) == "inat-pending/Fungi/g0007_Boletus-edulis_a91"
+        knn_wins = sug("Fungi", 0.9, "Amanita muscaria", 0.95, zero=("Boletus edulis", 0.91, "Fungi"))
+        assert group_folder(7, knn_wins) == "inat-pending/Fungi/g0007_Amanita-muscaria_a95"
+        tie = sug("Fungi", 0.9, "Amanita muscaria", 0.8, zero=("Boletus edulis", 0.8, "Fungi"))
+        assert group_folder(7, tie) == "inat-pending/Fungi/g0007_Amanita-muscaria_a80"
+
+    def test_a_source_under_the_threshold_never_wins_even_when_the_other_is_unmeasured(self):
+        only_zs = sug("Fungi", 0.9, "Amanita muscaria", 0.3, zero=("Boletus edulis", 0.7, "Fungi"))
+        assert group_folder(7, only_zs) == "inat-pending/Fungi/g0007_Boletus-edulis_a70"
+        neither = sug("Fungi", 0.9, "Amanita muscaria", 0.3, zero=("Boletus edulis", 0.5, "Fungi"))
+        assert group_folder(7, neither) == "inat-pending/Fungi/g0007"
+
+    def test_the_named_species_decides_the_iconic_folder_even_when_the_iconic_vote_is_weak(self):
+        s = sug("Insecta", 0.2, zero=("Apis mellifera", 0.9, "Insecta"))
+        assert group_folder(4, s) == "inat-pending/Insecta/g0004_Apis-mellifera_a90"
+        assert group_folder(4, sug("Fungi", 0.2, zero=("Apis mellifera", 0.9, "Insecta"))) == "inat-pending/Insecta/g0004_Apis-mellifera_a90"
+
+    def test_without_a_named_species_the_iconic_vote_names_the_folder_at_min_share_inclusive(self):
         assert group_folder(12, sug("Insecta", 0.49)) == "inat-pending/Unsure/g0012"
         assert group_folder(12, sug("Insecta", 0.5)) == "inat-pending/Insecta/g0012"
 
-    def test_no_suggestion_at_all_is_unsure_and_the_threshold_is_a_parameter(self):
+    def test_no_suggestion_at_all_is_unsure_and_both_thresholds_are_parameters(self):
         assert group_folder(3, None) == "inat-pending/Unsure/g0003"
-        assert group_folder(3, sug("Aves", 0.7, "Corvus corax", 0.7), min_share=0.8) == "inat-pending/Unsure/g0003"
-        assert group_folder(3, sug("Aves", 0.7, "Corvus corax", 0.7), min_share=0.7) == "inat-pending/Aves/g0003_Corvus-corax_p70"
+        assert group_folder(3, sug("Aves", 0.7, "Corvus corax", 0.7), min_accuracy=0.8) == "inat-pending/Aves/g0003"
+        assert group_folder(3, sug("Aves", 0.7, "Corvus corax", 0.7), min_accuracy=0.7) == "inat-pending/Aves/g0003_Corvus-corax_a70"
+        assert group_folder(3, sug("Aves", 0.7), min_share=0.8) == "inat-pending/Unsure/g0003"
 
     def test_the_folder_never_ends_in_a_dash_and_two_digits_so_it_is_never_a_year_month_folder(self):
-        for s in (None, sug("Fungi", 0.9), sug("Fungi", 0.9, "Rubus sp. 10", 0.55)):
+        for s in (None, sug("Fungi", 0.9), sug("Fungi", 0.9, "Rubus sp. 10", 0.65)):
             assert not __import__("re").search(r"-\d\d$", group_folder(5, s))
 
 
@@ -52,7 +79,7 @@ class TestPlan:
         gone = {"group": 9, "copy": str(tmp_path / "copies" / "gone.jpg")}
         queue = [{"group": 1, "copy": a}, {"group": 2, "copy": b}, gone, {"group": 4}]
         links, skipped = plan(queue, {"1": sug("Fungi", 0.9, "Amanita muscaria", 0.8)})
-        assert links == {"inat-pending/Fungi/g0001_Amanita-muscaria_p80/a.jpg": a, "inat-pending/Unsure/g0002/b.jpg": b}
+        assert links == {"inat-pending/Fungi/g0001_Amanita-muscaria_a80/a.jpg": a, "inat-pending/Unsure/g0002/b.jpg": b}
         assert skipped == [gone, {"group": 4}]
 
     def test_two_different_copies_with_one_name_in_one_group_are_refused_but_one_copy_listed_twice_is_fine(self, tmp_path):
@@ -78,16 +105,16 @@ class TestApply:
     def test_hardlinks_the_files_records_them_and_publishes_one_reindex_message_for_the_folders(self, tmp_path, env):
         gallery, manifest, q = env
         a, b = _copy(tmp_path, "a.jpg", b"AAAA"), _copy(tmp_path, "b.jpg", b"BB")
-        links = {"inat-pending/Fungi/g0001_Amanita-muscaria_p80/a.jpg": a, "inat-pending/Unsure/g0002/b.jpg": b}
+        links = {"inat-pending/Fungi/g0001_Amanita-muscaria_a80/a.jpg": a, "inat-pending/Unsure/g0002/b.jpg": b}
         r = apply(links, gallery, manifest, queue=q)
         assert (r["linked"], r["already_there"], r["removed"], r["refused"]) == (2, 0, 0, {})
-        dst = gallery / "inat-pending/Fungi/g0001_Amanita-muscaria_p80/a.jpg"
+        dst = gallery / "inat-pending/Fungi/g0001_Amanita-muscaria_a80/a.jpg"
         assert os.path.samefile(dst, a) and dst.read_bytes() == b"AAAA" and os.stat(a).st_nlink == 2
         assert json.load(open(manifest, encoding="utf-8")) == links
         msg = q.claim(topics=["gallery.reindex"], worker_id="t")
         assert msg.id == r["reindex_message"]
         assert msg.payload == {"gallery_dir": str(gallery), "folders": [
-            "inat-pending", "inat-pending/Fungi", "inat-pending/Fungi/g0001_Amanita-muscaria_p80",
+            "inat-pending", "inat-pending/Fungi", "inat-pending/Fungi/g0001_Amanita-muscaria_a80",
             "inat-pending/Unsure", "inat-pending/Unsure/g0002"]}
         assert q.claim(topics=["gallery.reindex"], worker_id="t") is None
 
@@ -115,7 +142,7 @@ class TestApply:
     def test_a_regrouped_observation_moves_its_link_and_the_emptied_folders_go(self, tmp_path, env):
         gallery, manifest, q = env
         src = _copy(tmp_path, "a.jpg", b"AA")
-        old_rel, new_rel = "inat-pending/Unsure/g0001/a.jpg", "inat-pending/Fungi/g0001_Amanita-muscaria_p80/a.jpg"
+        old_rel, new_rel = "inat-pending/Unsure/g0001/a.jpg", "inat-pending/Fungi/g0001_Amanita-muscaria_a80/a.jpg"
         apply({old_rel: src}, gallery, manifest, queue=q)
         r = apply({new_rel: src}, gallery, manifest, queue=q)
         assert (r["linked"], r["removed"]) == (1, 1)
@@ -125,7 +152,7 @@ class TestApply:
         first = q.claim(topics=["gallery.reindex"], worker_id="t")
         second = q.claim(topics=["gallery.reindex"], worker_id="t")
         assert "inat-pending/Unsure" in first.payload["folders"]
-        assert second.payload["folders"] == ["inat-pending", "inat-pending/Fungi", "inat-pending/Fungi/g0001_Amanita-muscaria_p80"]
+        assert second.payload["folders"] == ["inat-pending", "inat-pending/Fungi", "inat-pending/Fungi/g0001_Amanita-muscaria_a80"]
         assert [f for f in second.payload["folders"] if "Unsure" in f] == []         # a pruned-away folder cannot be indexed, so it is not named
 
     def test_prune_never_touches_a_file_that_is_not_in_the_manifest(self, tmp_path, env):
@@ -197,5 +224,5 @@ class TestCli:
         assert cli.main() == 0
         out = json.loads(capsys.readouterr().out)
         assert (out["linked"], out["queue_entries_without_a_copy"], out["refused"]) == (1, 1, {})
-        assert (gallery / "inat-pending/Fungi/g0001_Amanita-muscaria_p80/a.jpg").exists()
+        assert (gallery / "inat-pending/Fungi/g0001_Amanita-muscaria_a80/a.jpg").exists()
         assert out["reindex_message"] == 1
