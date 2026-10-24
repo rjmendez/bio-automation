@@ -1,0 +1,10 @@
+{
+  "model": "s_mask_l_flexible-v2-fp16-320x320-ov.tz2",
+  "image": "F:\\Bio-export\\adobe-stock\\rendered\\2025\\2025-06-10\\DSC_4412.jpg",
+  "image_size": [
+    8256,
+    5504
+  ],
+  "mask_mean": 0.9940541982650757,
+  "mask_area_frac_gt_0.5": 1.0
+}

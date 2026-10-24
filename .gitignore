@@ -26,3 +26,9 @@ build/
 *.sqlite3
 *.egg-info/
 tmp/
+
+# SAM3 vendored clone (its own nested .git -- needs a deliberate submodule-or-vendor
+# decision, not a blanket add) and the built COCO training dataset (9.1GB of copied
+# photos + annotation jsons -- generated data, not source; rebuild via build_coco_dataset.py)
+tools/sr_train/sam3_vendor/
+tools/sr_train/sam3_eval/coco_dataset/

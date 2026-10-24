@@ -1,0 +1,110 @@
+{
+  "_comment": "One entry per family researched this session that was NOT recommended skip_irrelevant/skip_low_value. Each model_dir is an exact, confirmed subdirectory under C:\\TopazModels (verified by ls, not re-derived) -- pass it as --model-dir to topaz_bench.py. 'caveats' flags anything the harness build itself discovered that the research list didn't predict; it does not silently drop the model from the family.",
+
+  "families": {
+    "raw_denoise": {
+      "task_type": "denoise",
+      "task_runner": "denoise",
+      "recommendation": "benchmark_topaz",
+      "models": [
+        {
+          "name": "dnt_beta-v5",
+          "model_dir": "C:\\TopazModels\\dnt_beta-v5-fp32-512x512-ov",
+          "backend": "openvino",
+          "note": "3-channel sRGB, 512x512, 1x -- runs through task_denoise as-is."
+        },
+        {
+          "name": "dnt_beta-v5-fp16",
+          "model_dir": "C:\\TopazModels\\dnt_beta-v5-fp16-512x512-ov",
+          "backend": "openvino",
+          "note": "fp16 variant of the same model, for a precision-sensitivity check."
+        },
+        {
+          "name": "draw_linear-v1",
+          "model_dir": "C:\\TopazModels\\draw_linear-v1-fp32-512x512-ov",
+          "backend": "openvino",
+          "note": "3-channel sRGB, 512x512, 1x -- runs through task_denoise as-is. Internal tensor names are anonymous (Func/StatefulPartitionedCall/...); the loader's largest-input-wins selection handles this with no special-casing."
+        },
+        {
+          "name": "draw_linear-v1-fp16",
+          "model_dir": "C:\\TopazModels\\draw_linear-v1-fp16-512x512-ov",
+          "backend": "openvino"
+        },
+        {
+          "name": "drw_native-v1",
+          "model_dir": "C:\\TopazModels\\drw_native-v1-fp32-512x512-ox",
+          "backend": "onnxruntime",
+          "caveat": "Discovered while building this harness (not in the task's research): this model's main input is [512,512,4], not 3-channel sRGB, and its output is [1024,1024,3] -- almost certainly a packed raw Bayer mosaic (RAW-domain denoise+demosaic+2x), not an sRGB denoiser. task_denoise() checks model.in_channels and refuses cleanly rather than feeding it 3-channel sRGB. Running this one for real needs a raw-Bayer-mosaic extraction path (rawpy raw_image_visible or similar) that does not exist in this harness yet -- flag for a follow-up, do not silently configure it as if it were the same shape as dnt_beta/draw_linear."
+        },
+        {
+          "name": "drw_native-v1-fp16",
+          "model_dir": "C:\\TopazModels\\drw_native-v1-fp16-512x512-ov",
+          "backend": "openvino",
+          "caveat": "Same 4-channel-input issue as drw_native-v1 (onnx fp32) above."
+        },
+        {
+          "name": "drw_standard-v1",
+          "model_dir": "C:\\TopazModels\\drw_standard-v1-fp32-512x512-ox",
+          "backend": "onnxruntime",
+          "caveat": "Same 4-channel raw-Bayer-input issue as drw_native-v1 above."
+        },
+        {
+          "name": "drw_standard-v1-fp16",
+          "model_dir": "C:\\TopazModels\\drw_standard-v1-fp16-512x512-ov",
+          "backend": "openvino",
+          "caveat": "Same 4-channel raw-Bayer-input issue as drw_native-v1 above."
+        }
+      ],
+      "held_out_csv": "D:\\bio-cache\\sr-train\\denoise\\held_out_pairs.csv",
+      "reasoning_summary": "In-domain (871-pair NEF/Enhanced-NR-DNG dataset already built), different training distribution/capacity class than the already-falsified NAFNet-SIDD-width64, cheap to run (CPU OpenVINO, cached weights). Gate the same way as everything else: PSNR/LPIPS/DISTS vs plain decode AND the deployment Laplacian-variance check -- do not trust Topaz's marketing."
+    },
+
+    "auto_classifiers": {
+      "task_type": "classify_route",
+      "task_runner": "characterize",
+      "recommendation": "benchmark_topaz",
+      "models": [
+        {
+          "name": "noise_det-v1",
+          "model_dir": "C:\\TopazModels\\noise_det-v1-fp16-128x128-1x-ox",
+          "backend": "onnxruntime",
+          "note": "128x128x3 fp16 in -> single scalar out (noise intensity, per prior probe)."
+        },
+        {
+          "name": "liting_det-v1",
+          "model_dir": "C:\\TopazModels\\liting_det-v1-fp16-128x128-ox",
+          "backend": "onnxruntime",
+          "note": "128x128x3 fp16 in -> 2 scalars out (2nd output behaves like overexposure score, per prior probe)."
+        },
+        {
+          "name": "gendet-v1",
+          "model_dir": "C:\\TopazModels\\gendet-v1-fp32-256x256-1x-ox",
+          "backend": "onnxruntime",
+          "note": "256x256x3 fp32 in -> 18 undocumented logits out. Lower priority than noise_det/liting_det (DA-CLIP already covers 'what kind of content/defect' more flexibly), but cheap enough to characterize anyway; this is the smoke-test family member (see verification run)."
+        },
+        {
+          "name": "gendet-v1-ov",
+          "model_dir": "C:\\TopazModels\\gendet-v1-fp32-256x256-1x-ov",
+          "backend": "openvino",
+          "note": "Same gendet-v1 weights via OpenVINO IR instead of ONNX, for a backend cross-check."
+        }
+      ],
+      "reasoning_summary": "No pixel output to PSNR-gate, so this family uses the characterize task runner, not the two-gate one. noise_det-v1/liting_det-v1 are cheap, free, already-probed-sane signals worth validating against real triaged photos before deciding whether to port them; they measure something different from the existing Laplacian-variance blur gate (noise, not blur) and from DA-CLIP (a tight calibrated scalar, not zero-shot flexibility). gendet-v1 is lower priority (DA-CLIP already covers its ground) but included since it is free to run."
+    }
+  },
+
+  "skipped": [
+    {
+      "family": "alt_upscale",
+      "reason": "skip_low_value -- gclc-v1 is a non-learned fixed resize graph (nothing to benchmark); ggnv2-v3 is a same-skeleton sibling of ghqv2, this session's already-measured -5dB-vs-bicubic failure; ggi/gmp are unpublished shallow CNNs with no track record and no v2 OpenVINO IR. HAT-S LoRA is the known-good open path; not worth displacing effort from it onto four opaque, mostly-unproven Topaz nets."
+    },
+    {
+      "family": "face_recovery",
+      "reason": "skip_irrelevant -- bio_automation has zero face/portrait/person code paths and the real photo library (F:\\Bio) is entirely macro insect/wildlife field-session folders; no mechanism in the pipeline would ever route a photo to a face-restoration model, and the restoration premise (face landmark priors, face codebook) does not apply to arthropod/wildlife subjects regardless."
+    },
+    {
+      "family": "segmentation",
+      "reason": "skip_low_value -- samenc-v1/samdec-v1 are almost certainly vanilla Meta Segment Anything (naming, SAM's fixed 1024x1024 input, ViT-B-class-backbone-vs-tiny-decoder size ratio), not Topaz-proprietary IP worth benchmarking; also no masked-enhancement feature exists yet in this codebase to attach a segmentation model to, and segmentation mask IoU is a different eval axis the two-gate pixel/characterize harness here doesn't cover. If a masked-enhancement step is ever built, go straight to upstream MobileSAM/SAM2 (Apache-2.0, documented) instead of reverse-engineering Topaz's wrapper."
+    }
+  ]
+}

@@ -1,0 +1,596 @@
+[
+  {
+    "obs_id": 272266850,
+    "iconic": "Plantae",
+    "taxon": "Viola sagittata",
+    "common": "Arrowleaf Violet",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-20_DSC_8186-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9423059834392079,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 6783,
+    "height": 4954,
+    "error": null
+  },
+  {
+    "obs_id": 213538458,
+    "iconic": "Plantae",
+    "taxon": "Erigeron philadelphicus",
+    "common": "Philadelphia fleabane",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-04_DSC_6736-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.07294076454293628,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.15705263157894736,
+      0.8477894736842105,
+      0.999859649122807
+    ],
+    "width": 4750,
+    "height": 7125,
+    "error": null
+  },
+  {
+    "obs_id": 222355739,
+    "iconic": "Plantae",
+    "taxon": "Betula",
+    "common": "birches",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-11_DSC_1687-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.24618342667630025,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 273568139,
+    "iconic": "Plantae",
+    "taxon": "Uvularia sessilifolia",
+    "common": "sessile bellwort",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8399-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9692776603546635,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 3848,
+    "height": 3844,
+    "error": null
+  },
+  {
+    "obs_id": 251473576,
+    "iconic": "Plantae",
+    "taxon": "Cichorium intybus",
+    "common": "chicory",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-12_DSC_4101-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.12452936007343197,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.002438528754318228,
+      0.06281991624011168,
+      0.8197520829099777,
+      0.9997673336435552
+    ],
+    "width": 4921,
+    "height": 4298,
+    "error": null
+  },
+  {
+    "obs_id": 215601523,
+    "iconic": "Plantae",
+    "taxon": "Rubus phoenicolasius",
+    "common": "wineberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-13_DSC_7408-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.8082475027707544,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.999833138661772,
+      0.9997496871088861
+    ],
+    "width": 5993,
+    "height": 3995,
+    "error": null
+  },
+  {
+    "obs_id": 241555030,
+    "iconic": "Plantae",
+    "taxon": "Echinacea purpurea",
+    "common": "purple coneflower",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-13_DSC_7900-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.19618360712998018,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.046511627906976744,
+      0.8992248062015504,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 365215010,
+    "iconic": "Plantae",
+    "taxon": "Arisaema triphyllum",
+    "common": "Jack-in-the-Pulpit",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-10_DSC_2714.jpg",
+    "topaz_mask_area_frac": 0.9543170506016766,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 242771928,
+    "iconic": "Plantae",
+    "taxon": "Solidago",
+    "common": "goldenrods",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-19_DSC_8505-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.7981690695560372,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998179832544594,
+      0.9997269997269997
+    ],
+    "width": 5494,
+    "height": 3663,
+    "error": null
+  },
+  {
+    "obs_id": 267040984,
+    "iconic": "Plantae",
+    "taxon": "Hedera helix",
+    "common": "common ivy",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-25_DSC_7167-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9984455455933388,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 247405941,
+    "iconic": "Plantae",
+    "taxon": "Acer saccharum",
+    "common": "sugar maple",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-14_DSC_0175-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9507655241219917,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 212965817,
+    "iconic": "Plantae",
+    "taxon": "Ornithogalum umbellatum",
+    "common": "common star-of-Bethlehem",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-02_DSC_6448-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 2752,
+    "height": 4128,
+    "error": null
+  },
+  {
+    "obs_id": 324164965,
+    "iconic": "Plantae",
+    "taxon": "Lamiaceae",
+    "common": "Mint Family",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-10-29_DSC_0773.jpg",
+    "topaz_mask_area_frac": 0.8744355981062398,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 254567753,
+    "iconic": "Plantae",
+    "taxon": "Celastrus orbiculatus",
+    "common": "Asian bittersweet",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-12-08_DSC_4632-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.4572150266684131,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 266309407,
+    "iconic": "Plantae",
+    "taxon": "Mitchella repens",
+    "common": "partridgeberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-21_DSC_6909-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9868743274799441,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 217409640,
+    "iconic": "Plantae",
+    "taxon": "Sisyrinchium",
+    "common": "blue-eyed grasses",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-21_DSC_8961-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.9999708193195647,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 267122138,
+    "iconic": "Plantae",
+    "taxon": "Viola odorata",
+    "common": "Eurasian Sweet Violet",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-03-26_DSC_7288-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 237736914,
+    "iconic": "Plantae",
+    "taxon": "Potentilla indica",
+    "common": "mock strawberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-08-23_DSC_6492-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.13906213164120784,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9995695221696083,
+      0.9997129735935706
+    ],
+    "width": 2323,
+    "height": 3484,
+    "error": null
+  },
+  {
+    "obs_id": 254567757,
+    "iconic": "Plantae",
+    "taxon": "Lindera benzoin",
+    "common": "northern spicebush",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-12-08_DSC_4635-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.07299157695037858,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.22916666666666666,
+      0.5968386627906976,
+      0.987281976744186
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 273580238,
+    "iconic": "Plantae",
+    "taxon": "Conocephalum salebrosum",
+    "common": "Snakewort",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8637-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 226012671,
+    "iconic": "Plantae",
+    "taxon": "Rubus phoenicolasius",
+    "common": "wineberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-28_DSC_2234-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.8721153868018586,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 4399,
+    "height": 6598,
+    "error": null
+  },
+  {
+    "obs_id": 365215524,
+    "iconic": "Plantae",
+    "taxon": "Sedum",
+    "common": "stonecrops",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-16_DSC_2843.jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 260658873,
+    "iconic": "Plantae",
+    "taxon": "Gaultheria procumbens",
+    "common": "Eastern Teaberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-02-04_DSC_5375-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.2079779008737624,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.26787582839204743,
+      0.17768724537762456,
+      0.9996512033484478,
+      0.9996866186148543
+    ],
+    "width": 2867,
+    "height": 3191,
+    "error": null
+  },
+  {
+    "obs_id": 314351898,
+    "iconic": "Plantae",
+    "taxon": "Erechtites hieraciifolius",
+    "common": "American burnweed",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-09-12_DSC_8917.jpg",
+    "topaz_mask_area_frac": 0.47159126519684064,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.8151647286821705,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 271111811,
+    "iconic": "Plantae",
+    "taxon": "Osmunda",
+    "common": "Royal Ferns",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-17_DSC_8017-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.08306987096065441,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.2611434108527132,
+      0.9998183139534884,
+      0.9998788759689923
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 273580149,
+    "iconic": "Plantae",
+    "taxon": "Potentilla indica",
+    "common": "mock strawberry",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8549-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 228362374,
+    "iconic": "Plantae",
+    "taxon": "Rubus",
+    "common": "brambles",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-08_DSC_2712-Enhanced-NR (2024_07_10 03_46_17 UTC).jpg",
+    "topaz_mask_area_frac": 0.8363012021912182,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 204638428,
+    "iconic": "Plantae",
+    "taxon": "Tussilago farfara",
+    "common": "colt's-foot",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-03-30_DSC_4439-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.9013085868284,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 7021,
+    "height": 4681,
+    "error": null
+  },
+  {
+    "obs_id": 217408839,
+    "iconic": "Plantae",
+    "taxon": "Leucanthemum",
+    "common": "Oxeye Daisies",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-21_DSC_8849-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.0014509356127185866,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.256359011627907,
+      0.29869186046511625,
+      0.7238372093023255,
+      0.3706395348837209
+    ],
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 274121989,
+    "iconic": "Plantae",
+    "taxon": "Viola",
+    "common": "Violets",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-26_DSC_8682-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 1.0,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 219130714,
+    "iconic": "Plantae",
+    "taxon": "Potentilla recta",
+    "common": "sulphur cinquefoil",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-28_DSC_0622-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "topaz_mask_area_frac": 0.6022197255061857,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 229276355,
+    "iconic": "Plantae",
+    "taxon": "Lactuca canadensis",
+    "common": "Canada wild lettuce",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-13_DSC_3598-Enhanced-NR (2024_07_14 20_57_18 UTC).jpg",
+    "topaz_mask_area_frac": 0.5833700638590116,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998421966230078,
+      0.9997633136094675
+    ],
+    "width": 6337,
+    "height": 4225,
+    "error": null
+  },
+  {
+    "obs_id": 248487591,
+    "iconic": "Plantae",
+    "taxon": "Picea",
+    "common": "spruces",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-10-21_DSC_0839-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.9619035873839463,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 5504,
+    "height": 8256,
+    "error": null
+  },
+  {
+    "obs_id": 274122013,
+    "iconic": "Plantae",
+    "taxon": "Anemonoides quinquefolia",
+    "common": "wood anemone",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-26_DSC_8690-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.999130499347902,
+    "topaz_degenerate": true,
+    "topaz_bbox_norm_xyxy": null,
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 279435516,
+    "iconic": "Plantae",
+    "taxon": "Barbarea vulgaris",
+    "common": "garden yellowrocket",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-07_DSC_9701-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.7491092190175996,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.0,
+      0.9998788759689923,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 329900289,
+    "iconic": "Plantae",
+    "taxon": "Liriodendron tulipifera",
+    "common": "American tuliptree",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-11-18_DSC_1114.jpg",
+    "topaz_mask_area_frac": 0.08064131653371191,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.05450581395348837,
+      0.203125,
+      0.7010658914728682,
+      0.9998183139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  },
+  {
+    "obs_id": 252100326,
+    "iconic": "Plantae",
+    "taxon": "Ageratina",
+    "common": "snakeroots",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-17_DSC_4168-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "topaz_mask_area_frac": 0.42919590326315443,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.0,
+      0.2343409915356711,
+      0.9998285910181693,
+      0.999758162031439
+    ],
+    "width": 5834,
+    "height": 4135,
+    "error": null
+  },
+  {
+    "obs_id": 310843797,
+    "iconic": "Plantae",
+    "taxon": "Erigeron",
+    "common": "fleabanes and horseweeds",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-08-29_DSC_7832.jpg",
+    "topaz_mask_area_frac": 0.006266144002388678,
+    "topaz_degenerate": false,
+    "topaz_bbox_norm_xyxy": [
+      0.43519864341085274,
+      0.3938953488372093,
+      0.5798207364341085,
+      0.6013808139534884
+    ],
+    "width": 8256,
+    "height": 5504,
+    "error": null
+  }
+]
