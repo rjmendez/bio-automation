@@ -1292,7 +1292,17 @@ def cmd_review_console(args: argparse.Namespace) -> int:
     return 0
 
 
+def tolerate_console_encoding() -> None:
+    """A Windows console in cp1252 raised UnicodeEncodeError on the first emoji of a draft (`bio social-list`): print what the console cannot show as "?"."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass                                                # not a text stream that can be reconfigured (a test capture, a pipe object)
+
+
 def main() -> int:
+    tolerate_console_encoding()
     parser = build_parser()
     args = parser.parse_args()
     from . import social_hooks
