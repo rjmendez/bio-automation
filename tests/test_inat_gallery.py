@@ -226,3 +226,65 @@ class TestCli:
         assert (out["linked"], out["queue_entries_without_a_copy"], out["refused"]) == (1, 1, {})
         assert (gallery / "inat-pending/Fungi/g0001_Amanita-muscaria_a80/a.jpg").exists()
         assert out["reindex_message"] == 1
+
+
+class TestQueuePrefix:
+    def test_the_prefix_replaces_the_g_in_the_group_folder_and_g_stays_the_default(self):
+        s = sug("Fungi", 0.9, "Amanita muscaria", 0.62)
+        assert group_folder(7, s, prefix="e") == "inat-pending/Fungi/e0007_Amanita-muscaria_a62"
+        assert group_folder(7, s) == "inat-pending/Fungi/g0007_Amanita-muscaria_a62"
+
+    def test_plan_uses_the_prefix_for_every_folder(self, tmp_path):
+        a = _copy(tmp_path, "a.jpg")
+        links, _ = plan([{"group": 3, "copy": a}], {}, prefix="e")
+        assert links == {"inat-pending/Unsure/e0003/a.jpg": a}
+
+    def test_a_prefix_must_be_one_lower_case_letter(self):
+        for bad in ("", "E", "ab", "1", "-", None):
+            with pytest.raises(GalleryLinkError, match=r"must be a single lower-case letter"):
+                inat_gallery.check_prefix(bad)
+        assert [inat_gallery.check_prefix(p) for p in ("g", "e", "z")] == ["g", "e", "z"]
+
+    def test_each_prefix_has_its_own_manifest_and_g_keeps_the_original_name(self):
+        assert inat_gallery.manifest_name("g") == "inat_gallery_manifest.json"
+        assert inat_gallery.manifest_name("e") == "inat_gallery_manifest_e.json"
+
+    def test_pruning_one_queue_leaves_the_other_queues_links_alone(self, tmp_path, env):
+        gallery, _, q = env
+        a, b = _copy(tmp_path, "a.jpg", b"AA"), _copy(tmp_path, "b.jpg", b"BB")
+        man_g, man_e = tmp_path / "state" / "g.json", tmp_path / "state" / "e.json"
+        apply({"inat-pending/Unsure/g0001/a.jpg": a}, gallery, man_g, queue=q)
+        apply({"inat-pending/Unsure/e0001/b.jpg": b}, gallery, man_e, queue=q)
+        r = apply({}, gallery, man_e, queue=q)                               # the e queue empties out: its link goes, the g queue's stays
+        assert r["removed"] == 1
+        assert (gallery / "inat-pending/Unsure/g0001/a.jpg").exists() and not (gallery / "inat-pending/Unsure/e0001/b.jpg").exists()
+
+    def test_one_shared_manifest_would_prune_the_other_queue_which_is_why_the_manifests_are_separate(self, tmp_path, env):
+        gallery, _, q = env
+        a, b = _copy(tmp_path, "a.jpg", b"AA"), _copy(tmp_path, "b.jpg", b"BB")
+        shared = tmp_path / "state" / "shared.json"
+        apply({"inat-pending/Unsure/g0001/a.jpg": a}, gallery, shared, queue=q)
+        apply({"inat-pending/Unsure/e0001/b.jpg": b}, gallery, shared, queue=q)     # same manifest: the g link is not in this plan
+        assert not (gallery / "inat-pending/Unsure/g0001/a.jpg").exists()
+
+    def _argv(self, tmp_path, prefix):
+        q, s = TestCli()._files(tmp_path)
+        return ["bio", "inat-gallery", "--queue", str(q), "--suggestions", str(s), "--gallery-dir", str(tmp_path / "gal"),
+                "--queue-db", str(tmp_path / "q.sqlite3"), "--prefix", prefix]
+
+    def test_the_cli_names_folders_with_the_prefix_and_writes_that_queues_own_manifest(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "gal").mkdir()
+        monkeypatch.setattr(cli.settings, "CACHE_DIR", tmp_path / "cache")
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "e"))
+        assert cli.main() == 0
+        assert json.loads(capsys.readouterr().out)["linked"] == 1
+        assert (tmp_path / "gal/inat-pending/Fungi/e0001_Amanita-muscaria_a80/a.jpg").exists()
+        assert sorted(p.name for p in (tmp_path / "cache" / "state").iterdir()) == ["inat_gallery_manifest_e.json"]
+
+    def test_the_cli_refuses_a_bad_prefix_before_touching_anything(self, tmp_path, monkeypatch):
+        (tmp_path / "gal").mkdir()
+        monkeypatch.setattr(cli.settings, "CACHE_DIR", tmp_path / "cache")
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "E"))
+        with pytest.raises(GalleryLinkError, match=r"folder prefix 'E' must be a single lower-case letter"):
+            cli.main()
+        assert list((tmp_path / "gal").iterdir()) == [] and not (tmp_path / "cache").exists()
