@@ -1,0 +1,692 @@
+[
+  {
+    "obs_id": 233517195,
+    "taxon": "Aceria",
+    "common": null,
+    "observed_on": "2024-08-03",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-08-03_DSC_5710.jpg",
+    "title": "Gall and Rust Mites in forest floor",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.512476921081543
+  },
+  {
+    "obs_id": 248910528,
+    "taxon": "Aculus tetanothrix",
+    "common": "Willow Bead Gall Mite",
+    "observed_on": "2024-10-24",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2024-10-24_DSC_1022-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Willows on branch",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7488343715667725
+  },
+  {
+    "obs_id": 284698488,
+    "taxon": "Anyphaena",
+    "common": null,
+    "observed_on": "2025-05-20",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-20_DSC_1766-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Ghost Spiders on white surface with moss",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.12040627002716064
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.11825525015592575
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.4202754497528076
+  },
+  {
+    "obs_id": 229276510,
+    "taxon": "Anyphaeninae",
+    "common": null,
+    "observed_on": "2024-07-13",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-13_DSC_3919-Enhanced-NR (2024_07_14 20_57_18 UTC).jpg",
+    "title": "Ghost Spiders in woodland",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.015601595863699913
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.01533342245966196
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5453665256500244
+  },
+  {
+    "obs_id": 273567961,
+    "taxon": "Araneae",
+    "common": "Spiders",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8304-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Spiders on wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7907261848449707
+  },
+  {
+    "obs_id": 255800260,
+    "taxon": "Araneidae",
+    "common": "Orbweavers",
+    "observed_on": "2024-12-20",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-12-20_DSC_4926-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Orbweavers on moss",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.94140625,
+        "mask_area_frac": 0.006476684007793665
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.95703125,
+        "mask_area_frac": 0.0064555504359304905
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.45207834243774414
+  },
+  {
+    "obs_id": 295362004,
+    "taxon": "Araneinae",
+    "common": "Typical Orbweavers",
+    "observed_on": "2025-07-02",
+    "path": "F:\\Bio-export\\adobe-stock\\_needs_review\\2025-07-02_DSC_5639.jpg",
+    "title": "Typical Orbweavers",
+    "manifest": "manifest.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.94140625,
+        "mask_area_frac": 0.002711394801735878
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.953125,
+        "mask_area_frac": 0.002690772758796811
+      }
+    },
+    "error": null,
+    "elapsed_s": 2.6100893020629883
+  },
+  {
+    "obs_id": 280792582,
+    "taxon": "Araneoidea",
+    "common": "Orbweavers and Allies",
+    "observed_on": "2025-05-12",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-12_DSC_9857-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Orbweavers and Allies in forest floor",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.008400501683354378
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.96484375,
+        "mask_area_frac": 0.00822608731687069
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5356235504150391
+  },
+  {
+    "obs_id": 244997472,
+    "taxon": "Araneus marmoreus",
+    "common": "Marbled Orbweaver",
+    "observed_on": "2024-09-30",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-30_DSC_9739-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Marbled Orbweaver on web",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.9453125,
+        "mask_area_frac": 0.014207790605723858
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.88671875,
+        "mask_area_frac": 0.014136350713670254
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7345471382141113
+  },
+  {
+    "obs_id": 243909283,
+    "taxon": "Araneus pegnia",
+    "common": "Butterfly Orbweaver",
+    "observed_on": "2024-09-24",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-24_DSC_9315-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Butterfly Orbweaver on web",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.019331013783812523
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.019190948456525803
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6755409240722656
+  },
+  {
+    "obs_id": 241575571,
+    "taxon": "Araneus thaddeus",
+    "common": "Lattice Orbweaver",
+    "observed_on": "2024-09-12",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-12_DSC_7905-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Angulate and Roundshouldered Orbweavers on web",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.04979022592306137
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.9765625,
+        "mask_area_frac": 0.049050357192754745
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5370707511901855
+  },
+  {
+    "obs_id": 217411291,
+    "taxon": "Araniella displicata",
+    "common": "Six-spotted Orbweaver",
+    "observed_on": "2024-05-21",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-21_DSC_9042 (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Six-spotted Orbweaver on human hand",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.025096701458096504
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.024796584621071815
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.4456205368041992
+  },
+  {
+    "obs_id": 242775568,
+    "taxon": "Argiope aurantia",
+    "common": "Yellow Garden Spider",
+    "observed_on": "2024-09-19",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-09-19_DSC_8704-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Yellow Garden Spider on web",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.97265625,
+        "mask_area_frac": 0.007079639937728643
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.96875,
+        "mask_area_frac": 0.007009594235569239
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.681347131729126
+  },
+  {
+    "obs_id": 281385158,
+    "taxon": "Bassaniana versicolor",
+    "common": "Multicolored Bark Crab Spider",
+    "observed_on": "2025-05-15",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-15_DSC_0112-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Crab Spiders on wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.96875,
+        "mask_area_frac": 0.0024679461494088173
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.96875,
+        "mask_area_frac": 0.0024620923213660717
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.324251651763916
+  },
+  {
+    "obs_id": 231205368,
+    "taxon": "Callidosomatinae",
+    "common": null,
+    "observed_on": "2024-07-22",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-22_DSC_4471-Enhanced-NR (2024_08_13 19_33_25 UTC).jpg",
+    "title": "Trombidiform Mites on metal",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.94921875,
+        "mask_area_frac": 0.00523779122158885
+      },
+      "arachnid": {
+        "n_instances": 2,
+        "top_score": 0.96875,
+        "mask_area_frac": 0.005184866487979889
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.45429325103759766
+  },
+  {
+    "obs_id": 220674448,
+    "taxon": "Coriarachnini",
+    "common": null,
+    "observed_on": "2024-06-04",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-04_DSC_0982-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Crab Spiders on painted wall",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.98828125,
+        "mask_area_frac": 0.016958661377429962
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.984375,
+        "mask_area_frac": 0.01679084822535515
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.514005184173584
+  },
+  {
+    "obs_id": 273568221,
+    "taxon": "Cyclosa conica",
+    "common": "Conical Trashline Orbweaver",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8493-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Conical Trashline Orbweaver on thread",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.9296875,
+        "mask_area_frac": 0.006803169380873442
+      },
+      "arachnid": {
+        "n_instances": 2,
+        "top_score": 0.9375,
+        "mask_area_frac": 0.0067745656706392765
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5979626178741455
+  },
+  {
+    "obs_id": 204185905,
+    "taxon": "Demodex folliculorum",
+    "common": "Human Follicle Mite",
+    "observed_on": "2024-03-27",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-03-27_DSC_4304-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Human Follicle Mite on wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7557435035705566
+  },
+  {
+    "obs_id": 203387372,
+    "taxon": "Dendryphantina",
+    "common": null,
+    "observed_on": "2024-03-20",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-03-20_2024-03-21-02.17.38 ZS retouched (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Typical Jumping Spiders on wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.95703125,
+        "mask_area_frac": 0.03255818784236908
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.03246272727847099
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.42516589164733887
+  },
+  {
+    "obs_id": 222732347,
+    "taxon": "Dermacentor variabilis",
+    "common": "American Dog Tick",
+    "observed_on": "2024-06-14",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-14_DSC_1717-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "American Dog Tick on hand",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.81640625,
+        "mask_area_frac": 0.0026530211325734854
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.960796594619751
+  },
+  {
+    "obs_id": 393085745,
+    "taxon": "Dictynidae",
+    "common": "Meshweavers",
+    "observed_on": "2026-06-09",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-06-09_DSC_3284.jpg",
+    "title": "Long-legged Flies in woodland",
+    "manifest": "manifest.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.8179459571838379
+  },
+  {
+    "obs_id": 251361792,
+    "taxon": "Dolomedes albineus",
+    "common": "White-banded Fishing Spider",
+    "observed_on": "2024-11-11",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-11-11_DSC_3979-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "White-banded Fishing Spider on wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.07432056218385696
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.95703125,
+        "mask_area_frac": 0.07328706234693527
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5049412250518799
+  },
+  {
+    "obs_id": 216751096,
+    "taxon": "Dolomedes tenebrosus",
+    "common": "Dark Fishing Spider",
+    "observed_on": "2024-05-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-05-18_DSC_7978-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Dark Fishing Spider in meadow",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.953125,
+        "mask_area_frac": 0.018891911953687668
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.94921875,
+        "mask_area_frac": 0.01860826089978218
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.5237996578216553
+  },
+  {
+    "obs_id": 230586672,
+    "taxon": "Elaver excepta",
+    "common": "White sac spider",
+    "observed_on": "2024-07-18",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-07-18_DSC_4222-Enhanced-NR (2024_08_13 19_33_25 UTC).jpg",
+    "title": "Sac Spiders on white painted wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.98046875,
+        "mask_area_frac": 0.019449306651949883
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.984375,
+        "mask_area_frac": 0.019223595038056374
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.6272804737091064
+  },
+  {
+    "obs_id": 280792591,
+    "taxon": "Eriophyes cerasicrumena",
+    "common": "Black Cherry Leaf Gall Mite",
+    "observed_on": "2025-05-12",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-12_DSC_9868-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Chironomus Group in woodland",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7871768474578857
+  },
+  {
+    "obs_id": 365214986,
+    "taxon": "Eriophyinae",
+    "common": null,
+    "observed_on": "2026-05-10",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2026-05-10_DSC_2691.jpg",
+    "title": "Gall and Rust Mites in forest floor",
+    "manifest": "manifest.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      },
+      "arachnid": {
+        "n_instances": 0,
+        "top_score": 0.0,
+        "mask_area_frac": 0.0
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.7467067241668701
+  },
+  {
+    "obs_id": 209181494,
+    "taxon": "Eris",
+    "common": null,
+    "observed_on": "2024-04-23",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-04-23_DSC_6095-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Typical Jumping Spiders on wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.96875,
+        "mask_area_frac": 0.021883800625801086
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.97265625,
+        "mask_area_frac": 0.021815575659275055
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.4678635597229004
+  },
+  {
+    "obs_id": 273568116,
+    "taxon": "Eris militaris",
+    "common": "Bronze Jumping Spider",
+    "observed_on": "2025-04-25",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-04-25_DSC_8380-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Bronze Jumping Spider on wood",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.96484375,
+        "mask_area_frac": 0.08282490819692612
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.96484375,
+        "mask_area_frac": 0.08201409131288528
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.48799681663513184
+  },
+  {
+    "obs_id": 281656204,
+    "taxon": "Eustala",
+    "common": null,
+    "observed_on": "2025-05-16",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2025-05-16_DSC_0592-Enhanced-NR (2025_06_03 19_23_22 UTC).jpg",
+    "title": "Typical Orbweavers on web",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.95703125,
+        "mask_area_frac": 0.005473952274769545
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.9609375,
+        "mask_area_frac": 0.005452429875731468
+      }
+    },
+    "error": null,
+    "elapsed_s": 1.6369373798370361
+  },
+  {
+    "obs_id": 222040190,
+    "taxon": "Florinda coccinea",
+    "common": "Black-tailed Red Sheetweaver",
+    "observed_on": "2024-06-10",
+    "path": "F:\\Bio-export\\adobe-stock\\ready\\2024-06-10_DSC_1721-Enhanced-NR (2024_07_02 04_42_56 UTC).jpg",
+    "title": "Black-tailed Red Sheetweaver on web",
+    "manifest": "manifest_nas.csv",
+    "prompts": {
+      "spider": {
+        "n_instances": 1,
+        "top_score": 0.953125,
+        "mask_area_frac": 0.0036538306158035994
+      },
+      "arachnid": {
+        "n_instances": 1,
+        "top_score": 0.9375,
+        "mask_area_frac": 0.003611181164160371
+      }
+    },
+    "error": null,
+    "elapsed_s": 0.457061767578125
+  }
+]
