@@ -172,7 +172,7 @@ OBSERVATION on the pooled probability). `inat_suggest.py` (env `BIO_QUEUE_TAG`) 
 bins, and never overwrites with an empty result. **The measured accuracies are optimistic for the backlog**: they come from observations the owner already
 posted and had identified; `taxon_zeroshot.py calibrate` therefore scores the observations posted since the last calibration on their own and prints
 `DRIFT` lines where the old numbers were too good. `bio inat-gallery --queue ... --suggestions ... --prefix <letter>` hardlinks the proposed upload copies
-into the gallery as `inat-pending/<iconic>/<prefix><group>[_Species_a<accuracy%>]/` (outside `<year>/<year-month>`, which the Bluesky poster reads; one
+into the gallery as `inat-pending/<iconic>/<prefix><group>[_Species_a<accuracy%>]/` (a species is named only at a measured accuracy of at least `--min-accuracy`, default 0.75: the owner's choice 2026-10-24, after the first out-of-sample check found the middle bins about 0.14 too optimistic) (outside `<year>/<year-month>`, which the Bluesky poster reads; one
 prefix and one manifest per queue so pruning never touches another queue; `g` = LightCraft queue `_lc`, `e` = exported-files queue `_ex`, whose copies were
 regenerated onto `D:\bio-cache\inat-upload-regen` into the derived `inat_queue_ex.json`; the original `inat_queue.json` is never modified). The copies
 carry GPS EXIF by design (upload copies). `pipeline/stages/suggest_refresh.py` is the one entry point (config `suggest_refresh.json`, stops at the first
