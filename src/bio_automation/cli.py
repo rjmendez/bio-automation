@@ -229,8 +229,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_inat_gallery.add_argument("--queue", required=True, help="the proposed-observations queue json (inat_queue<TAG>.json)")
     p_inat_gallery.add_argument("--suggestions", required=True, help="inat_suggestions<TAG>.json written by inat_suggest.py")
     p_inat_gallery.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
-    p_inat_gallery.add_argument("--manifest", default=str(settings.CACHE_DIR / "state" / "inat_gallery_manifest.json"),
-                                help="the links this command made (only these are ever pruned)")
+    p_inat_gallery.add_argument("--manifest", default=None,
+                                help="the links this command made (only these are ever pruned); default: <cache>/state/inat_gallery_manifest[_<prefix>].json")
+    p_inat_gallery.add_argument("--prefix", default="g",
+                                help="one lower-case letter naming this queue's folders (g<group> for the LightCraft queue, e<group> for the exported-files queue) so two queues never share a folder or a manifest")
     p_inat_gallery.add_argument("--min-share", type=float, default=0.5, help="nearest-neighbour vote share an iconic group needs to name a folder when no species is named")
     p_inat_gallery.add_argument("--min-accuracy", type=float, default=0.6, help="measured accuracy (nearest-neighbour or zero-shot, whichever is better calibrated) a species needs to be named in a folder name")
     p_inat_gallery.add_argument("--no-prune", action="store_true", help="keep links the plan no longer contains")
@@ -738,7 +740,9 @@ def cmd_inat_gallery(args: argparse.Namespace) -> int:
 
     queue = json.load(open(args.queue, encoding="utf-8"))
     suggestions = json.load(open(args.suggestions, encoding="utf-8"))
-    links, skipped = inat_gallery.plan(queue, suggestions, args.min_share, args.min_accuracy)
+    prefix = inat_gallery.check_prefix(args.prefix)
+    manifest = Path(args.manifest) if args.manifest else settings.CACHE_DIR / "state" / inat_gallery.manifest_name(prefix)
+    links, skipped = inat_gallery.plan(queue, suggestions, args.min_share, args.min_accuracy, prefix)
     if args.dry_run:
         folders = sorted({rel.rsplit("/", 1)[0] for rel in links})
         print(json.dumps({"would_link": len(links), "folders": len(folders), "queue_entries_without_a_copy": len(skipped)}, indent=2))
@@ -749,7 +753,7 @@ def cmd_inat_gallery(args: argparse.Namespace) -> int:
 
         q = Queue(Path(args.queue_db)) if args.queue_db else Queue()
     try:
-        result = inat_gallery.apply(links, Path(args.gallery_dir), Path(args.manifest), queue=q, prune=not args.no_prune)
+        result = inat_gallery.apply(links, Path(args.gallery_dir), manifest, queue=q, prune=not args.no_prune)
     finally:
         if q is not None:
             q.close()
