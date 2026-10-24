@@ -819,11 +819,47 @@ def format_date(observed_on: str | None) -> str | None:
     return f"{d.strftime('%B')} {d.day}, {d.year}"
 
 
+# Owner rule (2026-10-24): a post is only ever as specific as the county. "Lancaster County, PA, USA" is shown as it is; "Mill Creek Township, Lancaster
+# County, PA, USA" and "Reinholds, PA, USA" lose everything finer than the county.
+US_STATES = frozenset(
+    "alabama,alaska,arizona,arkansas,california,colorado,connecticut,delaware,florida,georgia,hawaii,idaho,illinois,indiana,iowa,kansas,kentucky,"
+    "louisiana,maine,maryland,massachusetts,michigan,minnesota,mississippi,missouri,montana,nebraska,nevada,new hampshire,new jersey,new mexico,"
+    "new york,north carolina,north dakota,ohio,oklahoma,oregon,pennsylvania,rhode island,south carolina,south dakota,tennessee,texas,utah,vermont,"
+    "virginia,washington,west virginia,wisconsin,wyoming,district of columbia,"
+    "al,ak,az,ar,ca,co,ct,de,fl,ga,hi,id,il,in,ia,ks,ky,la,me,md,ma,mi,mn,ms,mo,mt,ne,nv,nh,nj,nm,ny,nc,nd,oh,ok,or,pa,ri,sc,sd,tn,tx,ut,vt,va,wa,wv,wi,wy,dc".split(","))
+COUNTRIES = frozenset(("us", "usa", "u.s.", "u.s.a.", "united states", "united states of america", "canada", "ca", "mexico", "mx"))
+COUNTY_WORDS = frozenset(("county", "parish"))          # not "borough": in Pennsylvania a borough is a town, finer than the county
+
+
+def _county_part(part: str) -> bool:
+    words = part.split()
+    return len(words) >= 2 and words[-1].casefold() in COUNTY_WORDS
+
+
+def _state_or_country(part: str) -> bool:
+    return part.strip().casefold() in US_STATES or part.strip().casefold() in COUNTRIES
+
+
+def county_level(place_guess: str | None) -> str | None:
+    """The place name cut back to the county: from the first "<Name> County" (or Parish) part to the end; with no county part, the trailing state and
+    country parts only; None when nothing that coarse can be told (an unknown place is shown as no place, never as a guess)."""
+    parts = [x.strip() for x in (place_guess or "").split(",") if x.strip()]
+    for i, part in enumerate(parts):
+        if _county_part(part):
+            return ", ".join(parts[i:])
+    keep: list[str] = []
+    for part in reversed(parts):
+        if not _state_or_country(part):
+            break
+        keep.insert(0, part)
+    return ", ".join(keep) or None
+
+
 def public_place(obs: dict) -> str | None:
-    """iNat's public place guess; nothing for a private-geoprivacy observation."""
+    """The place a post may show: iNat's place guess cut back to the county (county_level); nothing for a private-geoprivacy observation."""
     if obs.get("geoprivacy") == "private":
         return None
-    return (obs.get("place_guess") or "").strip() or None
+    return county_level(obs.get("place_guess"))
 
 
 def display_name(taxon: dict) -> str:
@@ -935,12 +971,12 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
         name = f"{i}.jpg"
         info = prepare_image(src, out / name)
         label = read_label(src)
-        shown = label
-        if rules.on("alt_text_privacy") and social_gates.location_hidden(obs):
-            shown = social_gates.label_without_place(label, obs)         # a hidden place must not reach the vision model through the Stock label
+        guard = rules.on("alt_text_privacy")
+        shown = social_gates.label_without_place(label, obs) if guard else label     # the Stock label's places are finer than the county: they never reach the vision model
+        hidden = guard and social_gates.location_hidden(obs)
         context = {"common_name": taxon.get("preferred_common_name") or taxon.get("common_name"), "scientific_name": taxon.get("name"),
                    "rank": taxon.get("rank"), "grade": GRADE_TEXT.get(grade or "", grade), "observed_on": format_date(obs.get("observed_on")),
-                   "place": None if shown is not label else public_place(obs), "title": shown.get("title"), "caption": shown.get("caption"),
+                   "place": None if hidden else public_place(obs), "title": shown.get("title"), "caption": shown.get("caption"),
                    "keywords": shown.get("keywords")}
         if style is not None:
             subject = " ".join(x for x in (context["common_name"], context["scientific_name"], shown.get("title"),

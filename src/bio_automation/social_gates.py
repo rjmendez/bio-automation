@@ -54,7 +54,7 @@ COMMON_WORDS = frozenset({"black", "white", "red", "green", "blue", "yellow", "b
 SEASON_WORDS = frozenset({"spring", "summer", "fall", "autumn", "winter"})
 HIDING = ("private", "obscured-private", "obscured")  # geoprivacy / taxon_geoprivacy values under which the true (or even a general) place is not for the text
 TAXON_HIDING = HIDING                                 # kept as a name: a taxon-obscured observation's coordinates must not leak either
-LEAK_COORDINATES, LEAK_ADDRESS, LEAK_PLACE = "coordinates", "street address", "hidden place name"
+LEAK_COORDINATES, LEAK_ADDRESS, LEAK_PLACE = "coordinates", "street address", "place finer than the county"
 
 
 def _normalise(text: str) -> str:
@@ -113,12 +113,14 @@ def label_places(label: dict | None) -> list[str]:
 
 
 def forbidden_tokens(obs: dict, label: dict | None = None) -> list[str]:
-    """The place words an alt text must not carry for an observation whose location is hidden: the iNat place guess, the place text the
-    draft shows, and the place in the Stock label (title context, caption)."""
+    """The place words a post or an alt text must not carry (owner rule 2026-10-24: never more specific than the county): the words of the iNat
+    place guess and of the place in the Stock label (title context, caption), except the ones of the place a post may show (social.public_place:
+    the county, state and country). For a private observation that place is None, so every place word is forbidden."""
+    allowed = {_fold(t) for t in place_tokens(social.public_place(obs))}
     out: list[str] = []
-    for phrase in [obs.get("place_guess"), social.public_place(obs), *label_places(label)]:
+    for phrase in [obs.get("place_guess"), *label_places(label)]:
         for t in place_tokens(phrase):
-            if _fold(t) not in [_fold(o) for o in out]:
+            if _fold(t) not in allowed and _fold(t) not in [_fold(o) for o in out]:
                 out.append(t)
     return out
 
@@ -134,20 +136,19 @@ def label_without_place(label: dict, obs: dict) -> dict:
 
 
 def alt_leaks(alt: str, obs: dict, label: dict | None = None) -> list[str]:
-    """The KINDS of leak in the alt text ([] = clean): "coordinates", "street address", "hidden place name". Never the leaked text itself
-    (reasons land in the audit log, social.log, the digest and the backups)."""
+    """The KINDS of leak in the text ([] = clean): "coordinates", "street address", "place finer than the county". Never the leaked text itself
+    (reasons land in the audit log, social.log, the digest and the backups). The place check applies to every observation, hidden or not."""
     found = []
     if has_coordinates(alt):
         found.append(LEAK_COORDINATES)
     if ADDRESS.search(_normalise(alt)):
         found.append(LEAK_ADDRESS)
-    if location_hidden(obs):
-        tokens = {_fold(t): t for t in forbidden_tokens(obs, label)}
-        for w in re.findall(r"[^\W_]+", alt):
-            key = _fold(w)
-            if key in tokens and (w[0].isupper() or key not in COMMON_WORDS):
-                found.append(LEAK_PLACE)
-                break
+    tokens = {_fold(t): t for t in forbidden_tokens(obs, label)}
+    for w in re.findall(r"[^\W_]+", alt):
+        key = _fold(w)
+        if key in tokens and (w[0].isupper() or key not in COMMON_WORDS):
+            found.append(LEAK_PLACE)
+            break
     return found
 
 
@@ -306,7 +307,8 @@ def live_recheck(ctx: dict) -> Verdict | None:
         if obs_id in fetched and obs_id in observed:
             leaks = _fresh_alt_leaks(image.get("alt") or "", observed[obs_id], fetched[obs_id])
             if leaks:
-                return Verdict("withdraw", f"alt text of image {i} leaks {'; '.join(leaks)} now that observation {obs_id} hides its location")
+                since = f" now that observation {obs_id} hides its location" if location_hidden(fetched[obs_id]) else ""
+                return Verdict("withdraw", f"alt text of image {i} leaks {'; '.join(leaks)}{since}")
     if count and _unavailable_in_run(audit, count) >= UNAVAILABLE_BLOCK_AFTER:
         return Verdict("block", f"iNat could not be asked about {_unavailable_in_run(audit, count)} observations in this run "
                                 f"(limit {UNAVAILABLE_BLOCK_AFTER}); the live recheck cannot vouch for the draft, nothing is sent")
