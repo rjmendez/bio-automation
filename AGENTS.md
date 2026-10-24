@@ -127,8 +127,13 @@ names ~5 s). Caddyfile has MIXED newlines (LF + one trailing CRLF): never assume
 owner's photos from the CURRENT month of every year in the gallery (`<year>/<year>-<MM>/`), one iNat observation per post,
 gallery renders only (never iNat's 2048 px copies). Alt text comes from the LOCAL vision model (env `BIO_VISION_MODEL`, else
 the pool's `vision` role; never a literal model name), given the embedded Stock label and the live observation; GPU only.
-**Every post is approved by the owner** (`bio social-approve`); nothing auto-approves, and a draft edited after approval needs a
-new approval. `bio social-post` is dry-run unless `--live`, posts at most `BIO_SOCIAL_POSTS_PER_DAY` a day, and a send that
+**Posts are approved by rule, not one by one (corrected 2026-10-24):** the rule `auto_approve` (ON by default, `bio social-rules`) lets a
+scheduled run approve the oldest drafted draft itself when none is approved, so the 08:00, 12:00 and 20:00 posts go out without a per-draft
+review; switch it off to require `bio social-approve` for every post. A draft edited after approval needs a new approval either way.
+**A post is never more specific than the county (owner, 2026-10-24):** the place line is `social.county_level(place_guess)` ("Lancaster County,
+PA, USA"; a town or a game land is cut back to "PA, USA"; a place that cannot be placed that coarsely is left out), the gate refuses alt text or
+post text that carries any place word finer than the county for EVERY observation (a private one may carry no place at all, the county included),
+and `social_live_audit` applies the same check to the public posts. Drafts written before the rule had their place line rewritten. `bio social-post` is dry-run unless `--live`, posts at most `BIO_SOCIAL_POSTS_PER_DAY` a day, and a send that
 raised leaves the draft `posting`, which blocks all posting until the owner checks the profile and runs `bio social-resolve`
 (never resend on a guess). Never print a private-geoprivacy place. Alt text follows the owner's own style
 (`bio social-style` -> `settings.SOCIAL_STYLE_PROFILE`, learned from alt texts they wrote on Bluesky, inat_skeet bot posts
