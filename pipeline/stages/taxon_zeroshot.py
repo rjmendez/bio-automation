@@ -14,7 +14,9 @@ import csv
 import io
 import json
 import os
+import shutil
 import sys
+import time
 import zipfile
 
 import numpy as np
@@ -151,14 +153,37 @@ def measured(prob, bins):
     return None
 
 
-def calibrate(index_dir, collection_vectors, scale, torch_mod, device, out_path, top_k=5):
-    """collection_vectors: [(vector, payload)] of the labelled iNat photos (species rank only are scored). Writes the observation-level bins JSON."""
+def drift_warnings(old_bins, recent_bins, min_n=10, tolerance=0.10):
+    """One line for each probability bin where the accuracy measured on observations posted SINCE the last calibration is worse than the old calibration
+    said by more than *tolerance* (both bins need *min_n* observations to count): the old numbers were optimistic there."""
+    out = []
+    for o, r in zip(old_bins, recent_bins):
+        if o['accuracy'] is None or r['accuracy'] is None or o['n'] < min_n or r['n'] < min_n:
+            continue
+        if o['accuracy'] - r['accuracy'] > tolerance:
+            out.append(f"pooled p {o['lo']:.1f}-{min(o['hi'], 1):.1f}: calibrated {o['accuracy']:.2f}, but {r['accuracy']:.2f} on {r['n']} newly posted observations")
+    return out
+
+
+def calibrate(index_dir, collection_vectors, scale, torch_mod, device, out_path, top_k=5, prev_path=None):
+    """collection_vectors: [(vector, payload)] of the labelled iNat photos (species rank only are scored). Writes the observation-level bins JSON, with the
+    highest observation id seen. When *prev_path* is an earlier calibration that has one, the observations posted since (a higher id) are scored on their own:
+    zero-shot never used those photos, so this is an out-of-sample test of the earlier bins, written as "recent" with its drift warnings."""
     rows = [(v, p) for v, p in collection_vectors if p.get('rank') == 'species' and p.get('taxon')]
     zs = ZeroShot(index_dir, torch_mod, device)
     per_photo = zs.predict(np.array([v for v, _ in rows], dtype=np.float32), scale, top_k=top_k)
-    bins = observation_bins(per_photo, [p['obs_id'] for _, p in rows], [p['taxon'] for _, p in rows])
+    obs_ids, names = [p['obs_id'] for _, p in rows], [p['taxon'] for _, p in rows]
+    bins = observation_bins(per_photo, obs_ids, names)
     meta = json.load(open(os.path.join(index_dir, 'meta.json'), encoding='utf-8'))
-    _write_json(out_path, {'index': meta, 'scale': scale, 'photos': len(rows), 'observations': sum(b['n'] for b in bins), 'bins': bins})
+    result = {'index': meta, 'scale': scale, 'photos': len(rows), 'observations': sum(b['n'] for b in bins), 'bins': bins,
+              'max_obs_id': max(obs_ids, default=0), 'generated_at': time.strftime('%Y-%m-%dT%H:%M:%S')}
+    prev = json.load(open(prev_path, encoding='utf-8')) if prev_path and os.path.exists(prev_path) else None
+    if prev and prev.get('max_obs_id'):
+        new = [i for i, o in enumerate(obs_ids) if o > prev['max_obs_id']]
+        recent = observation_bins([per_photo[i] for i in new], [obs_ids[i] for i in new], [names[i] for i in new])
+        result['recent'] = {'since_obs_id': prev['max_obs_id'], 'photos': len(new), 'observations': sum(b['n'] for b in recent), 'bins': recent,
+                            'warnings': drift_warnings(prev['bins'], recent)}
+    _write_json(out_path, result)
     return bins
 
 
@@ -186,9 +211,17 @@ def main():
                 break
         root = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
         out = os.path.join(root, 'zeroshot_bins.json')
-        bins = calibrate(CFG['bioclip']['zeroshot_index'], pts, emb.logit_scale(), torch, emb.device, out)
+        prev = out + '.prev'
+        if os.path.exists(out):
+            shutil.copyfile(out, prev)                              # the earlier calibration, for the drift check; the live file stays valid until replaced
+        bins = calibrate(CFG['bioclip']['zeroshot_index'], pts, emb.logit_scale(), torch, emb.device, out, prev_path=prev)
         for b in bins:
             print(f'  pooled p {b["lo"]:.1f}-{min(b["hi"], 1):.1f}: n={b["n"]:4d}  correct {b["accuracy"]}', flush=True)
+        recent = json.load(open(out, encoding='utf-8')).get('recent')
+        if recent:
+            print(f'  newly posted since observation {recent["since_obs_id"]}: {recent["observations"]} observations', flush=True)
+            for w in recent['warnings']:
+                print('  DRIFT:', w, flush=True)
         print('->', out, flush=True)
     else:
         raise SystemExit(__doc__)

@@ -26,6 +26,19 @@ class GalleryLinkError(RuntimeError):
     pass
 
 
+def check_prefix(prefix: str) -> str:
+    """One lower-case letter: it keeps a queue's folders apart from another queue's and can never turn a folder name into <year>-<MM>."""
+    if not re.fullmatch(r"[a-z]", prefix or ""):
+        raise GalleryLinkError(f"folder prefix {prefix!r} must be a single lower-case letter")
+    return prefix
+
+
+def manifest_name(prefix: str) -> str:
+    """The manifest file name of one queue: the 'g' queue keeps the original name, every other prefix gets its own, so pruning one queue's links
+    can never touch another's."""
+    return "inat_gallery_manifest.json" if check_prefix(prefix) == "g" else f"inat_gallery_manifest_{prefix}.json"
+
+
 def _slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-")
 
@@ -41,8 +54,9 @@ def best_species(suggestion: dict, min_accuracy: float) -> dict | None:
     return max(cands, key=lambda c: c["measured_accuracy"]) if cands else None
 
 
-def group_folder(group, suggestion: dict | None, min_share: float = 0.5, min_accuracy: float = 0.6) -> str:
-    """'inat-pending/<Iconic or Unsure>/g<group>[_<Species>_a<accuracy%>]' for one proposed observation. The species is named when its measured accuracy
+def group_folder(group, suggestion: dict | None, min_share: float = 0.5, min_accuracy: float = 0.6, prefix: str = "g") -> str:
+    """'inat-pending/<Iconic or Unsure>/<prefix><group>[_<Species>_a<accuracy%>]' for one proposed observation (prefix: one letter per queue, so two queues'
+    group numbers never meet in one folder). The species is named when its measured accuracy
     reaches min_accuracy and the iconic folder is that species' group; otherwise the iconic folder is the nearest-neighbour iconic vote when it reaches
     min_share, else Unsure."""
     iconic, species = UNSURE, ""
@@ -55,10 +69,10 @@ def group_folder(group, suggestion: dict | None, min_share: float = 0.5, min_acc
             top_i = (suggestion.get("iconic") or [None])[0]
             if top_i and top_i["vote_share"] >= min_share:
                 iconic = _slug(top_i["iconic"]) or UNSURE
-    return f"{ROOT_NAME}/{iconic}/g{int(group):04d}{species}"
+    return f"{ROOT_NAME}/{iconic}/{prefix}{int(group):04d}{species}"
 
 
-def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5, min_accuracy: float = 0.6) -> tuple[dict[str, str], list[dict]]:
+def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5, min_accuracy: float = 0.6, prefix: str = "g") -> tuple[dict[str, str], list[dict]]:
     """({gallery-relative path: source copy path}, [queue entries skipped because their copy is not on disk]).
     Two copies with the same file name in one group folder is an error: the second would silently shadow the first."""
     links: dict[str, str] = {}
@@ -68,7 +82,7 @@ def plan(queue: list[dict], suggestions: dict, min_share: float = 0.5, min_accur
         if not copy or not os.path.exists(copy):
             skipped.append(item)
             continue
-        rel = f"{group_folder(item['group'], suggestions.get(str(item['group'])), min_share, min_accuracy)}/{Path(copy).name}"
+        rel = f"{group_folder(item['group'], suggestions.get(str(item['group'])), min_share, min_accuracy, prefix)}/{Path(copy).name}"
         if rel in links and not os.path.samefile(links[rel], copy):
             raise GalleryLinkError(f"two different upload copies would both be {rel}: {links[rel]} and {copy}")
         links[rel] = copy
