@@ -23,11 +23,12 @@ def sug(iconic, iconic_share, species=None, acc=None, zero=None):
 
 class TestGroupFolder:
     def test_names_the_species_and_its_measured_accuracy_when_it_reaches_the_threshold(self):
-        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.62)) == "inat-pending/Fungi/g0007_Amanita-muscaria_a62"
+        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.82)) == "inat-pending/Fungi/g0007_Amanita-muscaria_a82"
 
     def test_the_accuracy_threshold_is_inclusive_and_just_under_it_names_no_species(self):
-        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.6)) == "inat-pending/Fungi/g0007_Amanita-muscaria_a60"
-        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.599)) == "inat-pending/Fungi/g0007"
+        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.75)) == "inat-pending/Fungi/g0007_Amanita-muscaria_a75"
+        assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", 0.749)) == "inat-pending/Fungi/g0007"
+        assert inat_gallery.DEFAULT_MIN_ACCURACY == 0.75
 
     def test_a_species_whose_accuracy_was_never_measured_is_not_named(self):
         assert group_folder(7, sug("Fungi", 0.9, "Amanita muscaria", None)) == "inat-pending/Fungi/g0007"
@@ -41,8 +42,8 @@ class TestGroupFolder:
         assert group_folder(7, tie) == "inat-pending/Fungi/g0007_Amanita-muscaria_a80"
 
     def test_a_source_under_the_threshold_never_wins_even_when_the_other_is_unmeasured(self):
-        only_zs = sug("Fungi", 0.9, "Amanita muscaria", 0.3, zero=("Boletus edulis", 0.7, "Fungi"))
-        assert group_folder(7, only_zs) == "inat-pending/Fungi/g0007_Boletus-edulis_a70"
+        only_zs = sug("Fungi", 0.9, "Amanita muscaria", 0.3, zero=("Boletus edulis", 0.8, "Fungi"))
+        assert group_folder(7, only_zs) == "inat-pending/Fungi/g0007_Boletus-edulis_a80"
         neither = sug("Fungi", 0.9, "Amanita muscaria", 0.3, zero=("Boletus edulis", 0.5, "Fungi"))
         assert group_folder(7, neither) == "inat-pending/Fungi/g0007"
 
@@ -230,9 +231,9 @@ class TestCli:
 
 class TestQueuePrefix:
     def test_the_prefix_replaces_the_g_in_the_group_folder_and_g_stays_the_default(self):
-        s = sug("Fungi", 0.9, "Amanita muscaria", 0.62)
-        assert group_folder(7, s, prefix="e") == "inat-pending/Fungi/e0007_Amanita-muscaria_a62"
-        assert group_folder(7, s) == "inat-pending/Fungi/g0007_Amanita-muscaria_a62"
+        s = sug("Fungi", 0.9, "Amanita muscaria", 0.82)
+        assert group_folder(7, s, prefix="e") == "inat-pending/Fungi/e0007_Amanita-muscaria_a82"
+        assert group_folder(7, s) == "inat-pending/Fungi/g0007_Amanita-muscaria_a82"
 
     def test_plan_uses_the_prefix_for_every_folder(self, tmp_path):
         a = _copy(tmp_path, "a.jpg")
@@ -288,3 +289,26 @@ class TestQueuePrefix:
         with pytest.raises(GalleryLinkError, match=r"folder prefix 'E' must be a single lower-case letter"):
             cli.main()
         assert list((tmp_path / "gal").iterdir()) == [] and not (tmp_path / "cache").exists()
+
+
+class TestCliThreshold:
+    def _argv(self, tmp_path, extra):
+        a = _copy(tmp_path, "a.jpg")
+        q, sg = tmp_path / "queue.json", tmp_path / "sug.json"
+        q.write_text(json.dumps([{"group": 1, "copy": a}]), encoding="utf-8")
+        sg.write_text(json.dumps({"1": sug("Fungi", 0.9, "Amanita muscaria", 0.74)}), encoding="utf-8")
+        (tmp_path / "gal").mkdir()
+        return ["bio", "inat-gallery", "--queue", str(q), "--suggestions", str(sg), "--gallery-dir", str(tmp_path / "gal"),
+                "--manifest", str(tmp_path / "m.json"), "--queue-db", str(tmp_path / "q.sqlite3"), *extra]
+
+    def test_by_default_a_species_measured_at_0_74_is_not_named(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, []))
+        assert cli.main() == 0
+        capsys.readouterr()
+        assert sorted(p.name for p in (tmp_path / "gal/inat-pending/Fungi").iterdir()) == ["g0001"]
+
+    def test_the_same_species_is_named_when_the_flag_lowers_the_threshold(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, ["--min-accuracy", "0.7"]))
+        assert cli.main() == 0
+        capsys.readouterr()
+        assert sorted(p.name for p in (tmp_path / "gal/inat-pending/Fungi").iterdir()) == ["g0001_Amanita-muscaria_a74"]
