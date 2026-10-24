@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 STAGES = Path(__file__).resolve().parents[1] / "pipeline" / "stages"
-_FLAT = ("embed_index", "ort_providers", "bioclip_embed", "embed_loo", "inat_suggest", "taxon_zeroshot")
+_FLAT = ("embed_index", "ort_providers", "bioclip_embed", "embed_loo", "inat_suggest", "taxon_zeroshot", "suggest_refresh", "inat_photos_fetch")
 
 
 @pytest.fixture
