@@ -55,6 +55,25 @@ class BioClipEmbedder:
         self.device = pick_device(torch_mod, cfg.get('cuda_device'), environ)
         model, _, self.preprocess = open_clip_mod.create_model_and_transforms(self.model_id)
         self.model = model.to(self.device).half().eval()
+        self.open_clip = open_clip_mod
+        self._tokenizer = None
+
+    def encode_text(self, strings, batch=1024):
+        """float16 (N, dim) array of L2-normalised text vectors for *strings*, in order (the tokenizer is loaded on first use)."""
+        t = self.torch
+        if self._tokenizer is None:
+            self._tokenizer = self.open_clip.get_tokenizer(self.model_id)
+        out = []
+        with t.no_grad():
+            for s in range(0, len(strings), batch):
+                tok = self._tokenizer(list(strings[s:s + batch])).to(self.device)
+                v = self.model.encode_text(tok).float().cpu().numpy()
+                out.append((v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)).astype(np.float16))
+        return np.concatenate(out)
+
+    def logit_scale(self):
+        """The model's learned temperature (CLIP's logit_scale, exponentiated): softmax(logit_scale * cosine) is the zero-shot class probability."""
+        return float(self.model.logit_scale.detach().exp())
 
     def embed(self, paths):
         t = self.torch
