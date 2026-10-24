@@ -162,6 +162,24 @@ Rebuilds of derived data and restarts of local services are pre-authorized only
 with a backup, a verification step and a rollback noted; posting, DNS/Caddy,
 deleting originals and pushing stay ask-first.
 
+**iNat taxon suggestions (2026-10-23; PRs #17, #18).** BioCLIP 2 (open_clip, model id and collection in `embed_config.json`'s `bioclip` object,
+never a literal in code) replaced SigLIP for suggestions; the SigLIP index stays for `bio_similar`, `triage_vision`, `lc_queue_from_raws`. GPU only:
+no CUDA is a `RuntimeError` (`bioclip_embed.pick_device`; the card with the most free VRAM unless `BIO_BIOCLIP_CUDA_DEVICE`/config pins one). Two
+sources per proposed observation, each with its MEASURED accuracy, never a raw score: the nearest-neighbour vote over the owner's labelled photos
+(`embed_loo.py` -> `suggest_bins.json`) and zero-shot over every species of iNat's taxonomy export (`taxon_zeroshot.py build|calibrate`; the 1.1 M-species
+text index lives under `D:\bio-cache\taxonomy\<export date>`, an untrusted download in its own folder; `zeroshot_bins.json` is calibrated per
+OBSERVATION on the pooled probability). `inat_suggest.py` (env `BIO_QUEUE_TAG`) writes `inat_suggestions<TAG>.json` and refuses to run without its
+bins, and never overwrites with an empty result. **The measured accuracies are optimistic for the backlog**: they come from observations the owner already
+posted and had identified; `taxon_zeroshot.py calibrate` therefore scores the observations posted since the last calibration on their own and prints
+`DRIFT` lines where the old numbers were too good. `bio inat-gallery --queue ... --suggestions ... --prefix <letter>` hardlinks the proposed upload copies
+into the gallery as `inat-pending/<iconic>/<prefix><group>[_Species_a<accuracy%>]/` (outside `<year>/<year-month>`, which the Bluesky poster reads; one
+prefix and one manifest per queue so pruning never touches another queue; `g` = LightCraft queue `_lc`, `e` = exported-files queue `_ex`, whose copies were
+regenerated onto `D:\bio-cache\inat-upload-regen` into the derived `inat_queue_ex.json`; the original `inat_queue.json` is never modified). The copies
+carry GPS EXIF by design (upload copies). `pipeline/stages/suggest_refresh.py` is the one entry point (config `suggest_refresh.json`, stops at the first
+failing step, lock file); `scripts/run-suggest-refresh.ps1` wraps it and registers nothing. `inat_photos_fetch.py` fetches only observations newer than the
+last calibration unless `--all` (a full backfill is 21 k photos, 3 GB). Run a worktree's stages with `PYTHONPATH=<tree>\src` (editable-install trap) and the
+GPU venv `D:\venvs\bioclip` (`HF_HOME=D:\bio-cache\models\hf`, `HF_HUB_OFFLINE=1`). CI has no `qdrant-client` or `torch`: tests use recording fakes.
+
 ## Test-writing rules
 
 These apply to every test added or edited in this repo, no exceptions:
