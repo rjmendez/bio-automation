@@ -6,8 +6,8 @@ texts, so a gate that was too weak when the post went out, or a place that becam
 
 Per post, by URI:
   coordinates / street address   in the post text or any image alt text (social_gates.alt_leaks)
-  hidden place name              only for a post whose draft is on record (ledger posted uri -> draft_id -> drafts/<id>/draft.json): the place
-                                 words of an observation that hides its location (geoprivacy / taxon geoprivacy / no public place)
+  place finer than the county    only for a post whose draft is on record (ledger posted uri -> draft_id -> drafts/<id>/draft.json): the place
+                                 words of its observations beyond the county, state and country (owner rule 2026-10-24)
   image floor                    the published image is too small, black, grossly under/over-exposed or far too blurry (social_gates.image_problem
                                  on the CDN's full-size image; --no-images skips the downloads), more than 4 images, a missing alt text
   GPS tags                       checked ONLY on the original blob, fetched unauthenticated from the account's PDS (com.atproto.sync.getBlob, the
@@ -53,7 +53,7 @@ class LiveAuditError(Exception):
 
 ERRORS = (LiveAuditError,)
 
-# Problem kinds beyond the gates' own (coordinates, street address, hidden place name).
+# Problem kinds beyond the gates' own (coordinates, street address, place finer than the county).
 P_GPS = "GPS tags in a public image"
 P_MANY = f"more than {MAX_IMAGES} images"
 P_NO_ALT = "image without alt text"
