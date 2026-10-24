@@ -447,10 +447,13 @@ class TestOnline:
 
 @pytest.fixture
 def plenty_of_disk(world, monkeypatch):
-    """The command reads the real clock and the real disks: give it a day-old index relative to now and 100 GB free everywhere."""
+    """The command reads the real clock and the real disks: give it a day-old index and freshly written Qdrant sync markers relative to now, and 100 GB free
+    everywhere. (The markers were stamped at the frozen NOW; left there they went stale against the real clock after QDRANT_STALE_DAYS and failed seven tests.)"""
     monkeypatch.setattr(social_selfcheck, "_free_bytes", lambda p: 100 * GB)
     world.clock = dt.datetime.now(settings.LOCAL_TZ)
     world.set_index({"a/1.jpg": 1, "a/2.jpg": 2, "a/3.jpg": 3}, age_days=1)
+    for sync in sync_marker.NAMES:
+        sync_marker.record(sync, now=world.clock)
 
 
 def command(monkeypatch, capsys, *argv):
