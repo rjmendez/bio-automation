@@ -152,7 +152,16 @@ def main():
             local_name = f"{item['obs_id']}.jpg"
             img.save(IMAGES_DIR / local_name, quality=92)
 
-            cat_names = {generic_prompt, (item.get("common") or item["taxon"]).lower()}
+            # Only the generic per-group word, NOT also the species-level common name/taxon:
+            # an earlier version tagged both, which created one COCO category per distinct
+            # species encountered (690 across the full pool) instead of the 3 categories
+            # actually meant to be fine-tuned. That silently broke training entirely --
+            # Sam3ImageDataset's train loader has no category_chunk_size override, so
+            # COCO_FROM_JSON defaulted to chunk_size=len(categories), unchunked, and every
+            # training image queried all 690 categories at once (measured: a 593GB attention
+            # allocation attempt). See fix_category_labels.py for the one-time repair of the
+            # dataset this bug had already produced.
+            cat_names = {generic_prompt}
             kept_meta.append({
                 "obs_id": item["obs_id"], "file_name": local_name, "w": w, "h": h,
                 "coco_bbox": coco_bbox, "rle": rle, "area": float(m.sum()),
