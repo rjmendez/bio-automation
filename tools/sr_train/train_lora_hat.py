@@ -47,9 +47,12 @@ from hat_arch import HAT  # noqa: E402
 from lora import inject_lora_into_hat, freeze_backbone_except_lora, lora_state_dict  # noqa: E402
 
 
-def load_hat_s_x2(weights_path: Path, device) -> HAT:
+def load_hat_s(weights_path: Path, device, scale: int = 2) -> HAT:
+    """HAT-S architecture hyperparameters are IDENTICAL across the official x2/x3/x4
+    checkpoints (verified directly against XPixelGroup/HAT's options/test/HAT-S_SRx{2,4}.yml
+    -- only `upscale` differs); only the pretrained weights file and this one value change."""
     model = HAT(
-        upscale=2, in_chans=3, img_size=64, window_size=16,
+        upscale=scale, in_chans=3, img_size=64, window_size=16,
         compress_ratio=24, squeeze_factor=24, conv_scale=0.01, overlap_ratio=0.5,
         img_range=1., depths=[6, 6, 6, 6, 6, 6], embed_dim=144,
         num_heads=[6, 6, 6, 6, 6, 6], mlp_ratio=2,
@@ -61,6 +64,12 @@ def load_hat_s_x2(weights_path: Path, device) -> HAT:
     return model.to(device).eval()
 
 
+def load_hat_s_x2(weights_path: Path, device) -> HAT:
+    """Kept for the other scripts that import this name specifically (gallery
+    examples, ONNX export) -- all currently 2x-only."""
+    return load_hat_s(weights_path, device, scale=2)
+
+
 def split_files(source_dir: Path, held_out: int) -> tuple[list[Path], list[Path]]:
     all_files = sorted(source_dir.glob("*.jpg"))
     shuffled = all_files[:]
@@ -70,7 +79,7 @@ def split_files(source_dir: Path, held_out: int) -> tuple[list[Path], list[Path]
     return held_out_files, train_files
 
 
-def run_full_eval(model, held_out_files: list[Path], device, seed: int) -> dict:
+def run_full_eval(model, held_out_files: list[Path], device, seed: int, scale: int = 2) -> dict:
     """Byte-for-byte port of benchmark_hat_s.py's two eval loops, so the crops
     drawn are identical run to run (fresh rng, same seed, same iteration order)
     and the numbers it prints are directly comparable to the already-measured
@@ -88,7 +97,7 @@ def run_full_eval(model, held_out_files: list[Path], device, seed: int) -> dict:
                 if im.width < PATCH_SIZE or im.height < PATCH_SIZE:
                     continue
                 hr = random_hr_crop(np.asarray(im), PATCH_SIZE, rng)
-            lr = degrade_hr_to_lr(hr, rng)
+            lr = degrade_hr_to_lr(hr, rng, scale=scale)
             lr_t = torch.from_numpy(lr.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
             pred = model(lr_t)[0].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
             pred_u8 = (pred * 255.0).round().astype(np.uint8)
@@ -116,7 +125,7 @@ def run_full_eval(model, held_out_files: list[Path], device, seed: int) -> dict:
             inp_t = torch.from_numpy(native.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
             pred = model(inp_t)[0].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
             pred_u8 = (pred * 255.0).round().astype(np.uint8)
-            bicubic = np.asarray(Image.fromarray(native).resize((PATCH_SIZE * 2, PATCH_SIZE * 2), Image.BICUBIC))
+            bicubic = np.asarray(Image.fromarray(native).resize((PATCH_SIZE * scale, PATCH_SIZE * scale), Image.BICUBIC))
             model_vars.append(_laplacian_var(np.asarray(Image.fromarray(pred_u8).convert("L"))))
             bicubic_vars.append(_laplacian_var(np.asarray(Image.fromarray(bicubic).convert("L"))))
     model_sharp = sum(model_vars) / len(model_vars)
@@ -156,6 +165,10 @@ def main() -> None:
                           "imported from train.py) by default, removing the crop-size mismatch the local smoke "
                           "test had (it used 128 to fit this shared desktop's contended VRAM; AWS's dedicated "
                           "T4 doesn't need that compromise).")
+    ap.add_argument("--scale", type=int, default=2, choices=[2, 4],
+                     help="HAT-S upscale factor; --weights must be the matching official checkpoint "
+                          "(HAT-S_SRx2.pth or HAT-S_SRx4.pth) -- architecture hyperparameters are "
+                          "identical across them, verified against XPixelGroup/HAT's own test configs.")
     ap.add_argument("--lr", type=float, default=1.5e-4)
     ap.add_argument("--rank", type=int, default=8)
     ap.add_argument("--alpha", type=float, default=None, help="default: equal to --rank")
@@ -187,10 +200,10 @@ def main() -> None:
     held_out_files, train_files = split_files(args.source_dir, args.held_out)
     print(f"train pool: {len(train_files)} files   held-out: {len(held_out_files)} files   device: {device}")
 
-    model = load_hat_s_x2(args.weights, device)
+    model = load_hat_s(args.weights, device, scale=args.scale)
 
     # --- reproduce the zero-shot baseline inside THIS run, same code path/seed ---
-    zero_shot = run_full_eval(model, held_out_files, device, seed=args.seed)
+    zero_shot = run_full_eval(model, held_out_files, device, seed=args.seed, scale=args.scale)
     print("\n=== zero-shot baseline (reproduced in this run) ===")
     print(f"  PSNR {zero_shot['model_psnr']:.2f} dB (bicubic {zero_shot['bicubic_psnr']:.2f} dB, "
           f"delta {zero_shot['model_psnr'] - zero_shot['bicubic_psnr']:+.2f} dB)")
@@ -239,7 +252,7 @@ def main() -> None:
         args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         tmp = args.checkpoint_dir / "hat_s_lora.pt.tmp"
         torch.save({"lora_state": lora_state, "rank": args.rank, "alpha": args.alpha or args.rank,
-                    "step": step, "lr": args.lr}, tmp)
+                    "step": step, "lr": args.lr, "scale": args.scale}, tmp)
         tmp.replace(args.checkpoint_dir / "hat_s_lora.pt")
         (args.checkpoint_dir / "progress.json").write_text(json.dumps({"step": step, "elapsed_s": elapsed}))
 
@@ -255,7 +268,7 @@ def main() -> None:
             break
         actual_steps = step + 1
         hr_uint8 = sample_hr_batch(args.batch_size)
-        lr_list = [degrade_hr_to_lr(hr_uint8[i], rng) for i in range(hr_uint8.shape[0])]
+        lr_list = [degrade_hr_to_lr(hr_uint8[i], rng, scale=args.scale) for i in range(hr_uint8.shape[0])]
         lr = np.stack(lr_list).astype(np.float32) / 255.0
         hr = hr_uint8.astype(np.float32) / 255.0
         lr_t = torch.from_numpy(lr).permute(0, 3, 1, 2).to(device)
@@ -272,7 +285,7 @@ def main() -> None:
             print(f"step {step:5d}  l1 {loss.item():.4f}  elapsed {time.time() - t0:.1f}s")
 
         if (step + 1) % args.eval_every == 0:
-            ev = run_full_eval(model, held_out_files, device, seed=args.seed)
+            ev = run_full_eval(model, held_out_files, device, seed=args.seed, scale=args.scale)
             score = composite_score(ev)
             print(f"  [eval @ step {step + 1}] PSNR {ev['model_psnr']:.2f}dB  LPIPS {ev['model_lpips']:.4f}  "
                   f"DISTS {ev['model_dists']:.4f}  Laplacian {ev['model_sharp']:.2f}  composite {score:.3f}  "
@@ -302,11 +315,11 @@ def main() -> None:
     for k, v in best_lora_state.items():
         sd[k] = v.to(device)
     model.load_state_dict(sd, strict=True)
-    final = run_full_eval(model, held_out_files, device, seed=args.seed)
+    final = run_full_eval(model, held_out_files, device, seed=args.seed, scale=args.scale)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"lora_state": best_lora_state, "rank": args.rank, "alpha": args.alpha or args.rank,
-                "step": best_step, "lr": args.lr}, args.out)
+                "step": best_step, "lr": args.lr, "scale": args.scale}, args.out)
     print(f"saved LoRA adapter weights ({sum(v.numel() for v in best_lora_state.values()):,} params): {args.out}")
 
     print("\n=== M3b GATE: zero-shot (old) vs LoRA fine-tune (new) ===")
@@ -337,7 +350,7 @@ def main() -> None:
         result = {
             "actual_steps": actual_steps, "best_step": best_step, "stop_reason": stop_reason,
             "train_elapsed_s": time.time() - t0, "rank": args.rank, "alpha": float(args.alpha or args.rank),
-            "lr": args.lr, "batch_size": args.batch_size, "train_patch_size": args.train_patch_size,
+            "scale": args.scale, "lr": args.lr, "batch_size": args.batch_size, "train_patch_size": args.train_patch_size,
             "zero_shot_psnr_db": float(zero_shot["model_psnr"]), "zero_shot_lpips": float(zero_shot["model_lpips"]),
             "zero_shot_dists": float(zero_shot["model_dists"]), "zero_shot_deploy_sharp": float(zero_shot["model_sharp"]),
             "final_psnr_db": float(final["model_psnr"]), "final_lpips": float(final["model_lpips"]),
