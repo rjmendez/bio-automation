@@ -21,6 +21,7 @@ RAW_OBSERVATION = {
     "place_guess": "Marin County, CA",
     "observed_on": "2024-10-08",
     "geoprivacy": "obscured",
+    "taxon_geoprivacy": "private",
     "license_code": "cc-by-nc",
     "quality_grade": "research",
     "tags": ["burrowing", "nocturnal"],
@@ -70,12 +71,18 @@ class TestFetchInatObservation:
             "place_guess": "Marin County, CA",
             "observed_on": "2024-10-08",
             "geoprivacy": "obscured",
+            "taxon_geoprivacy": "private",
             "license": "cc-by-nc",
             "quality_grade": "research",
             "keywords_seed": ["burrowing", "nocturnal"],
         }
         assert len(get_fn.calls) == 1
         assert get_fn.calls[0]["url"] == "https://api.inaturalist.org/v1/observations/123456"
+
+    def test_taxon_geoprivacy_is_none_when_the_api_does_not_return_it(self):
+        raw = {k: v for k, v in RAW_OBSERVATION.items() if k != "taxon_geoprivacy"}
+        result = fetch_inat_observation(123456, get_fn=RecordingGet(payload={"results": [raw]}), rate_limiter=RateLimiter(min_interval=0))
+        assert result["taxon_geoprivacy"] is None and result["geoprivacy"] == "obscured"
 
     def test_raises_not_found_on_empty_results(self):
         get_fn = RecordingGet(payload={"results": []})
