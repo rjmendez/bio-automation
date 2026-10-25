@@ -8,6 +8,7 @@ from . import settings
 from .auto_ingest import NotACameraVolumeError, auto_ingest_volume
 from .bundle import DEFAULT_DOWNLOAD_DIR, BundleError, build_bundle
 from .inat import fetch_inat_observation
+from .inat_gallery import DEFAULT_MIN_ACCURACY
 from .models import Asset, Observation
 from .paths import make_observation_path
 from .pipeline import (
@@ -222,6 +223,24 @@ def build_parser() -> argparse.ArgumentParser:
                                   "files on its own -- no manual folder-browse or scheduled rescan needed).")
     p_stock_pub.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
 
+    p_inat_gallery = sub.add_parser(
+        "inat-gallery",
+        help="Hardlink the proposed, not yet submitted iNat upload copies into the gallery under inat-pending/<predicted group>/g<group>[_<Species>_p<share>]/ "
+             "(never a <year>/<year-month> folder: the Bluesky poster must not see them), then enqueue a gallery.reindex message.")
+    p_inat_gallery.add_argument("--queue", required=True, help="the proposed-observations queue json (inat_queue<TAG>.json)")
+    p_inat_gallery.add_argument("--suggestions", required=True, help="inat_suggestions<TAG>.json written by inat_suggest.py")
+    p_inat_gallery.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_inat_gallery.add_argument("--manifest", default=None,
+                                help="the links this command made (only these are ever pruned); default: <cache>/state/inat_gallery_manifest[_<prefix>].json")
+    p_inat_gallery.add_argument("--prefix", default="g",
+                                help="one lower-case letter naming this queue's folders (g<group> for the LightCraft queue, e<group> for the exported-files queue) so two queues never share a folder or a manifest")
+    p_inat_gallery.add_argument("--min-share", type=float, default=0.5, help="nearest-neighbour vote share an iconic group needs to name a folder when no species is named")
+    p_inat_gallery.add_argument("--min-accuracy", type=float, default=DEFAULT_MIN_ACCURACY, help="measured accuracy (nearest-neighbour or zero-shot, whichever is better calibrated) a species needs to be named in a folder name")
+    p_inat_gallery.add_argument("--no-prune", action="store_true", help="keep links the plan no longer contains")
+    p_inat_gallery.add_argument("--dry-run", action="store_true", help="print what would be linked and touch nothing")
+    p_inat_gallery.add_argument("--no-queue", action="store_true", help="don't enqueue a gallery.reindex message")
+    p_inat_gallery.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
+
     p_social_index = sub.add_parser(
         "social-index",
         help="Map every gallery file to its iNat observation (from the audit and Stock-candidate csvs, each row checked against the title "
@@ -230,6 +249,37 @@ def build_parser() -> argparse.ArgumentParser:
     p_social_index.add_argument("--audit", nargs="*", default=[], help="audit csv(s) with file,obs_id columns (glob patterns allowed)")
     p_social_index.add_argument("--candidates", nargs="*", default=[], help="Stock candidate csv(s) (glob patterns allowed)")
     p_social_index.add_argument("--out", default=str(settings.GALLERY_OBS_INDEX))
+    p_social_index.add_argument("--full", action="store_true", help="ignore the title cache and read every file's embedded title")
+
+    p_darkroom = sub.add_parser(
+        "darkroom-sync",
+        help="Read the owner's Darkroom storefront (home page, collections, pages), fetch and match its new products to the gallery by "
+             "DA-CLIP similarity (GPU) and write prints.csv for social-draft. Products that did not match go to darkroom_review.csv.")
+    p_darkroom.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_darkroom.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_darkroom.add_argument("--dry-run", action="store_true", help="match and report, but write neither prints.csv nor the review csv")
+
+    p_qdrant = sub.add_parser(
+        "qdrant-sync",
+        help="Upsert one point per gallery image into the Qdrant collection BIO_QDRANT_COLLECTION (own collection, refuses an alias or a "
+             "collection it did not create): the DA-CLIP image vector, a text vector of the metadata, and the iNat + Stock payload.")
+    p_qdrant.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_qdrant.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_qdrant.add_argument("--collection", default=settings.QDRANT_COLLECTION)
+    p_qdrant.add_argument("--limit", type=int, default=None, help="only the first N gallery files (a trial run)")
+    p_qdrant.add_argument("--dry-run", action="store_true", help="build and report everything, send nothing to Qdrant")
+
+    p_qinat = sub.add_parser(
+        "qdrant-inat-sync",
+        help="Bring ALL of the owner's iNat data (no photos) into Qdrant: one point per observation in `<prefix>observations` and one per "
+             "taxon of the observed tree in `<prefix>taxa`, incrementally (new/changed observations, changed points only).")
+    p_qinat.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_qinat.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_qinat.add_argument("--prefix", default=settings.QDRANT_INAT_PREFIX, help="collection name prefix (a trial run: --prefix zz_trial_ --limit 50)")
+    p_qinat.add_argument("--login", default=settings.INAT_LOGIN)
+    p_qinat.add_argument("--limit", type=int, default=None, help="only the lowest N observation ids (a trial run; use another --prefix)")
+    p_qinat.add_argument("--full", action="store_true", help="refetch every observation instead of the new and changed ones")
+    p_qinat.add_argument("--dry-run", action="store_true", help="build and report everything, send nothing to Qdrant")
 
     p_social_draft = sub.add_parser(
         "social-draft",
@@ -239,6 +289,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_social_draft.add_argument("--date", default=None, help="draft for this day's month (YYYY-MM-DD; default today)")
     p_social_draft.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
     p_social_draft.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_social_draft.add_argument("--no-themes", action="store_true", help="skip the themed posts (BIO_SOCIAL_THEMES=0 does the same)")
+
+    p_rules = sub.add_parser(
+        "social-rules",
+        help="List every posting rule with its state (on/off, its number) and where the state came from. All of them are optional: "
+             "--write-defaults writes the TOML file to edit (BIO_SOCIAL_RULES_FILE); BIO_SOCIAL_RULE_<NAME>=on|off|<number> overrides one.")
+    p_rules.add_argument("--write-defaults", action="store_true", help="write the current rules to the rules file (refuses to overwrite)")
+
+    p_audit = sub.add_parser("social-audit", help="Show the audit log of posting decisions (rules in force, what was chosen or skipped and why).")
+    p_audit.add_argument("--tail", type=int, default=20, help="the last N records (default 20)")
+    p_audit.add_argument("--run", default=None, help="only this run id")
+    p_audit.add_argument("--event", default=None, help="only this event (post_decision, post_skipped, posted, draft_run, drafted, ...)")
+
+    p_themes = sub.add_parser(
+        "social-themes",
+        help="Show the weekday theme calendar (Mushroom Monday ...) with how many observations each has left, and what the next days would "
+             "post. --write-defaults writes the built-in calendar as the TOML file you can edit (BIO_SOCIAL_THEMES_FILE).")
+    p_themes.add_argument("--days", type=int, default=7, help="plan this many days ahead (default 7)")
+    p_themes.add_argument("--date", default=None, help="start the plan on this day (YYYY-MM-DD; default today)")
+    p_themes.add_argument("--index", default=str(settings.GALLERY_OBS_INDEX))
+    p_themes.add_argument("--write-defaults", action="store_true", help="write the built-in calendar to the themes file (refuses to overwrite)")
 
     p_social_list = sub.add_parser("social-list", help="List drafts and their state (drafted/approved/rejected/posting/posted/failed).")
     p_social_list.add_argument("--state", default=None)
@@ -262,9 +333,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_social_post = sub.add_parser(
         "social-post",
-        help="Post the oldest approved draft of this month (at most BIO_SOCIAL_POSTS_PER_DAY a day). Dry-run unless --live; --live needs "
-             "the OAuth session from `bio social-login`.")
+        help="Post the oldest approved draft of this month, approving the oldest drafted one first when none is approved "
+             "(BIO_SOCIAL_AUTO_APPROVE); at most BIO_SOCIAL_POSTS_PER_DAY scheduled posts a day. Dry-run unless --live; --live needs "
+             "the OAuth session from `bio social-login`. Exit code: 0 posted, dry-run, done for today or nothing approved; 1 blocked or "
+             "withdrawn (the reason goes to stderr) or an error; a withdrawn draft spends a posting slot, so the result lists how many and why.")
     p_social_post.add_argument("--live", action="store_true")
+    p_social_post.add_argument("--manual", action="store_true", help="a manual post: not counted in, and not stopped by, the daily cap")
+    p_social_post.add_argument("--draft", default=None, metavar="DRAFT_ID",
+                               help="post this very draft (any month; approved first if it is not) as a manual post")
 
     p_social_login = sub.add_parser(
         "social-login",
@@ -285,9 +361,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cl_run = sub.add_parser(
         "social-cleanup-run",
-        help="Delete exactly the posts in a cleanup plan. Requires --confirm <plan id>; resumable (ledger next to the plan).")
+        help="DRY RUN of a cleanup plan unless --confirm and --confirm-count are both given; then deletes exactly the plan's posts "
+             "(resumable: ledger next to the plan, one audit record per deletion).")
     p_cl_run.add_argument("plan")
-    p_cl_run.add_argument("--confirm", required=True, help="the plan id printed by social-cleanup-plan: your approval of that list")
+    p_cl_run.add_argument("--confirm", default=None, help="the plan id printed by social-cleanup-plan: your approval of that list")
+    p_cl_run.add_argument("--confirm-count", type=int, default=None, help="the number of posts the plan deletes (its 'delete' count): your approval of its size")
 
     p_social_style = sub.add_parser(
         "social-style",
@@ -368,6 +446,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_console.add_argument("--host", default="127.0.0.1")
     p_review_console.add_argument("--port", type=int, default=8780)
 
+    from . import disk_guard, pipeline_selfcheck, social_hooks
+
+    disk_guard.add_parsers(sub)
+    pipeline_selfcheck.add_parsers(sub)
+    for ext in social_hooks.load_all():                     # extension modules (social_hooks.EXTENSIONS) add their own commands
+        if hasattr(ext, "add_parsers"):
+            ext.add_parsers(sub)
+    from . import social_live_audit                          # read-only and not a gate: kept out of EXTENSIONS so a fault here never stops posting
+
+    social_live_audit.add_parsers(sub)
     return parser
 
 
@@ -646,6 +734,35 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
     return 1 if result["failed"] or result["missing"] or result.get("refused") else 0      # skipped NEF/Enhanced-NR twins are not a failure
 
 
+def cmd_inat_gallery(args: argparse.Namespace) -> int:
+    import json
+
+    from . import inat_gallery
+
+    queue = json.load(open(args.queue, encoding="utf-8"))
+    suggestions = json.load(open(args.suggestions, encoding="utf-8"))
+    prefix = inat_gallery.check_prefix(args.prefix)
+    manifest = Path(args.manifest) if args.manifest else settings.CACHE_DIR / "state" / inat_gallery.manifest_name(prefix)
+    links, skipped = inat_gallery.plan(queue, suggestions, args.min_share, args.min_accuracy, prefix)
+    if args.dry_run:
+        folders = sorted({rel.rsplit("/", 1)[0] for rel in links})
+        print(json.dumps({"would_link": len(links), "folders": len(folders), "queue_entries_without_a_copy": len(skipped)}, indent=2))
+        return 0
+    q = None
+    if not args.no_queue:
+        from .queue import Queue
+
+        q = Queue(Path(args.queue_db)) if args.queue_db else Queue()
+    try:
+        result = inat_gallery.apply(links, Path(args.gallery_dir), manifest, queue=q, prune=not args.no_prune)
+    finally:
+        if q is not None:
+            q.close()
+    result["queue_entries_without_a_copy"] = len(skipped)
+    print(json.dumps(result, indent=2))
+    return 1 if result["refused"] else 0
+
+
 def _expand(patterns: list[str]) -> list[Path]:
     import glob
 
@@ -663,7 +780,8 @@ def cmd_social_index(args: argparse.Namespace) -> int:
 
     from .social import build_obs_index, write_index
 
-    index = build_obs_index(Path(args.gallery_dir), _expand(args.audit), _expand(args.candidates))
+    cache = None if getattr(args, "full", False) else settings.GALLERY_TITLE_CACHE      # --full re-reads every title
+    index = build_obs_index(Path(args.gallery_dir), _expand(args.audit), _expand(args.candidates), title_cache=cache)
     write_index(index, Path(args.out))
     reasons = Counter(r.split(":")[0] for r in index["unresolved"].values())
     print(f"{len(index['files'])} files mapped to {len(set(index['files'].values()))} observations, {len(index['unresolved'])} unresolved "
@@ -671,16 +789,144 @@ def cmd_social_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_maintenance(drafts_dir, ledger, rules, today) -> None:
+    """The "maintenance" hooks (backup, alerts scan, cache cap; each has its own once-a-day guard). A failure here is audited and never changes
+    the exit code of the command it follows."""
+    from . import social_hooks
+    from .social_rules import Audit, load_rules
+
+    try:
+        if rules is None:                                         # the command failed before its rules were loaded: try once more, else skip with a trace
+            rules = load_rules()
+        social_hooks.run("maintenance", {"drafts_dir": drafts_dir, "ledger": ledger, "rules": rules, "today": today}, rules=rules, audit=Audit())
+    except Exception as e:  # noqa: BLE001 -- maintenance must not turn a finished draft or post run into a failure
+        try:
+            Audit().log("hook_error", name="maintenance", stage="maintenance", error=f"{type(e).__name__}: {e}"[:300], outcome="pass")
+        except OSError:
+            pass
+
+
 def cmd_social_draft(args: argparse.Namespace) -> int:
     import datetime as dt
     import json
 
-    from .social import Ledger, draft_month, load_index
+    from .social import Ledger, RejectBudget, draft_month, inat_photo_candidates, load_index, withdraw_small
+    from .social_rules import Audit, load_rules
 
     today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
-    report = draft_month(load_index(Path(args.index)), Ledger(), today=today, gallery_dir=Path(args.gallery_dir),
-                         drafts_dir=settings.SOCIAL_DIR / "drafts", keep_pending=args.keep_pending)
-    print(json.dumps(report, indent=2))
+    drafts_dir = settings.SOCIAL_DIR / "drafts"
+    ledger, rules = Ledger(), None
+    try:                                                              # the maintenance hooks run even when loading the index or the rules, or a drafting step, fails
+        rules = load_rules()
+        index = load_index(Path(args.index))
+        gallery_obs = {int(o) for o in index["files"].values()}
+        min_edge = rules.value("lower_quality_photos") or 1000
+        local = inat_photo_candidates(min_edge=min_edge, exclude=gallery_obs) if rules.on("lower_quality_photos") else {}
+        withdrawn = withdraw_small(ledger, drafts_dir, min_edge=min_edge, audit=Audit()) if rules.on("lower_quality_photos") else []
+        rejects = RejectBudget()                                      # one budget of draft-hook rejects for the themed and the ordinary drafting
+        if rules.on("themes") and not args.no_themes:                 # themed posts first: their observations are then off the table for the rest
+            report = {"themes": _draft_themes(index, ledger, today, Path(args.gallery_dir), drafts_dir, rules, local, rejects)}
+            report.update(draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir,
+                                      keep_pending=args.keep_pending, rules=rules, local=local, rejects=rejects))
+        else:
+            report = draft_month(index, ledger, today=today, gallery_dir=Path(args.gallery_dir), drafts_dir=drafts_dir, keep_pending=args.keep_pending,
+                                 rules=rules, local=local, rejects=rejects)
+        report["local_photos"] = len(local)
+        report["withdrawn"] = withdrawn
+        print(json.dumps(report, indent=2))
+        return 0
+    finally:
+        run_maintenance(drafts_dir, ledger, rules, today)
+
+
+def _taxonomy(index: dict, local: dict | None = None) -> dict:
+    """{obs id: taxonomy entry} for the indexed observations and the local-photo ones: the cache of settings.OBS_TAXONOMY_FILE, topped up from iNat."""
+    from . import inat, themes
+
+    cache = inat.TaxonLineageCache(settings.INAT_TAXON_CACHE, settings.INAT_TAXON_TTL_S)
+    ids = {int(o) for o in index["files"].values()} | set(local or {})
+    tax, _ = themes.load_taxonomy(ids, settings.OBS_TAXONOMY_FILE, fetch=inat.fetch_inat_observations, lineage_cache=cache)
+    return tax
+
+
+def _draft_themes(index: dict, ledger, today, gallery_dir: Path, drafts_dir: Path, rules, local: dict, rejects=None) -> dict:
+    from . import themes
+    from .social import draft_themes
+
+    return draft_themes(index, ledger, _taxonomy(index, local if rules.on("lower_quality_photos") else None), themes.load_themes(), today=today,
+                        days_ahead=settings.SOCIAL_THEME_DAYS_AHEAD, gallery_dir=gallery_dir, drafts_dir=drafts_dir, rules=rules, local=local, rejects=rejects)
+
+
+def cmd_social_rules(args: argparse.Namespace) -> int:
+    from .social import SocialError
+    from .social_rules import RULES, load_rules, rules_toml
+
+    path = settings.SOCIAL_RULES_FILE
+    if args.write_defaults:
+        if path.exists():
+            raise SocialError(f"{path} exists: edit it, or move it away first")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rules_toml(), encoding="utf-8")
+        print(f"wrote {path}")
+        return 0
+    rules = load_rules()
+    print(f"posting rules ({'file ' + str(path) if path.is_file() else 'no file'}; BIO_SOCIAL_RULE_<NAME>=on|off|<number> overrides):")
+    for r in RULES:
+        s = rules.state(r.name)
+        val = f"={s.value}" if s.value is not None else ""
+        print(f"  {r.name:24} {'ON ' if s.enabled else 'off'}{val:4} [{s.source:8}] {r.description}")
+    return 0
+
+
+def cmd_social_audit(args: argparse.Namespace) -> int:
+    import json
+
+    from .social_rules import Audit
+
+    audit = Audit()
+    recs = [r for r in audit.records() if (not args.run or r["run"] == args.run) and (not args.event or r["event"] == args.event)]
+    for r in recs[-args.tail:]:
+        print(json.dumps(r, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def cmd_social_themes(args: argparse.Namespace) -> int:
+    import datetime as dt
+
+    from . import themes
+    from .social import Ledger, _obs_of, _taken, inat_photo_candidates, load_index, load_prints, theme_candidates
+    from .social_rules import load_rules
+
+    path = settings.SOCIAL_THEMES_FILE
+    if args.write_defaults:
+        from .social import SocialError
+
+        if path.exists():
+            raise SocialError(f"{path} exists: edit it, or move it away first")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(themes.themes_toml(), encoding="utf-8")
+        print(f"wrote {path}")
+        return 0
+    today = dt.date.fromisoformat(args.date) if args.date else dt.datetime.now(settings.LOCAL_TZ).date()
+    index = load_index(Path(args.index))
+    listed = themes.load_themes()
+    rules = load_rules()
+    local = (inat_photo_candidates(min_edge=rules.value("lower_quality_photos") or 1000, exclude={int(o) for o in index["files"].values()})
+             if rules.on("lower_quality_photos") else {})
+    candidates, _ = theme_candidates(index, _taxonomy(index, local), load_prints(), local)
+    month = f"{today.year}-{today.month:02d}"
+    taken = {o for v in Ledger().drafts().values() if _taken(v, month, today, rules) for o in _obs_of(v)}
+    print(f"calendar ({'file ' + str(path) if path.is_file() else 'built-in'}):")
+    for t in listed:
+        left = [o for o, c in candidates.items() if o not in taken and c["entry"].get("grade") != "casual" and themes.matches(t, c["entry"])]
+        print(f"  {themes.WEEKDAYS[t.weekday]:9} {t.name:22} {'on ' if t.enabled else 'OFF'} {len(left):5} observations left  #{' #'.join(t.tags)}")
+    print(f"\nnext {args.days} days:")
+    for k in range(args.days):
+        day = today + dt.timedelta(days=k)
+        t = themes.theme_for(day, listed)
+        ids = themes.pick_group(t, candidates, day=day, taken=taken, reserve=0) if t else []
+        names = ", ".join(((candidates[o]["entry"]["taxon"].get("common_name") or candidates[o]["entry"]["taxon"]["name"]) for o in ids))
+        print(f"  {day} {themes.WEEKDAYS[day.weekday()][:3]}  " + (f"{t.name}: {names}" if ids else (f"{t.name}: not enough observations" if t else "usual single observation")))
     return 0
 
 
@@ -706,29 +952,31 @@ def cmd_social_list(args: argparse.Namespace) -> int:
 
 
 def cmd_social_approve(args: argparse.Namespace) -> int:
-    from .social import Ledger, approve
+    from .social import Ledger, approve, ledger_lock_wait
 
     ledger = Ledger()
-    for draft_id in args.draft_ids:
-        approve(ledger, settings.SOCIAL_DIR / "drafts", draft_id)
-        print(f"approved {draft_id}")
+    with ledger_lock_wait(ledger.path):                               # approve() reads the state again inside the lock: a post run cannot move the draft on under it
+        for draft_id in args.draft_ids:
+            approve(ledger, settings.SOCIAL_DIR / "drafts", draft_id)
+            print(f"approved {draft_id}")
     return 0
 
 
 def cmd_social_reject(args: argparse.Namespace) -> int:
-    from .social import Ledger, reject
+    from .social import Ledger, ledger_lock_wait, reject
 
     ledger = Ledger()
-    for draft_id in args.draft_ids:
-        reject(ledger, draft_id, args.reason)
-        print(f"rejected {draft_id}")
+    with ledger_lock_wait(ledger.path):
+        for draft_id in args.draft_ids:
+            reject(ledger, draft_id, args.reason)
+            print(f"rejected {draft_id}")
     return 0
 
 
 def cmd_social_resolve(args: argparse.Namespace) -> int:
     import datetime as dt
 
-    from .social import Ledger, SocialError, resolve
+    from .social import Ledger, SocialError, ledger_lock_wait, resolve
 
     when = None
     if args.posted_at:
@@ -738,9 +986,29 @@ def cmd_social_resolve(args: argparse.Namespace) -> int:
             raise SocialError(f"--posted-at must be an ISO date and time like 2026-10-20T23:50, got {args.posted_at!r}") from e
         if when.tzinfo is None:
             when = when.replace(tzinfo=settings.LOCAL_TZ)
-    rec = resolve(Ledger(), args.draft_id, posted_uri=None if args.not_posted else args.posted_uri, now=when)
+    ledger = Ledger()
+    with ledger_lock_wait(ledger.path):
+        rec = resolve(ledger, args.draft_id, posted_uri=None if args.not_posted else args.posted_uri, now=when)
     print(f"{args.draft_id}: {rec['event']}")
     return 0
+
+
+def post_exit_code(result: dict) -> int:
+    """0 for posted, dry-run, "done for today" and "nothing approved"; 1 for blocked and withdrawn: the scheduled task must not show success
+    for a run that sent nothing because a gate said no."""
+    return 1 if result.get("status") in ("blocked", "withdrawn") else 0
+
+
+def wait_for_post_room(**kw) -> bool:
+    """A live post run writes the ledger and the audit log: pause (audited, resumes by itself) while C:, the data drive or the drafts folder's drive is under the
+    post floor; False, with nothing written and nothing sent, when settings.SOCIAL_POST_MAX_WAIT_S ran out."""
+    from . import disk_guard
+    from .social_rules import Audit
+
+    floors = disk_guard.default_floors(system_gb=settings.SOCIAL_POST_MIN_FREE_GB, data_gb=settings.SOCIAL_POST_MIN_FREE_GB,
+                                       extra={"drafts": Path(settings.SOCIAL_DIR)})
+    kw.setdefault("audit", Audit().log)
+    return disk_guard.wait_for_room(floors, who="social-post", max_wait_s=settings.SOCIAL_POST_MAX_WAIT_S, **kw)
 
 
 def cmd_social_post(args: argparse.Namespace) -> int:
@@ -748,10 +1016,27 @@ def cmd_social_post(args: argparse.Namespace) -> int:
     import json
 
     from .social import Ledger, post_next
+    from .social_rules import load_rules
 
-    result = post_next(Ledger(), settings.SOCIAL_DIR / "drafts", now=dt.datetime.now(settings.LOCAL_TZ), live=args.live)
+    now = dt.datetime.now(settings.LOCAL_TZ)
+    if args.live and not wait_for_post_room():
+        return 1
+    ledger = Ledger()
+    try:
+        result = post_next(ledger, settings.SOCIAL_DIR / "drafts", now=now, live=args.live, manual=args.manual, draft_id=args.draft)
+    finally:
+        if args.live:                                                  # the daily backup, the alerts scan and the cache cap also follow a post run
+            try:
+                run_maintenance(settings.SOCIAL_DIR / "drafts", ledger, load_rules(), now.date())
+            except Exception as e:  # noqa: BLE001 -- rules that do not load were already reported by the post itself
+                print(f"bio social-post: maintenance skipped ({type(e).__name__}: {e})", file=sys.stderr)
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    if result.get("withdrawn_count"):
+        why = "; ".join(f"{d}: {r}" for d, r in result["withdrawn_reasons"].items())
+        print(f"bio social-post: {result['withdrawn_count']} draft(s) withdrawn before sending ({why})", file=sys.stderr)
+    if result.get("status") in ("blocked", "withdrawn"):
+        print(f"bio social-post: {result['status']}: {result.get('reason') or 'see the audit log'}", file=sys.stderr)
+    return post_exit_code(result)
 
 
 def _bsky(call):
@@ -803,8 +1088,11 @@ def cmd_social_cleanup_run(args: argparse.Namespace) -> int:
 
     from .social_cleanup import run_plan
 
-    report = _bsky(lambda: run_plan(Path(args.plan), args.confirm))
+    report = _bsky(lambda: run_plan(Path(args.plan), args.confirm, confirm_count=args.confirm_count))
     print(json.dumps(report, indent=2))
+    if report["dry_run"]:
+        print(f"dry run: nothing deleted. To delete: --confirm {report['plan_id']} --confirm-count {report['plan_size']}", file=sys.stderr)
+        return 0
     return 0 if not report["stopped"] and report["remaining"] == 0 else 1
 
 
@@ -833,7 +1121,114 @@ def cmd_social_metadata(args: argparse.Namespace) -> int:
     return 0
 
 
-SOCIAL_COMMANDS = {"social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
+def cmd_darkroom_sync(args: argparse.Namespace) -> int:
+    import json
+
+    from . import daclip, darkroom
+    from .social import load_index
+
+    session = []
+
+    def embed_file(path):                                             # DA-CLIP on the GPU, loaded once and only when something needs embedding
+        if not session:
+            session.append(daclip.load_session())
+        return daclip.embed_path(path, session[0])[0]
+
+    summary = darkroom.sync(index=load_index(Path(args.index)), gallery_dir=Path(args.gallery_dir), work_dir=settings.DARKROOM_DIR,
+                            out_file=settings.SOCIAL_PRINTS_FILE, manual_file=settings.SOCIAL_PRINTS_MANUAL_FILE, base=settings.DARKROOM_URL,
+                            embed_file=embed_file, pause_s=settings.DARKROOM_PAUSE_S, write=not args.dry_run)
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_qdrant_sync(args: argparse.Namespace) -> int:
+    import json
+
+    from . import daclip, darkroom, inat, qdrant_obs, social
+
+    session = []
+
+    def embed_image(path):                                            # DA-CLIP on the GPU, loaded once and only for files not in the cache
+        if not session:
+            session.append(daclip.load_session())
+        return daclip.embed_path(path, session[0])[0]
+
+    _, embed_text = social.embedder()
+    url, key = qdrant_obs.qdrant_config()
+    summary = qdrant_obs.sync(
+        index=social.load_index(Path(args.index)), gallery_dir=Path(args.gallery_dir), client=qdrant_obs.Qdrant(url, key),
+        collection=args.collection, work_dir=settings.DARKROOM_DIR, embed_image=embed_image, embed_text=embed_text,
+        fetch=inat.fetch_inat_observations, lineage_cache=inat.TaxonLineageCache(settings.INAT_TAXON_CACHE, settings.INAT_TAXON_TTL_S),
+        candidates=["D:/bio-cache/photos/stock_candidates_*.csv", "F:/bio-automation-data/nas_pipeline/candidates/*.csv",
+                    str(settings.RESULTS_DIR / "nas_pipeline" / "candidates" / "*.csv"),
+                    str(settings.RESULTS_DIR / "nas_pipeline" / "candidates-gaps" / "*.csv")],
+        prints=social.load_prints(), ledger_drafts=social.Ledger().drafts(), inat_cache=settings.QDRANT_INAT_CACHE,
+        limit=args.limit, write=not args.dry_run)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_qdrant_inat_sync(args: argparse.Namespace) -> int:
+    import json
+    import os
+
+    from . import daclip, inat, qdrant_inat, qdrant_obs, social
+
+    session = []
+
+    def embed_image(path):                                            # DA-CLIP on the GPU, loaded once and only for files not in the cache
+        if not session:
+            session.append(daclip.load_session())
+        return daclip.embed_path(path, session[0])[0]
+
+    ua = os.environ.get("INAT_USER_AGENT") or inat.USER_AGENT_DEFAULT
+    lineage_cache = inat.TaxonLineageCache(settings.INAT_TAXON_CACHE, settings.INAT_TAXON_TTL_S)
+    _, embed_text = social.embedder()
+    client = None
+    if not args.dry_run:
+        url, key = qdrant_obs.qdrant_config()
+        client = qdrant_obs.Qdrant(url, key)
+    summary = qdrant_inat.sync(
+        cache_file=settings.QDRANT_INAT_FULL, state_file=settings.QDRANT_INAT_STATE, client=client, prefix=args.prefix, login=args.login,
+        get=lambda u: inat._default_get(u, ua), wait=inat._default_rate_limiter.wait, lineage_cache=lineage_cache,
+        fetch_lineages=lambda ids: inat.fetch_taxon_lineages(ids, user_agent=ua), embed_text=embed_text,
+        index=social.load_index(Path(args.index)), gallery_dir=Path(args.gallery_dir), work_dir=settings.DARKROOM_DIR, embed_image=embed_image,
+        prints=social.load_prints(), ledger_drafts=social.Ledger().drafts(), coverage_csv=settings.INAT_COVERAGE_CSV,
+        limit=args.limit, write=not args.dry_run, full=args.full)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _recorded(name: str, fn):
+    """Wrap a Qdrant sync command: a real run that wrote is recorded in the sync marker and audited (qdrant_sync); a crash is audited as
+    qdrant_sync_failed (a warning in social-alerts) and still propagates to the caller."""
+    def run(args: argparse.Namespace) -> int:
+        from . import sync_marker
+        from .social_rules import Audit
+
+        def audit(event: str, **fields) -> None:
+            try:
+                Audit().log(event, command=name, **fields)
+            except OSError:
+                pass
+
+        dry_run, limit = getattr(args, "dry_run", False), getattr(args, "limit", None)       # a parser without the flag is a real, full run
+        try:
+            code = fn(args)
+        except Exception as e:  # noqa: BLE001 -- audited, then re-raised unchanged
+            if not dry_run:
+                audit("qdrant_sync_failed", error=f"{type(e).__name__}: {e}"[:300])
+            raise
+        if code == 0 and not dry_run and not limit:      # a --limit trial writes only some points: it is not a fresh index
+            sync_marker.record(name)
+            audit("qdrant_sync")
+        elif code != 0:
+            audit("qdrant_sync_failed", error=f"exit code {code}")
+        return code
+    return run
+
+
+SOCIAL_COMMANDS = {"qdrant-inat-sync": _recorded("qdrant-inat-sync", cmd_qdrant_inat_sync), "qdrant-sync": _recorded("qdrant-sync", cmd_qdrant_sync), "darkroom-sync": cmd_darkroom_sync, "social-themes": cmd_social_themes, "social-rules": cmd_social_rules, "social-audit": cmd_social_audit, "social-index": cmd_social_index, "social-draft": cmd_social_draft, "social-list": cmd_social_list,
                    "social-approve": cmd_social_approve, "social-reject": cmd_social_reject, "social-resolve": cmd_social_resolve,
                    "social-post": cmd_social_post, "social-login": cmd_social_login, "social-whoami": cmd_social_whoami,
                    "social-metadata": cmd_social_metadata, "social-style": cmd_social_style,
@@ -897,9 +1292,25 @@ def cmd_review_console(args: argparse.Namespace) -> int:
     return 0
 
 
+def tolerate_console_encoding() -> None:
+    """A Windows console in cp1252 raised UnicodeEncodeError on the first emoji of a draft (`bio social-list`): print what the console cannot show as "?"."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass                                                # not a text stream that can be reconfigured (a test capture, a pipe object)
+
+
 def main() -> int:
+    tolerate_console_encoding()
     parser = build_parser()
     args = parser.parse_args()
+    from . import social_hooks
+
+    if args.command in social_hooks.GATED_COMMANDS and social_hooks.failed():     # these post or draft: they must not run with a gate missing
+        print(f"bio {args.command}: social modules did not load, so their gates are missing: "
+              + "; ".join(f"{n} ({e})" for n, e in sorted(social_hooks.failed().items())), file=sys.stderr)
+        return 1
     if args.command == "ingest":
         return cmd_ingest(args)
     if args.command == "auto-ingest":
@@ -938,12 +1349,32 @@ def main() -> int:
         return cmd_stock_tag_queue(args)
     if args.command == "stock-publish":
         return cmd_stock_publish(args)
-    if args.command.startswith("social-"):
-        from .social import SocialError
+    if args.command == "inat-gallery":
+        return cmd_inat_gallery(args)
+    if args.command == "disk-guard":
+        from . import disk_guard
 
+        return disk_guard.cmd_disk_guard(args)
+    if args.command == "pipeline-selfcheck":
+        from .pipeline_selfcheck import cmd_pipeline_selfcheck
+
+        return cmd_pipeline_selfcheck(args)
+    ext_commands = {c: fn for ext in social_hooks.extensions() for c, fn in (getattr(ext, "COMMANDS", None) or {}).items()}
+    if args.command == "social-audit-live":
+        from . import social_live_audit
+
+        return social_live_audit.cmd_social_audit_live(args)
+    if args.command in ext_commands or args.command.startswith("social-") or args.command in ("darkroom-sync", "qdrant-sync", "qdrant-inat-sync"):
+        from .darkroom import DarkroomError
+        from .qdrant_obs import QdrantError
+        from .social import SocialError, VisionError
+        from .social_rules import RulesError
+        from .themes import ThemeError
+
+        ext_errors = tuple(err for ext in social_hooks.extensions() for err in (getattr(ext, "ERRORS", None) or ()))
         try:
-            return SOCIAL_COMMANDS[args.command](args)
-        except SocialError as e:          # the message says what to do; a traceback would only bury it
+            return (ext_commands.get(args.command) or SOCIAL_COMMANDS[args.command])(args)
+        except (SocialError, DarkroomError, QdrantError, VisionError, ThemeError, RulesError, *ext_errors) as e:     # the message says what to do; a traceback would only bury it
             print(f"bio {args.command}: {e}", file=sys.stderr)
             return 1
     if args.command == "build-keywords":

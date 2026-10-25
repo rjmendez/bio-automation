@@ -40,6 +40,10 @@ SYNC_DIR = env_path("BIO_SYNC_DIR", r"D:\nikon_stack_sync")             # where 
 
 # --- state
 QUEUE_DB = env_path("BIO_QUEUE_DB", CACHE_DIR / "state" / "queue.sqlite3")
+# the NAS pipeline workers (nas_pipeline.py in the ops repo): their records, logs (logs/), heartbeats (heartbeats/) and crash-loop state
+NAS_PIPELINE_DIR = env_path("BIO_NAS_PIPELINE_DIR", RESULTS_DIR / "nas_pipeline")
+# retries: a message that fails (or whose worker dies) is delivered at most this many times, then dead-lettered (queue.py)
+QUEUE_MAX_ATTEMPTS = int(env("BIO_QUEUE_MAX_ATTEMPTS", 4))
 STOCK_FLOOR = env_path("BIO_STOCK_FLOOR", PHOTOS_CACHE / "stock_floor.json")
 INAT_PHOTO_CACHE = env_path("BIO_INAT_PHOTO_CACHE", PHOTOS_CACHE / "inat_photos")
 
@@ -109,20 +113,72 @@ INAT_TAXON_TTL_S = env_float("BIO_INAT_TAXON_TTL_S", 30 * 86400)
 # --- social posts (Bluesky): drafts the owner approves, one posted a day, from the current month of every year in the gallery
 SOCIAL_DIR = env_path("BIO_SOCIAL_DIR", RESULTS_DIR / "social")                     # drafts/<draft id>/: draft.json + the post's images
 SOCIAL_LEDGER = env_path("BIO_SOCIAL_LEDGER", CACHE_DIR / "state" / "social_ledger.jsonl")   # append-only draft/approve/post events
+GALLERY_TITLE_CACHE = env_path("BIO_GALLERY_TITLE_CACHE", CACHE_DIR / "state" / "gallery_titles_cache.json")   # social-index: embedded titles by (path, size, mtime)
+SOCIAL_PREP_MIN_FREE_C_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_C_GB", 15))    # social-prep pauses below this (the NAS pipeline pauses there too)
+SOCIAL_PREP_MIN_FREE_D_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_D_GB", 20))
+SOCIAL_PREP_MAX_WAIT_S = env_float("BIO_SOCIAL_PREP_MAX_WAIT_S", 3600)         # social-prep pauses this long for disk space (then stops with the reason)
+SOCIAL_POST_MIN_FREE_GB = env_float("BIO_SOCIAL_POST_MIN_FREE_GB", 2)          # a post run writes only the ledger, audit log and a draft's JSON: a far lower floor than a render
+SOCIAL_POST_MAX_WAIT_S = env_float("BIO_SOCIAL_POST_MAX_WAIT_S", 600)         # a missed post is worse than a late one, but a full disk must not be written to forever
+SOCIAL_INDEX_AUDIT = env("BIO_SOCIAL_INDEX_AUDIT", "D:/bio-cache/photos/adobe_ready_audit.csv")       # social-prep's social-index inputs, ';' separated (globs ok)
+SOCIAL_INDEX_CANDIDATES = env("BIO_SOCIAL_INDEX_CANDIDATES", ";".join([
+    "D:/bio-cache/photos/stock_candidates_*.csv", "F:/bio-automation-data/nas_pipeline/candidates/*.csv",
+    "D:/bio-results/nas_pipeline/candidates/*.csv", "D:/bio-results/nas_pipeline/candidates-gaps/*.csv"]))
 GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gallery_obs_index.json")   # gallery file -> iNat observation
 SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
-SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 1))
+SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 3))    # scheduled posts a day (08:00, 12:00, 20:00); manual posts are not counted
+SOCIAL_AUTO_APPROVE = env("BIO_SOCIAL_AUTO_APPROVE", "1").strip().lower() not in ("", "0", "false", "no")   # owner 2026-10-22: no per-draft review
+# themed posts ("Mushroom Monday": up to 4 photos of one kind of organism in one post, one theme per weekday; see themes.py)
+SOCIAL_THEMES = env("BIO_SOCIAL_THEMES", "1").strip().lower() not in ("", "0", "false", "no")
+SOCIAL_THEMES_FILE = env_path("BIO_SOCIAL_THEMES_FILE", SOCIAL_DIR / "themes.toml")             # the owner's calendar; built-in defaults without it
+SOCIAL_THEME_DAYS_AHEAD = int(env("BIO_SOCIAL_THEME_DAYS_AHEAD", 7))                              # social-draft prepares the themed posts of the next N days
+OBS_TAXONOMY_FILE = env_path("BIO_OBS_TAXONOMY_FILE", CACHE_DIR / "state" / "obs_taxonomy.json")   # observation id -> taxon + lineage (iNat, cached)
+INAT_BEST_PHOTO_DIR = env_path("BIO_INAT_BEST_PHOTO_DIR", PHOTOS_CACHE / "inat_best")                 # the best size of an iNat photo, fetched when a draft needs it
+INAT_SNAPSHOT = env_path("BIO_INAT_SNAPSHOT", Path(r"F:\bio-automation-data\inat_observations.json"))   # all of the owner's iNat observations (photo ids included)
+# every posting rule is optional and every decision audited (social_rules.py): the owner's switches, and the append-only decision log
+SOCIAL_RULES_FILE = env_path("BIO_SOCIAL_RULES_FILE", SOCIAL_DIR / "rules.toml")
+SOCIAL_AUDIT_LOG = env_path("BIO_SOCIAL_AUDIT_LOG", CACHE_DIR / "state" / "social_audit.jsonl")
+SOCIAL_BREAKER_COOLDOWN_H = float(env("BIO_SOCIAL_BREAKER_COOLDOWN_H", 6))                  # an open circuit breaker allows one probe post after this many hours
+SOCIAL_PAUSE_FILE = env_path("BIO_SOCIAL_PAUSE_FILE", SOCIAL_DIR / "PAUSED")                    # while it exists no scheduled post goes out (pause_switch rule)
+# A second pause marker on a synced path (Syncthing, the NAS, a cloud folder) so the owner can pause from a phone without a shell: while that file
+# exists, with any content, scheduled posts are blocked exactly as for SOCIAL_PAUSE_FILE. OFF by default (empty = not configured).
+SOCIAL_PAUSE_SYNC_FILE = Path(env("BIO_SOCIAL_PAUSE_SYNC_FILE", "")) if env("BIO_SOCIAL_PAUSE_SYNC_FILE", "").strip() else None
+SOCIAL_ALERTS_LOG = env_path("BIO_SOCIAL_ALERTS_LOG", CACHE_DIR / "state" / "social_alerts.jsonl")
+SOCIAL_ALERT_COMMAND = env("BIO_SOCIAL_ALERT_COMMAND", "")                                         # optional: run with each alert's text; empty = log only
+SOCIAL_DIGEST_DIR = env_path("BIO_SOCIAL_DIGEST_DIR", SOCIAL_DIR / "digest")
+SOCIAL_INTEGRITY_ACK_FILE = env_path("BIO_SOCIAL_INTEGRITY_ACK_FILE", SOCIAL_DIR / "integrity_ack.json")   # duplicate posts the owner accepted (social-integrity --accept-duplicate)
+SOCIAL_BACKUP_DIR = env_path("BIO_SOCIAL_BACKUP_DIR", SOCIAL_DIR / "backups")
+SOCIAL_BACKUP_MAX_MB = int(env("BIO_SOCIAL_BACKUP_MAX_MB", 500))                                  # total size cap of the backup folder (0: no size cap); the newest and the newest clean one always stay
+SOCIAL_BACKUP_OFFSITE_DIR = env("BIO_SOCIAL_BACKUP_OFFSITE_DIR", "")                              # OFF by default: a folder on ANOTHER drive/share that every new backup is also copied to (read back and hashed, audited)
+SOCIAL_BACKUP_STALE_DAYS = float(env("BIO_SOCIAL_BACKUP_STALE_DAYS", 2))                          # social-restore-check fails when the newest backup is older
+QDRANT_SYNC_MARKER = env_path("BIO_QDRANT_SYNC_MARKER", CACHE_DIR / "state" / "qdrant_sync_marker.json")   # when each Qdrant sync last wrote successfully
+QDRANT_STALE_DAYS = float(env("BIO_QDRANT_STALE_DAYS", 3))                                         # social-selfcheck and social-alerts warn when a sync is older than this
+SOCIAL_ENGAGEMENT_LOG = env_path("BIO_SOCIAL_ENGAGEMENT_LOG", CACHE_DIR / "state" / "social_engagement.jsonl")
+SOCIAL_SLOTS = env("BIO_SOCIAL_SLOTS", "08:00,12:00,20:00")                                        # the scheduled run times (local), for slot-aware rules
 # app.bsky.embed.images allows 2,000,000 B per image (formerly 1 MB); the official app compresses post images to the same pair
 # (social-app src/lib/constants.ts IMAGE_SIZE_CONFIG_POSTS: maxDimension 4000, maxSize 2000000)
 BSKY_IMAGE_MAX_BYTES = int(env("BIO_BSKY_IMAGE_MAX_BYTES", 2_000_000))
 BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 4000))
 # observation id -> where to buy a print (e.g. its Darkroom product page; Darkroom has no API, so the owner keeps this csv: obs_id,url)
 SOCIAL_PRINTS_FILE = env_path("BIO_SOCIAL_PRINTS_FILE", RESULTS_DIR / "social" / "prints.csv")
+SOCIAL_PRINTS_MANUAL_FILE = env_path("BIO_SOCIAL_PRINTS_MANUAL_FILE", SOCIAL_DIR / "prints_manual.csv")   # owner's obs_id,url rows: they win over darkroom-sync's
+DARKROOM_URL = env("BIO_DARKROOM_URL", "https://rjmendez.darkroom.com")             # the owner's storefront
+DARKROOM_DIR = env_path("BIO_DARKROOM_DIR", CACHE_DIR / "darkroom")                 # product images, vectors, the sync state, the review csv
+DARKROOM_MARGIN = env_float("BIO_DARKROOM_MARGIN", 0.005)                           # a print matches only if no other observation is this close
+DARKROOM_PAUSE_S = env_float("BIO_DARKROOM_PAUSE_S", 1.0)                           # between storefront page requests
+QDRANT_COLLECTION = env("BIO_QDRANT_COLLECTION", "bio_observations")                # gallery images with iNat + Stock data (url/key: BIO_QDRANT_URL/_API_KEY or Loci's backends.toml)
+QDRANT_INAT_CACHE = env_path("BIO_QDRANT_INAT_CACHE", CACHE_DIR / "state" / "obs_inat.json")   # observation id -> taxon, lineage, grade, place, license, tags
+# every iNat observation of the owner (no photos) in Qdrant: `<prefix>observations` and `<prefix>taxa` (qdrant_inat.py)
+INAT_LOGIN = env("BIO_INAT_LOGIN", "rjmendez")                                       # whose public observations are read (unauthenticated API)
+QDRANT_INAT_PREFIX = env("BIO_QDRANT_INAT_PREFIX", "bio_inat_")
+QDRANT_INAT_FULL = env_path("BIO_QDRANT_INAT_FULL", CACHE_DIR / "state" / "inat_full.json")          # the shaped observations + places, topped up incrementally
+QDRANT_INAT_STATE = env_path("BIO_QDRANT_INAT_STATE", CACHE_DIR / "state" / "qdrant_inat_state.json")   # point id -> content hash: only changed points are written
+INAT_COVERAGE_CSV = env_path("BIO_INAT_COVERAGE_CSV", "F:/bio-automation-data/inat_coverage.csv")     # which iNat photos have a local source file
 # Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
 # @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
 # rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
 BSKY_HANDLE = env("BIO_BSKY_HANDLE", "trunkfullofdeadhookers.com")
 BSKY_OAUTH_DIR = env_path("BIO_BSKY_OAUTH_DIR", r"F:\services\bio-social\oauth")
+SOCIAL_SCRIPTS_DIR = env_path("BIO_SOCIAL_SCRIPTS_DIR", r"F:\services\bio-social")      # where scripts\deploy_prod.ps1 copies scripts\windows\*.ps1; social-selfcheck compares them to the repo copies
 BSKY_CLIENT_ID = env("BIO_BSKY_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/poster/client-metadata.json")
 BSKY_REDIRECT_URI = env("BIO_BSKY_REDIRECT_URI", "https://rjmendez.github.io/bio-social-oauth/callback.html")
 BSKY_OAUTH_SCOPE = env("BIO_BSKY_OAUTH_SCOPE", "atproto repo:app.bsky.feed.post?action=create blob:image/*")   # create posts + upload images only
@@ -141,9 +197,27 @@ VISION_MODEL_ENV = "BIO_VISION_MODEL"
 EMBED_MODEL_ENV = "BIO_EMBED_MODEL"                                 # else the pool's "embed" role (the owner's alt-text style examples)
 SOCIAL_STYLE_PROFILE = env_path("BIO_SOCIAL_STYLE_PROFILE", CACHE_DIR / "state" / "bsky_style_profile.json")
 BSKY_APPVIEW = env("BIO_BSKY_APPVIEW", "https://public.api.bsky.app")   # public, unauthenticated reads
+BSKY_AUDIT_APPVIEW = env("BIO_BSKY_AUDIT_APPVIEW", "https://api.bsky.app")      # social-audit-live: unauthenticated reads of what is public
 PLC_URL = env("BIO_PLC_URL", "https://plc.directory")
 MODEL_POOL_FILE = env_path("BIO_MODEL_POOL", HOME / ".loci" / "backends.toml")
 VISION_IMAGE_EDGE = int(env("BIO_VISION_IMAGE_EDGE", 1024))       # long edge of the copy the vision model sees
+
+# --- disk guard (disk_guard.py): workers PAUSE (poll, audit, resume) instead of failing mid-write when a drive drops under its floor
+DISK_GUARD_SYSTEM_MIN_GB = env_float("BIO_DISK_GUARD_SYSTEM_MIN_GB", 15)    # the system drive (C:)
+DISK_GUARD_DATA_MIN_GB = env_float("BIO_DISK_GUARD_DATA_MIN_GB", 20)        # the data drive: the one holding CACHE_DIR
+DISK_GUARD_POLL_S = env_float("BIO_DISK_GUARD_POLL_S", 60)
+DISK_GUARD_RESUME_MARGIN_GB = env_float("BIO_DISK_GUARD_RESUME_MARGIN_GB", 1)   # resume only at floor + margin, so a drive at the edge does not flap
+DISK_GUARD_MAX_WAIT_S = env_float("BIO_DISK_GUARD_MAX_WAIT_S", 0)           # 0 = a daemon worker waits as long as it takes; a scheduled run sets its own limit
+DISK_GUARD_STAGE_MAX_WAIT_S = env_float("BIO_DISK_GUARD_STAGE_MAX_WAIT_S", 21600)   # a pipeline stage (render_all, render_selected, topaz_enhance) waits this long for its OUTPUT drive, then stops with STOP
+DISK_GUARD_LOG = env_path("BIO_DISK_GUARD_LOG", CACHE_DIR / "state" / "disk_guard.jsonl")   # pause/resume events of workers that have no audit log of their own
+SCRATCH_DIR = env_path("BIO_SCRATCH_DIR", CACHE_DIR / "tmp")               # every temp file the package makes goes here (D:), never %TEMP% on C:
+
+
+def scratch_dir() -> Path:
+    """SCRATCH_DIR, created. Pass it as dir= to tempfile calls."""
+    SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    return SCRATCH_DIR
+
 
 RAW_EXTENSIONS = (".nef", ".dng", ".cr2", ".cr3", ".arw", ".raf", ".orf", ".rw2")
 MIN_FREE_GB = env_float("BIO_MIN_FREE_GB", 15)                            # stop writing renders below this much free space

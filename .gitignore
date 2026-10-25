@@ -32,3 +32,11 @@ tmp/
 # photos + annotation jsons -- generated data, not source; rebuild via build_coco_dataset.py)
 tools/sr_train/sam3_vendor/
 tools/sr_train/sam3_eval/coco_dataset/
+
+# OAuth key material and sessions
+oauth/
+oauth-cleanup/
+*.jwk.json
+sessions.json
+states.json
+*.pem

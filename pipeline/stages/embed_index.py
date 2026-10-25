@@ -65,31 +65,45 @@ def inat_meta():
     return meta
 
 
+def backend_setup(name, cfg=None, embedder_cls=None, bioclip_cls=None):
+    """(embedder, collection, sources, batch_size) for --backend *name*: 'siglip' (the ONNX index, default) or 'bioclip2' (cfg['bioclip'], GPU only)."""
+    cfg = CFG if cfg is None else cfg
+    if name == 'siglip':
+        return (embedder_cls or Embedder)(), cfg['collection'], cfg['sources'], cfg['batch_size']
+    if name == 'bioclip2':
+        if bioclip_cls is None:
+            from bioclip_embed import BioClipEmbedder as bioclip_cls
+        bc = cfg['bioclip']
+        return bioclip_cls(bc), bc['collection'], bc.get('sources') or cfg['sources'], bc.get('batch_size', cfg['batch_size'])
+    raise SystemExit(f"embed_index: unknown --backend {name!r} (siglip or bioclip2)")
+
+
 def main():
     from qdrant_client import QdrantClient
     from qdrant_client.models import Distance, PointStruct, VectorParams
     limit = int(sys.argv[sys.argv.index('--limit') + 1]) if '--limit' in sys.argv else None
-    emb = Embedder()
-    dim = emb.embed([next(os.path.join(CFG['sources'][s], f) for s in CFG['sources']
-                          for f in os.listdir(CFG['sources'][s]) if f.lower().endswith('.jpg'))]).shape[1]
-    print(f'model ok: input {emb.inp} -> {emb.out}, dim {dim}, size {emb.size}', flush=True)
+    backend = sys.argv[sys.argv.index('--backend') + 1] if '--backend' in sys.argv else 'siglip'
+    emb, collection, sources, batch = backend_setup(backend)
+    dim = emb.embed([next(os.path.join(sources[s], f) for s in sources
+                          for f in os.listdir(sources[s]) if f.lower().endswith('.jpg'))]).shape[1]
+    print(f'model ok: backend {backend}, {type(emb).__name__}, dim {dim}, collection {collection}', flush=True)
     qc = QdrantClient(path=CFG['qdrant_path'])
-    if not qc.collection_exists(CFG['collection']):
-        qc.create_collection(CFG['collection'], vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
+    if not qc.collection_exists(collection):
+        qc.create_collection(collection, vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
     meta = inat_meta()
     total = 0
     t0 = time.time()
-    for source, folder in CFG['sources'].items():
+    for source, folder in sources.items():
         files = sorted(f for f in os.listdir(folder) if f.lower().endswith('.jpg'))
         if limit:
             files = files[:limit]
         ids = [point_id(source, os.path.splitext(f)[0]) for f in files]
         have = set()
         for i in range(0, len(ids), 500):
-            have |= {p.id for p in qc.retrieve(CFG['collection'], ids[i:i + 500], with_payload=False, with_vectors=False)}
+            have |= {p.id for p in qc.retrieve(collection, ids[i:i + 500], with_payload=False, with_vectors=False)}
         todo = [(f, pid) for f, pid in zip(files, ids) if pid not in have]
         print(f'{source}: {len(files)} files, {len(have)} already indexed, {len(todo)} to embed', flush=True)
-        B = CFG['batch_size']
+        B = batch
         for i in range(0, len(todo), B):
             chunk = todo[i:i + B]
             paths = [os.path.join(folder, f) for f, _ in chunk]
@@ -107,11 +121,11 @@ def main():
                 else:
                     payload['lightcraft_id'] = int(key) if key.isdigit() else key
                 pts.append(PointStruct(id=pid, vector=v.tolist(), payload=payload))
-            qc.upsert(CFG['collection'], pts)
+            qc.upsert(collection, pts)
             total += len(pts)
             if (i // B) % 20 == 0:
                 print(f'  {source} {i + len(chunk)}/{len(todo)}  {total / max(time.time() - t0, 1):.1f} img/s', flush=True)
-    print('done; points in collection:', qc.count(CFG['collection']).count, f'({time.time() - t0:.0f}s)', flush=True)
+    print('done; points in collection:', qc.count(collection).count, f'({time.time() - t0:.0f}s)', flush=True)
 
 
 if __name__ == '__main__':
