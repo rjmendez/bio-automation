@@ -40,12 +40,6 @@ trap finish EXIT
   # Windows-only gloo bug that doesn't apply on Linux, but no reason to pin older).
   pip install --quiet torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
   pip install --quiet einops triton psutil
-  # 8-bit AdamW (weak_categories_aws.yaml now targets bitsandbytes.optim.AdamW8bit) --
-  # full fine-tune OOM'd at batch_size=1 on 12GB, 22GB, AND 48GB cards in a row (each
-  # failing deeper in the same single forward/backward); compressing the optimizer's
-  # fp32 momentum/variance state is the cheapest lever left that doesn't need a bigger,
-  # currently capacity-constrained GPU.
-  pip install --quiet bitsandbytes
 
   echo "=== $(date -u) installing sam3 package ==="
   cd "$WORK/code"
