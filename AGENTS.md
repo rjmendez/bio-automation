@@ -127,8 +127,13 @@ names ~5 s). Caddyfile has MIXED newlines (LF + one trailing CRLF): never assume
 owner's photos from the CURRENT month of every year in the gallery (`<year>/<year>-<MM>/`), one iNat observation per post,
 gallery renders only (never iNat's 2048 px copies). Alt text comes from the LOCAL vision model (env `BIO_VISION_MODEL`, else
 the pool's `vision` role; never a literal model name), given the embedded Stock label and the live observation; GPU only.
-**Every post is approved by the owner** (`bio social-approve`); nothing auto-approves, and a draft edited after approval needs a
-new approval. `bio social-post` is dry-run unless `--live`, posts at most `BIO_SOCIAL_POSTS_PER_DAY` a day, and a send that
+**Posts are approved by rule, not one by one (corrected 2026-10-24):** the rule `auto_approve` (ON by default, `bio social-rules`) lets a
+scheduled run approve the oldest drafted draft itself when none is approved, so the 08:00, 12:00 and 20:00 posts go out without a per-draft
+review; switch it off to require `bio social-approve` for every post. A draft edited after approval needs a new approval either way.
+**A post is never more specific than the county (owner, 2026-10-24):** the place line is `social.county_level(place_guess)` ("Lancaster County,
+PA, USA"; a town or a game land is cut back to "PA, USA"; a place that cannot be placed that coarsely is left out), the gate refuses alt text or
+post text that carries any place word finer than the county for EVERY observation (a private one may carry no place at all, the county included),
+and `social_live_audit` applies the same check to the public posts. Drafts written before the rule had their place line rewritten. `bio social-post` is dry-run unless `--live`, posts at most `BIO_SOCIAL_POSTS_PER_DAY` a day, and a send that
 raised leaves the draft `posting`, which blocks all posting until the owner checks the profile and runs `bio social-resolve`
 (never resend on a guess). Never print a private-geoprivacy place. Alt text follows the owner's own style
 (`bio social-style` -> `settings.SOCIAL_STYLE_PROFILE`, learned from alt texts they wrote on Bluesky, inat_skeet bot posts
@@ -161,6 +166,24 @@ processing from the command line (render, tag, validate, build upload sets).
 Rebuilds of derived data and restarts of local services are pre-authorized only
 with a backup, a verification step and a rollback noted; posting, DNS/Caddy,
 deleting originals and pushing stay ask-first.
+
+**iNat taxon suggestions (2026-10-23; PRs #17, #18).** BioCLIP 2 (open_clip, model id and collection in `embed_config.json`'s `bioclip` object,
+never a literal in code) replaced SigLIP for suggestions; the SigLIP index stays for `bio_similar`, `triage_vision`, `lc_queue_from_raws`. GPU only:
+no CUDA is a `RuntimeError` (`bioclip_embed.pick_device`; the card with the most free VRAM unless `BIO_BIOCLIP_CUDA_DEVICE`/config pins one). Two
+sources per proposed observation, each with its MEASURED accuracy, never a raw score: the nearest-neighbour vote over the owner's labelled photos
+(`embed_loo.py` -> `suggest_bins.json`) and zero-shot over every species of iNat's taxonomy export (`taxon_zeroshot.py build|calibrate`; the 1.1 M-species
+text index lives under `D:\bio-cache\taxonomy\<export date>`, an untrusted download in its own folder; `zeroshot_bins.json` is calibrated per
+OBSERVATION on the pooled probability). `inat_suggest.py` (env `BIO_QUEUE_TAG`) writes `inat_suggestions<TAG>.json` and refuses to run without its
+bins, and never overwrites with an empty result. **The measured accuracies are optimistic for the backlog**: they come from observations the owner already
+posted and had identified; `taxon_zeroshot.py calibrate` therefore scores the observations posted since the last calibration on their own and prints
+`DRIFT` lines where the old numbers were too good. `bio inat-gallery --queue ... --suggestions ... --prefix <letter>` hardlinks the proposed upload copies
+into the gallery as `inat-pending/<iconic>/<prefix><group>[_Species_a<accuracy%>]/` (a species is named only at a measured accuracy of at least `--min-accuracy`, default 0.75: the owner's choice 2026-10-24, after the first out-of-sample check found the middle bins about 0.14 too optimistic) (outside `<year>/<year-month>`, which the Bluesky poster reads; one
+prefix and one manifest per queue so pruning never touches another queue; `g` = LightCraft queue `_lc`, `e` = exported-files queue `_ex`, whose copies were
+regenerated onto `D:\bio-cache\inat-upload-regen` into the derived `inat_queue_ex.json`; the original `inat_queue.json` is never modified). The copies
+carry GPS EXIF by design (upload copies). `pipeline/stages/suggest_refresh.py` is the one entry point (config `suggest_refresh.json`, stops at the first
+failing step, lock file); `scripts/run-suggest-refresh.ps1` wraps it and registers nothing. `inat_photos_fetch.py` fetches only observations newer than the
+last calibration unless `--all` (a full backfill is 21 k photos, 3 GB). Run a worktree's stages with `PYTHONPATH=<tree>\src` (editable-install trap) and the
+GPU venv `D:\venvs\bioclip` (`HF_HOME=D:\bio-cache\models\hf`, `HF_HUB_OFFLINE=1`). CI has no `qdrant-client` or `torch`: tests use recording fakes.
 
 ## Test-writing rules
 
@@ -204,6 +227,8 @@ swallowed-assert):
 
 Its allowlist (`scripts/test_honesty_allowlist.toml`) starts empty and should stay
 that way — fix the test rather than adding an entry.
+
+**Before merging** (until the GitHub `tests-private` job runs, which needs the `BSKY_OAUTH_READ_TOKEN` secret): `powershell -File scripts\premerge.ps1` runs the honesty check and the full suite with the basetemp on D:. A green `tests` job alone is the public subset only.
 
 ## Running tests
 

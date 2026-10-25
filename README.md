@@ -17,3 +17,7 @@ bio cull F:\Bio\2025\2025-10-09\obs-20251009-prairie-warbler
 ## Design
 
 - [Folder and metadata schema](docs/folder-metadata-schema.md)
+
+## Disk guard
+
+`bio_automation.disk_guard` pauses a worker (instead of failing mid-write) while C: or the data drive is under its floor, writes `disk_pause` / `disk_resume` / `disk_timeout` events (the social audit log, or `settings.DISK_GUARD_LOG` for the pipeline) and resumes by itself at floor + margin. Thresholds: `BIO_DISK_GUARD_SYSTEM_MIN_GB` (15), `BIO_DISK_GUARD_DATA_MIN_GB` (20), `BIO_DISK_GUARD_POLL_S`, `BIO_DISK_GUARD_RESUME_MARGIN_GB`, `BIO_DISK_GUARD_MAX_WAIT_S` (0 = wait as long as it takes); social-prep and the live post run have their own (`BIO_SOCIAL_PREP_*`, `BIO_SOCIAL_POST_*`). Scripts outside this package (the ops repo's `nas_pipeline.py`, `pipeline_upkeep`) call `bio disk-guard --wait --who <name> && <step>` or `disk_guard.guard_for_write(who)` before each write step. Temp files go to `BIO_SCRATCH_DIR` (default `D:\bio-cache\tmp`), never `%TEMP%`.
