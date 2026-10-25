@@ -35,15 +35,16 @@ from PIL import Image, ImageFilter
 BLUR_SIGMA = 0.5  # fixed, not randomized -- see module docstring
 
 
-def degrade_hr_to_lr(hr: np.ndarray, rng: random.Random) -> np.ndarray:
-    """*hr* is [H, W, 3] uint8 RGB, H and W even. Returns [H/2, W/2, 3] uint8 RGB:
-    a fixed-sigma gaussian blur (realistic optical softness) then a bicubic 2x
-    downsample. *rng* is accepted for call-site compatibility (dataset/training
-    code seeds and passes it) even though this function is currently
-    deterministic given *hr* -- BLUR_SIGMA is fixed, not sampled.
+def degrade_hr_to_lr(hr: np.ndarray, rng: random.Random, scale: int = 2) -> np.ndarray:
+    """*hr* is [H, W, 3] uint8 RGB, H and W divisible by *scale*. Returns
+    [H/scale, W/scale, 3] uint8 RGB: a fixed-sigma gaussian blur (realistic
+    optical softness) then a bicubic downsample by *scale*. *rng* is accepted
+    for call-site compatibility (dataset/training code seeds and passes it)
+    even though this function is currently deterministic given *hr* --
+    BLUR_SIGMA is fixed, not sampled.
     """
     img = Image.fromarray(hr).filter(ImageFilter.GaussianBlur(BLUR_SIGMA))
-    lr = img.resize((hr.shape[1] // 2, hr.shape[0] // 2), Image.BICUBIC)
+    lr = img.resize((hr.shape[1] // scale, hr.shape[0] // scale), Image.BICUBIC)
     return np.asarray(lr, dtype=np.uint8)
 
 
