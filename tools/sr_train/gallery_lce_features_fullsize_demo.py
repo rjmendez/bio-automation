@@ -36,7 +36,7 @@ from PIL import Image
 
 SOURCE_DIR = Path(r"F:\Bio-export\adobe-stock\ready")
 GALLERY_OUT = Path(r"D:\bio-results\gallery\_examples\lce-model-stack-fullsize-demo")
-N_UPSCALE_EXAMPLES = 1
+N_UPSCALE_EXAMPLES = 2
 N_SEGMENT_EXAMPLES = 2
 
 
@@ -76,11 +76,15 @@ def upscale_demo():
     picked = held_out[:N_UPSCALE_EXAMPLES]
 
     for p in picked:
+        out_dir = GALLERY_OUT / "upscale" / p.stem
+        if (out_dir / "4_bicubic_4x.jpg").exists():
+            print(f"[upscale] {p.stem} already done, skipping")
+            continue
+
         with Image.open(p) as im:
             hwc = np.asarray(im.convert("RGB"))
         h, w = hwc.shape[:2]
         print(f"[upscale] {p.stem} ({w}x{h})")
-        out_dir = GALLERY_OUT / "upscale" / p.stem
         out_dir.mkdir(parents=True, exist_ok=True)
 
         Image.fromarray(hwc).save(out_dir / f"0_original_{w}x{h}.jpg", quality=95)
@@ -103,18 +107,27 @@ def _mask_overlay(hwc_u8: np.ndarray, mask_1hw: np.ndarray) -> np.ndarray:
     return overlay.round().clip(0, 255).astype(np.uint8)
 
 
+_UPSCALE_RESERVED_SLOTS = 4  # fixed, independent of N_UPSCALE_EXAMPLES, so growing the
+# upscale example count doesn't shift which held-out files segment_demo picks and
+# orphan/rename its already-generated output.
+
+
 def segment_demo(cache):
     from lce.models import segment
 
-    held_out = _held_out_files()[N_UPSCALE_EXAMPLES:]  # don't reuse the upscale photo
+    held_out = _held_out_files()[_UPSCALE_RESERVED_SLOTS:]
     picked = held_out[:N_SEGMENT_EXAMPLES]
 
     for p in picked:
+        out_dir = GALLERY_OUT / "segment" / p.stem
+        if (out_dir / "2_overlay_custom_center_point.jpg").exists():
+            print(f"[segment] {p.stem} already done, skipping")
+            continue
+
         with Image.open(p) as im:
             hwc = np.asarray(im.convert("RGB"))
         h, w = hwc.shape[:2]
         print(f"[segment] {p.stem} ({w}x{h})")
-        out_dir = GALLERY_OUT / "segment" / p.stem
         out_dir.mkdir(parents=True, exist_ok=True)
         chw = _to_chw_f32(hwc)
 
