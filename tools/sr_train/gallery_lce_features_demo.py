@@ -9,6 +9,11 @@ predicts. Covers:
               zero-shot variant.
   segment  -- the existing default 3x3 grid prompt vs a single caller-supplied
               point near the subject (the new `points` argument).
+  sharpen  -- NAFNet deblurring (unchanged this PR, but never shown before).
+  stacked  -- enhance(mode="sharpen_upscale"), the real sharpen-then-upscale
+              chain, at scale=4 -- sharpen-only and upscale-only side by side
+              with the combined result, so the stacking's own marginal value
+              is visible, not just asserted.
 
 Unlike the other gallery_*.py scripts in this file, this one does NOT need
 the GPU-only bio-sr-train venv or CUDA: lce's upscale/segment code is plain
@@ -24,12 +29,22 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _lce_gpu  # noqa: E402
+# CUDA measured unreliable/crash-prone for lce's models on this machine
+# (see _lce_gpu's docstring) -- force CPU instead of fighting it.
+_lce_gpu.force_cpu()
+
 SOURCE_DIR = Path(r"F:\Bio-export\adobe-stock\ready")
 GALLERY_OUT = Path(r"D:\bio-results\gallery\_examples\lce-model-stack-demo")
 UPSCALE_CROP = 256
 SEGMENT_CROP = 512
+SHARPEN_CROP = 512
+STACK_CROP = 512
 N_UPSCALE_EXAMPLES = 4
 N_SEGMENT_EXAMPLES = 3
+N_SHARPEN_EXAMPLES = 3
+N_STACK_EXAMPLES = 3
 
 
 def _held_out_files():
@@ -155,6 +170,67 @@ def segment_demo(cache):
         print(f"  {name} -> {out_dir}  (grid selects {grid_frac:.1%} of crop, point selects {point_frac:.1%})")
 
 
+def sharpen_demo(cache):
+    from lce.models import sharpen
+
+    held_out = _held_out_files()[N_UPSCALE_EXAMPLES + N_SEGMENT_EXAMPLES:]
+    crops = []
+    for p in held_out:
+        if len(crops) >= N_SHARPEN_EXAMPLES:
+            break
+        crop = _center_crop(p, SHARPEN_CROP)
+        if crop is not None:
+            crops.append((p.stem, crop))
+    print(f"[sharpen] {len(crops)} held-out {SHARPEN_CROP}px crops")
+
+    for name, crop_hwc in crops:
+        out_dir = GALLERY_OUT / "sharpen" / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        chw = _to_chw_f32(crop_hwc)
+
+        sharpened = _to_hwc_u8(sharpen.run(chw, cache, strength=1.0))
+
+        Image.fromarray(crop_hwc).save(out_dir / f"0_original_{SHARPEN_CROP}px_crop.jpg", quality=95)
+        Image.fromarray(sharpened).save(out_dir / "1_nafnet_sharpened.jpg", quality=95)
+        _sidebyside(crop_hwc, sharpened).save(out_dir / "2_original_vs_sharpened_sidebyside.jpg", quality=92)
+
+        print(f"  {name} -> {out_dir}")
+
+
+def stacked_demo(cache):
+    from lce.models import enhance, sharpen, upscale
+
+    held_out = _held_out_files()[N_UPSCALE_EXAMPLES + N_SEGMENT_EXAMPLES + N_SHARPEN_EXAMPLES:]
+    crops = []
+    for p in held_out:
+        if len(crops) >= N_STACK_EXAMPLES:
+            break
+        crop = _center_crop(p, STACK_CROP)
+        if crop is not None:
+            crops.append((p.stem, crop))
+    print(f"[stacked] {len(crops)} held-out {STACK_CROP}px crops, sharpen -> upscale 4x")
+
+    for name, crop_hwc in crops:
+        out_dir = GALLERY_OUT / "stacked" / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        chw = _to_chw_f32(crop_hwc)
+
+        upscale_only = _to_hwc_u8(upscale.run(chw, cache, scale=4))                  # 4x default (sentinel), no sharpen
+        sharpen_only = _to_hwc_u8(sharpen.run(chw, cache, strength=1.0))             # sharpen, no upscale
+        # The real stacked path, not a manual chain -- exercises enhance.run()'s
+        # own sharpen-then-upscale composition (mode="sharpen_upscale").
+        stacked = _to_hwc_u8(enhance.run(chw, cache, mode="sharpen_upscale", scale=4))
+
+        Image.fromarray(crop_hwc).save(out_dir / f"0_original_{STACK_CROP}px_crop.jpg", quality=95)
+        Image.fromarray(sharpen_only).save(out_dir / "1_sharpen_only.jpg", quality=95)
+        Image.fromarray(upscale_only).save(out_dir / "2_upscale_4x_only.jpg", quality=95)
+        Image.fromarray(stacked).save(out_dir / "3_sharpen_then_upscale_4x_stacked.jpg", quality=95)
+        _sidebyside(upscale_only, stacked).save(
+            out_dir / "4_upscale_only_vs_stacked_sidebyside.jpg", quality=92)
+
+        print(f"  {name} -> {out_dir}")
+
+
 def main():
     from lce.engine import ModelCache
 
@@ -163,6 +239,8 @@ def main():
 
     upscale_demo(cache)
     segment_demo(cache)
+    sharpen_demo(cache)
+    stacked_demo(cache)
 
     print(f"\nWrote examples to {GALLERY_OUT}")
 
