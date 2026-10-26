@@ -1,8 +1,12 @@
 """Worker: run exactly one lce upscale call in a fresh process and save the
-result. Isolation per call avoids accumulating ONNX Runtime arena memory
-across multiple large dynamic-shape models in one process (measured: running
-hat-stock-lora-x2 then hat-stock-x4 back-to-back in one ModelCache OOM'd on a
-905MB allocation; each alone succeeds in ~450-500s on a ~2300x2300 input).
+result. Isolation per call avoids accumulating ONNX Runtime arena/VRAM
+across multiple large dynamic-shape models in one process (measured on CPU:
+running hat-stock-lora-x2 then hat-stock-x4 back-to-back in one ModelCache
+OOM'd on a 905MB allocation; each alone succeeds).
+
+GPU: measured unreliable/crash-prone for lce's ONNX models on this machine
+across 3 real runs (see _lce_gpu's docstring) -- _lce_gpu.force_cpu() makes
+this worker take lce's own CPU-only path deliberately, not by accident.
 
 Usage: _upscale_one.py <in_image> <out_image> <scale> [variant]
 """
@@ -12,6 +16,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _lce_gpu  # noqa: E402
+_lce_gpu.force_cpu()
 
 sys.path.insert(0, str(Path(r"C:\Users\rjmendez-admin\development\lce\src")))
 from lce.engine import ModelCache  # noqa: E402
@@ -29,9 +37,11 @@ def main():
     cache = ModelCache(max_models=1, device="CPU")
     t0 = time.time()
     out_chw = upscale.run(chw, cache, scale=scale, variant=variant)
+    elapsed = time.time() - t0
+    providers = next(iter(cache.providers.values()), ["?"])
     out_hwc = (out_chw.transpose(1, 2, 0) * 255.0).clip(0, 255).round().astype(np.uint8)
     Image.fromarray(out_hwc).save(out_path, quality=95)
-    print(f"scale={scale} variant={variant}: {time.time() - t0:.1f}s -> "
+    print(f"scale={scale} variant={variant} providers={providers}: {elapsed:.1f}s -> "
           f"{out_hwc.shape[1]}x{out_hwc.shape[0]} -> {out_path}")
 
 
