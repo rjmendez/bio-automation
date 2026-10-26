@@ -34,3 +34,7 @@ oauth-cleanup/
 sessions.json
 states.json
 *.pem
+
+# SAM3 vendored clone (its own nested .git, Meta's own "SAM License" --
+# not Apache/MIT, see tools/sr_train/sam3_zeroshot_mask_demo.py's docstring)
+tools/sr_train/sam3_vendor/
