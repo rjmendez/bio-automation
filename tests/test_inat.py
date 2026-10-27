@@ -1,8 +1,8 @@
-"""Unit tests for bio_automation.inat: this module is a thin, settings-bound wrapper around the standalone inat_client library
-(https://github.com/rjmendez/inat-client). The client's own algorithm (retries, reshaping, rate limiting, the taxon-lineage
-cache) is tested in that repo's own test suite, hermetically, and must not be re-tested here -- these tests cover only the
-wiring: that bio-automation's settings values actually reach the library, and that an explicit caller-supplied override still
-wins over them."""
+"""Unit tests for bio_automation.inat: this module is a thin, settings-bound wrapper around inat_client (src/inat_client), a
+settings-free module that ships in this same repo. The client's own algorithm (retries, reshaping, rate limiting, the
+taxon-lineage cache) is tested hermetically in tests/test_inat_client.py and must not be re-tested here -- these tests cover
+only the wiring: that bio-automation's settings values actually reach the library, and that an explicit caller-supplied
+override still wins over them."""
 from __future__ import annotations
 
 import importlib
