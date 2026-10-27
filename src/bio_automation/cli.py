@@ -457,6 +457,21 @@ def build_parser() -> argparse.ArgumentParser:
                                          help="Don't enqueue a gallery.reindex message (default: on).")
     p_publish_stock_review.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
 
+    p_upscale_crops = sub.add_parser(
+        "upscale-crops",
+        help="Upscale the Stock backlog's actual crops (sub-region selections "
+             "smaller than full sensor resolution) via lce's HAT models, "
+             "scaled per image (4x or 2x) so the result never exceeds Stock's "
+             "100MP ceiling. Full-frame exports and crops already close to "
+             "the ceiling are skipped. Never writes in place; see "
+             "crop_upscale.py.",
+    )
+    p_upscale_crops.add_argument("--src-dir", default=str(settings.STOCK_DIR / "ready"))
+    p_upscale_crops.add_argument("--out-dir", default=str(settings.PHOTOS_CACHE / "crop-upscaled"))
+    p_upscale_crops.add_argument("--min-free-gb", type=float, default=10.0)
+    p_upscale_crops.add_argument("--limit", type=int, default=None,
+                                  help="process at most this many not-yet-upscaled crops (for a bounded trial run)")
+
     p_serve = sub.add_parser("serve", help="Start Topaz enhancement HTTP server")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8091)
@@ -790,6 +805,17 @@ def cmd_publish_stock_review(args: argparse.Namespace) -> int:
             queue.close()
     print(json.dumps(result, indent=2))
     return 0
+
+
+def cmd_upscale_crops(args: argparse.Namespace) -> int:
+    import json
+
+    from . import crop_upscale
+
+    result = crop_upscale.run(Path(args.src_dir), out_dir=Path(args.out_dir),
+                               min_free_gb=args.min_free_gb, limit=args.limit)
+    print(json.dumps(result, indent=2))
+    return 1 if result["failed"] else 0
 
 
 def cmd_inat_gallery(args: argparse.Namespace) -> int:
@@ -1413,6 +1439,8 @@ def main() -> int:
         return cmd_enhance_stock(args)
     if args.command == "publish-stock-review":
         return cmd_publish_stock_review(args)
+    if args.command == "upscale-crops":
+        return cmd_upscale_crops(args)
     if args.command == "disk-guard":
         from . import disk_guard
 
