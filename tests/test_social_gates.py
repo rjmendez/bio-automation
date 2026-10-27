@@ -43,7 +43,7 @@ class TestAltTextPrivacy:
         return {"obs": obs or observation(), "obs_id": 42, "alt": alt}
 
     @pytest.mark.parametrize("alt,kind", [
-        ("A spider at 40.1234, -75.5678 on a leaf.", "coordinates"),
+        ("A spider at 12.1234, -65.5678 on a leaf.", "coordinates"),
         ("Photographed behind 1234 Old Mill Rd in the evening.", "street address"),
         ("A moth near 7 Oak Street.", "street address"),
     ])
@@ -93,7 +93,7 @@ class TestAltTextPrivacy:
         assert social_gates.place_tokens(None) == []
 
     def test_several_leaks_are_all_named(self):
-        v = social_gates.alt_text_privacy(self.ctx("Berks spider at 40.1234, -75.5678 behind 9 Elm Street.", hidden_obs()))
+        v = social_gates.alt_text_privacy(self.ctx("Berks spider at 12.1234, -65.5678 behind 9 Elm Street.", hidden_obs()))
         assert v.reason == "alt text leaks coordinates; street address; place finer than the county"
 
     def test_through_the_framework_the_rule_switches_the_gate_and_the_reject_is_audited(self, gates, audit):
@@ -407,22 +407,22 @@ def test_every_gate_is_registered_critical_where_the_framework_supports_it(monke
 
 class TestCoordinateForms:
     @pytest.mark.parametrize("alt", [
-        "Brambles photographed at 40.4123, -75.9876.",                     # sentence-final pair
-        "Brambles at 40.4123, -75.9876, near a log.",
-        "Brambles at 40.41234 -75.98765 on a log.",                        # no comma
-        "Brambles at +40.4123;-75.9876 on a log.",                         # plus sign, semicolon
-        "Brambles at 40.4123,-75.9876",                                    # no space, end of text
-        "Brambles at 40.4123, −75.9876 on a log.",                    # Unicode minus
-        "Brambles at 40,4123 -75,9876 on a log.",                          # comma decimals
-        "Brambles at 40.4123 N 75.9876 W on a log.",                       # hemisphere suffixes
-        "Brambles at 40.4123° N, 75.9876° W.",
-        "Brambles at N 40.4123 W 75.9876.",
-        "Brambles at 40°24'44\"N 75°59'15\"W.",                  # degrees, minutes, seconds
-        "Brambles at 40° 24.7′ N.",
-        "Brambles, lat 40.4 on a log.",                                    # labels
-        "Brambles, Longitude: -75.9.",
-        "Brambles at lng=-75.98.",
-        "Brambles at 40.4123 N.",
+        "Brambles photographed at 12.3456, -65.4321.",                     # sentence-final pair
+        "Brambles at 12.3456, -65.4321, near a log.",
+        "Brambles at 12.34567 -65.43217 on a log.",                        # no comma
+        "Brambles at +12.3456;-65.4321 on a log.",                         # plus sign, semicolon
+        "Brambles at 12.3456,-65.4321",                                    # no space, end of text
+        "Brambles at 12.3456, −65.4321 on a log.",                    # Unicode minus
+        "Brambles at 12,3456 -65,4321 on a log.",                          # comma decimals
+        "Brambles at 12.3456 N 65.4321 W on a log.",                       # hemisphere suffixes
+        "Brambles at 12.3456° N, 65.4321° W.",
+        "Brambles at N 12.3456 W 65.4321.",
+        "Brambles at 12°3'4\"N 65°4'3\"W.",                  # degrees, minutes, seconds
+        "Brambles at 12° 3.7′ N.",
+        "Brambles, lat 12.3 on a log.",                                    # labels
+        "Brambles, Longitude: -65.4.",
+        "Brambles at lng=-65.43.",
+        "Brambles at 12.3456 N.",
     ])
     def test_coordinates_in_every_form_are_found(self, alt):
         assert social_gates.has_coordinates(alt) is True
@@ -571,7 +571,7 @@ def rescreen(hook, d, draft, audit):
 class TestGateRescreen:
     def test_every_alt_text_of_the_stored_draft_is_screened_and_the_reason_names_the_kind_only(self, tmp_path, audit):
         obs = observation(place="Kempton, PA, USA", geoprivacy="private")
-        d, draft = stored_draft(tmp_path, ["A spider on a leaf.", "A spider in Kempton at 40.4123, -75.9876."], obs)
+        d, draft = stored_draft(tmp_path, ["A spider on a leaf.", "A spider in Kempton at 12.3456, -65.4321."], obs)
         v = rescreen(social_gates.rescreen_privacy, d, draft, audit)
         assert v == Verdict("withdraw", "alt text of image 2 leaks coordinates; place finer than the county")
         assert [(r["event"], r["draft_id"], r["gate"], r["reason"]) for r in audit.records()] == [

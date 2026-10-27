@@ -272,6 +272,6 @@ class TestDefaultBinaryEnvVar:
         path for this machine is used."""
         monkeypatch.delenv(FOCUS_STACK_BINARY_ENV, raising=False)
         importlib.reload(focus_stack)
-        assert focus_stack.DEFAULT_BINARY == Path(
-            r"C:\Users\rjmendez-admin\AppData\Local\Programs\focus-stack\focus-stack\focus-stack.exe"
+        assert focus_stack.DEFAULT_BINARY == (
+            Path.home() / "AppData" / "Local" / "Programs" / "focus-stack" / "focus-stack" / "focus-stack.exe"
         )

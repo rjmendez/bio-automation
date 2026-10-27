@@ -20,7 +20,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 PACE_S = 0.2
-USER_AGENT = 'bio-automation/1.0 (rjmendez; read-only photo cache for local taxon suggestions)'
+USER_AGENT = os.environ.get('INAT_USER_AGENT', 'bio-automation/1.0 (+contact unset; read-only photo cache for local taxon suggestions)')
 SIZES = re.compile(r'/(square|thumb|small|medium|large|original)\.')
 
 

@@ -88,11 +88,11 @@ violates it. **The owner does NOT want anything on the tailnet (2026-10-20).** F
 with `scp user@host:D:/bio-cache/downloads/<name>.zip .` (key auth over the existing sshd).
 A `bio serve-downloads` HTTP server (tailnet-identity auth) existed briefly and was REMOVED:
 its `Tailscale-User-Login` trust is only safe when `tailscale serve` is the ONLY thing that can
-reach the port. It was NOT: the front-door Caddy site `photos.lab.floppydicks.net:4443`
-(LAN + tailnet) proxied the same port 8780 and passed a forged header through, so any LAN
-client got the zips (reproduced, then closed). Before trusting a header from a loopback
-upstream, enumerate every proxy that can forward to that port (`Caddyfile`, `tailscale serve
-status`); better, do not hand-roll an HTTP file server at all (the gallery is PiGallery2).
+reach the port. It was NOT: a separate LAN-facing reverse-proxy site also proxied the same
+port and passed a forged header through, so any LAN client got the zips (reproduced, then
+closed). Before trusting a header from a loopback upstream, enumerate every proxy that can
+forward to that port (`Caddyfile`, `tailscale serve status`, or your proxy's equivalent);
+better, do not hand-roll an HTTP file server at all (the gallery is PiGallery2).
 Never reuse `render._check_export_bounds` for validation: it deletes the file it
 checks. Persistent services and scheduled tasks need the owner's explicit grant (the
 permission classifier blocks them); write the script and hand it over.
@@ -104,24 +104,20 @@ It serves `F:/Bio-export/adobe-stock/gallery`, a folder of HARDLINKS (no copies)
 shortlist-A files (`F:/bio-automation-data/build_gallery.py`): research grade, species level,
 JPEG quality >= q93, >= 24 MP, not tentative. Originals download unchanged (byte-identical,
 verified). Listens on 127.0.0.1:8781 ONLY (the tailscale serve entry was removed at the
-owner's request); app login `owner` (password in `F:/services/bio-gallery/password.txt`; the
+owner's request); app login `owner` (password in a local, not-committed password file; the
 default admin/admin was deleted by `gallery_secure.py`). **Persistent:** scheduled task
-`Bio-Gallery` (S4U, startup + logon, restart on failure) runs the supervisor
-`F:/services/bio-gallery/run-gallery.ps1`, which waits for the photo folder, kills an orphaned
-PiGallery2 `node.exe` before each start (Stop-ScheduledTask ends the supervisor but NOT its
-child) and logs to `D:/apps/pigallery2-data/server.log` via `cmd` redirection. Runs with
+`Bio-Gallery` (S4U, startup + logon, restart on failure) runs a supervisor script that waits
+for the photo folder, kills an orphaned PiGallery2 `node.exe` before each start
+(Stop-ScheduledTask ends the supervisor but NOT its child) and logs to
+`D:/apps/pigallery2-data/server.log` via `cmd` redirection. Runs with
 `--Server-trustProxy=loopback`, so failed logins log the real client address and the session
-cookie is `Secure`. Reboot survival not tested. **LAN access (applied
-2026-10-20 with the owner's yes):** https://photos.lab.floppydicks.net:4443/ . The name
-resolves to the LAN IP 172.16.100.11; the front-door Caddy block of that name now binds ONLY
-172.16.100.11, answers 403 unless the client is in 172.16.100.0/24 or loopback, and proxies
-to 127.0.0.1:8781 (wildcard Let's Encrypt cert, HSTS, PiGallery2 login behind it). Not on
-the tailnet. Verified from this host and from mrpink (172.16.100.20): TLS valid, front page
-200, anonymous API 401, original byte-identical, thumbnails cacheable. The 403 branch was
-confirmed in Caddy's compiled config only (no client outside the /24 could be sourced).
-Rollback: copy `F:/services/tls/caddy/Caddyfile.bak-photos-lan-20261020-091908` over
-`Caddyfile`, then Stop+Start scheduled task `Lab-TLS-FrontDoor` (blips the loci/litellm/ollama
-names ~5 s). Caddyfile has MIXED newlines (LF + one trailing CRLF): never assume one style.
+cookie is `Secure`. Reboot survival not tested. **LAN access:** if you expose the gallery on
+your own LAN through a reverse proxy (Caddy, nginx, etc.), bind the proxy to that specific
+LAN IP, restrict it to your own subnet (or loopback) at the 403 level, and verify the 403
+branch from an actual outside client, not just by reading the config -- a proxy that also
+forwards to the loopback port from elsewhere in your network can defeat the restriction.
+Caddyfiles can have MIXED newlines (LF + a trailing CRLF): never assume one style when
+you edit one in place.
 
 **Bluesky posts (owner, 2026-10-21; `social.py`, folded in from github.com/rjmendez/inat_skeet).** Daily posts of the
 owner's photos from the CURRENT month of every year in the gallery (`<year>/<year>-<MM>/`), one iNat observation per post,

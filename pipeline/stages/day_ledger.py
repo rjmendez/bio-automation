@@ -13,8 +13,8 @@ import re
 import sqlite3
 import sys
 
-ROOT = r'F:\bio-automation-data'
-CAT = r'C:\Users\rjmendez-admin\Pictures\Lightroom\Lightroom Catalog.lrcat'
+ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
+CAT = os.environ.get('BIO_LRCAT', os.path.join(os.path.expanduser('~'), 'Pictures', 'Lightroom', 'Lightroom Catalog.lrcat'))
 BS = chr(92)
 RAWX = ('.nef', '.dng', '.arw', '.cr2', '.cr3', '.raf', '.orf', '.rw2')
 JX = ('.jpg', '.jpeg', '.png', '.tif', '.tiff')

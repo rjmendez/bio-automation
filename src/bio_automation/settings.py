@@ -35,7 +35,7 @@ GALLERY_DIR = env_path("BIO_GALLERY_DIR", RESULTS_DIR / "gallery")     # the PiG
 PHOTOS_CACHE = env_path("BIO_PHOTOS_CACHE", CACHE_DIR / "photos")
 DOWNLOAD_DIR_ENV = "BIO_DOWNLOAD_DIR"                                    # read at call time by bio export-zip
 DOWNLOAD_DIR = CACHE_DIR / "downloads"
-NAS = env_path("BIO_NAS", r"Y:\rjmendez-admin\DESKTOP-BVRDK4J\Data\F\Bio")   # the Bio mirror on the NAS: <year>/<day>/<file>
+NAS = env_path("BIO_NAS", r"Y:\Bio")   # the Bio mirror on the NAS: <year>/<day>/<file>
 SYNC_DIR = env_path("BIO_SYNC_DIR", r"D:\nikon_stack_sync")             # where the camera sync lands stacks
 
 # --- state
@@ -123,10 +123,10 @@ SOCIAL_PREP_MIN_FREE_D_GB = float(env("BIO_SOCIAL_PREP_MIN_FREE_D_GB", 20))
 SOCIAL_PREP_MAX_WAIT_S = env_float("BIO_SOCIAL_PREP_MAX_WAIT_S", 3600)         # social-prep pauses this long for disk space (then stops with the reason)
 SOCIAL_POST_MIN_FREE_GB = env_float("BIO_SOCIAL_POST_MIN_FREE_GB", 2)          # a post run writes only the ledger, audit log and a draft's JSON: a far lower floor than a render
 SOCIAL_POST_MAX_WAIT_S = env_float("BIO_SOCIAL_POST_MAX_WAIT_S", 600)         # a missed post is worse than a late one, but a full disk must not be written to forever
-SOCIAL_INDEX_AUDIT = env("BIO_SOCIAL_INDEX_AUDIT", "D:/bio-cache/photos/adobe_ready_audit.csv")       # social-prep's social-index inputs, ';' separated (globs ok)
+SOCIAL_INDEX_AUDIT = env("BIO_SOCIAL_INDEX_AUDIT", (PHOTOS_CACHE / "adobe_ready_audit.csv").as_posix())       # social-prep's social-index inputs, ';' separated (globs ok)
 SOCIAL_INDEX_CANDIDATES = env("BIO_SOCIAL_INDEX_CANDIDATES", ";".join([
-    "D:/bio-cache/photos/stock_candidates_*.csv", "F:/bio-automation-data/nas_pipeline/candidates/*.csv",
-    "D:/bio-results/nas_pipeline/candidates/*.csv", "D:/bio-results/nas_pipeline/candidates-gaps/*.csv"]))
+    (PHOTOS_CACHE / "stock_candidates_*.csv").as_posix(), (NAS_PIPELINE_DIR / "candidates" / "*.csv").as_posix(),
+    (NAS_PIPELINE_DIR / "candidates-gaps" / "*.csv").as_posix()]))
 GALLERY_OBS_INDEX = env_path("BIO_GALLERY_OBS_INDEX", CACHE_DIR / "state" / "gallery_obs_index.json")   # gallery file -> iNat observation
 SOCIAL_KEEP_PENDING = int(env("BIO_SOCIAL_KEEP_PENDING", 7))      # social-draft tops the current month's unposted drafts up to this many
 SOCIAL_POSTS_PER_DAY = int(env("BIO_SOCIAL_POSTS_PER_DAY", 3))    # scheduled posts a day (08:00, 12:00, 20:00); manual posts are not counted
@@ -137,7 +137,7 @@ SOCIAL_THEMES_FILE = env_path("BIO_SOCIAL_THEMES_FILE", SOCIAL_DIR / "themes.tom
 SOCIAL_THEME_DAYS_AHEAD = int(env("BIO_SOCIAL_THEME_DAYS_AHEAD", 7))                              # social-draft prepares the themed posts of the next N days
 OBS_TAXONOMY_FILE = env_path("BIO_OBS_TAXONOMY_FILE", CACHE_DIR / "state" / "obs_taxonomy.json")   # observation id -> taxon + lineage (iNat, cached)
 INAT_BEST_PHOTO_DIR = env_path("BIO_INAT_BEST_PHOTO_DIR", PHOTOS_CACHE / "inat_best")                 # the best size of an iNat photo, fetched when a draft needs it
-INAT_SNAPSHOT = env_path("BIO_INAT_SNAPSHOT", Path(r"F:\bio-automation-data\inat_observations.json"))   # all of the owner's iNat observations (photo ids included)
+INAT_SNAPSHOT = env_path("BIO_INAT_SNAPSHOT", CACHE_DIR / "inat_observations.json")   # all of the owner's iNat observations (photo ids included)
 # every posting rule is optional and every decision audited (social_rules.py): the owner's switches, and the append-only decision log
 SOCIAL_RULES_FILE = env_path("BIO_SOCIAL_RULES_FILE", SOCIAL_DIR / "rules.toml")
 SOCIAL_AUDIT_LOG = env_path("BIO_SOCIAL_AUDIT_LOG", CACHE_DIR / "state" / "social_audit.jsonl")
@@ -165,32 +165,33 @@ BSKY_IMAGE_MAX_EDGE = int(env("BIO_BSKY_IMAGE_MAX_EDGE", 4000))
 # observation id -> where to buy a print (e.g. its Darkroom product page; Darkroom has no API, so the owner keeps this csv: obs_id,url)
 SOCIAL_PRINTS_FILE = env_path("BIO_SOCIAL_PRINTS_FILE", RESULTS_DIR / "social" / "prints.csv")
 SOCIAL_PRINTS_MANUAL_FILE = env_path("BIO_SOCIAL_PRINTS_MANUAL_FILE", SOCIAL_DIR / "prints_manual.csv")   # owner's obs_id,url rows: they win over darkroom-sync's
-DARKROOM_URL = env("BIO_DARKROOM_URL", "https://rjmendez.darkroom.com")             # the owner's storefront
+DARKROOM_URL = env("BIO_DARKROOM_URL", "")             # the owner's storefront; empty = prints feature disabled until set
 DARKROOM_DIR = env_path("BIO_DARKROOM_DIR", CACHE_DIR / "darkroom")                 # product images, vectors, the sync state, the review csv
 DARKROOM_MARGIN = env_float("BIO_DARKROOM_MARGIN", 0.005)                           # a print matches only if no other observation is this close
 DARKROOM_PAUSE_S = env_float("BIO_DARKROOM_PAUSE_S", 1.0)                           # between storefront page requests
 QDRANT_COLLECTION = env("BIO_QDRANT_COLLECTION", "bio_observations")                # gallery images with iNat + Stock data (url/key: BIO_QDRANT_URL/_API_KEY or Loci's backends.toml)
 QDRANT_INAT_CACHE = env_path("BIO_QDRANT_INAT_CACHE", CACHE_DIR / "state" / "obs_inat.json")   # observation id -> taxon, lineage, grade, place, license, tags
 # every iNat observation of the owner (no photos) in Qdrant: `<prefix>observations` and `<prefix>taxa` (qdrant_inat.py)
-INAT_LOGIN = env("BIO_INAT_LOGIN", "rjmendez")                                       # whose public observations are read (unauthenticated API)
+INAT_LOGIN = env("BIO_INAT_LOGIN", "")                                       # whose public observations are read (unauthenticated API); set to your own iNat username
 QDRANT_INAT_PREFIX = env("BIO_QDRANT_INAT_PREFIX", "bio_inat_")
 QDRANT_INAT_FULL = env_path("BIO_QDRANT_INAT_FULL", CACHE_DIR / "state" / "inat_full.json")          # the shaped observations + places, topped up incrementally
 QDRANT_INAT_STATE = env_path("BIO_QDRANT_INAT_STATE", CACHE_DIR / "state" / "qdrant_inat_state.json")   # point id -> content hash: only changed points are written
-INAT_COVERAGE_CSV = env_path("BIO_INAT_COVERAGE_CSV", "F:/bio-automation-data/inat_coverage.csv")     # which iNat photos have a local source file
+INAT_COVERAGE_CSV = env_path("BIO_INAT_COVERAGE_CSV", CACHE_DIR / "inat_coverage.csv")     # which iNat photos have a local source file
 # Bluesky sign-in: atproto OAuth through the bsky-oauth library (github.com/rjmendez/bsky-oauth, glue around Bluesky's official
-# @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key are published by repo
-# rjmendez/bio-social-oauth (GitHub Pages); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM only). No password.
-BSKY_HANDLE = env("BIO_BSKY_HANDLE", "trunkfullofdeadhookers.com")
-BSKY_OAUTH_DIR = env_path("BIO_BSKY_OAUTH_DIR", r"F:\services\bio-social\oauth")
-SOCIAL_SCRIPTS_DIR = env_path("BIO_SOCIAL_SCRIPTS_DIR", r"F:\services\bio-social")      # where scripts\deploy_prod.ps1 copies scripts\windows\*.ps1; social-selfcheck compares them to the repo copies
-BSKY_CLIENT_ID = env("BIO_BSKY_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/poster/client-metadata.json")
-BSKY_REDIRECT_URI = env("BIO_BSKY_REDIRECT_URI", "https://rjmendez.github.io/bio-social-oauth/callback.html")
+# @atproto/oauth-client-node). This is the "poster" profile: a confidential client whose metadata + PUBLIC key need to be published
+# somewhere reachable over HTTPS (e.g. your own GitHub Pages repo); its private key and session stay in BSKY_OAUTH_DIR (owner + SYSTEM
+# only). No password. BSKY_CLIENT_ID/BSKY_REDIRECT_URI must point at your own published metadata -- there is no usable shared default.
+BSKY_HANDLE = env("BIO_BSKY_HANDLE", "")                                             # your own Bluesky handle; empty = posting disabled until set
+BSKY_OAUTH_DIR = env_path("BIO_BSKY_OAUTH_DIR", RESULTS_DIR / "bsky-oauth")
+SOCIAL_SCRIPTS_DIR = env_path("BIO_SOCIAL_SCRIPTS_DIR", RESULTS_DIR / "social-scripts")      # where scripts\deploy_prod.ps1 copies scripts\windows\*.ps1; social-selfcheck compares them to the repo copies
+BSKY_CLIENT_ID = env("BIO_BSKY_CLIENT_ID", "")                                      # your OAuth client-metadata.json URL (see docs/social for how to register one)
+BSKY_REDIRECT_URI = env("BIO_BSKY_REDIRECT_URI", "")
 BSKY_OAUTH_SCOPE = env("BIO_BSKY_OAUTH_SCOPE", "atproto repo:app.bsky.feed.post?action=create blob:image/*")   # create posts + upload images only
 BSKY_CLIENT_NAME = env("BIO_BSKY_CLIENT_NAME", "bio-automation photo posts")
 # "cleanup" profile: a second confidential client that can ONLY delete posts (removing the old inat_skeet bot posts); its own key,
 # session and sign-in, so the poster can never delete and the cleanup client can never post
-BSKY_CLEANUP_OAUTH_DIR = env_path("BIO_BSKY_CLEANUP_OAUTH_DIR", r"F:\services\bio-social\oauth-cleanup")
-BSKY_CLEANUP_CLIENT_ID = env("BIO_BSKY_CLEANUP_CLIENT_ID", "https://rjmendez.github.io/bio-social-oauth/cleanup/client-metadata.json")
+BSKY_CLEANUP_OAUTH_DIR = env_path("BIO_BSKY_CLEANUP_OAUTH_DIR", RESULTS_DIR / "bsky-oauth-cleanup")
+BSKY_CLEANUP_CLIENT_ID = env("BIO_BSKY_CLEANUP_CLIENT_ID", "")
 BSKY_CLEANUP_SCOPE = env("BIO_BSKY_CLEANUP_SCOPE", "atproto repo:app.bsky.feed.post?action=delete")
 BSKY_ARCHIVE_DIR = env_path("BIO_BSKY_ARCHIVE_DIR", CACHE_DIR / "bsky-archive")   # repo exports, cleanup plans and their ledgers
 

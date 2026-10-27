@@ -21,7 +21,7 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 SRC = os.environ.get('BIO_SRC', r'F:\Bio')
-NAS = os.environ.get('BIO_NAS', r'Y:\rjmendez-admin\DESKTOP-BVRDK4J\Data\F\Bio')
+NAS = os.environ.get('BIO_NAS', r'Y:\Bio')
 BS = chr(92)
 TH = 0.95
 PREPARED = ('inat-lr', 'inat', 'export-lr', 'export')
