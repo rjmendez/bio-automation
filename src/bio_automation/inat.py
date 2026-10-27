@@ -1,8 +1,10 @@
-"""Thin settings-bound wrapper around the standalone inat_client library (https://github.com/rjmendez/inat-client).
+"""Thin settings-bound wrapper around inat_client (src/inat_client), a self-contained, settings-free iNaturalist v1 API client
+module that ships in this same repo but has no dependency on bio_automation itself -- it could be lifted into its own package
+unchanged if ever needed.
 
 The generic client logic (retries, reshaping, rate limiting, the taxon-lineage cache) lives in inat_client; this module exists
 only to bind its defaults to bio-automation's own settings (file locations, retry/backoff tuning), so every existing caller in
-this package keeps working unchanged. New code outside this package should use inat_client directly."""
+this package keeps working unchanged. New code with no need for that binding can use inat_client directly."""
 from __future__ import annotations
 
 import urllib.request  # noqa: F401 -- re-exported so tests can patch urllib.request.urlopen via this module's attribute path
