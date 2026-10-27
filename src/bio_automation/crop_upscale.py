@@ -18,6 +18,11 @@ Sentinel-2 satellite-imagery fine-tune with no real-photo validation --
 variant="stock" is forced instead, the zero-shot HAT-S checkpoint actually
 measured (vs bicubic) on real photos. scale=2 already defaults to the
 real-photo-tuned local checkpoint, so no override is needed there.
+
+CUDA DLL path setup and the megapixel-ceiling-aware scale choice both live
+in lce itself (lce.cuda_dlls, lce.models.upscale.recommended_scale) -- they
+are generic to any onnxruntime-CUDA/HAT-upscale consumer on this machine,
+not specific to this pipeline, so they are not duplicated here.
 """
 from __future__ import annotations
 
@@ -26,9 +31,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+from lce import cuda_dlls
 from PIL import Image
 
-from . import cuda_dlls, disk_guard, settings
+from . import disk_guard, settings
 from .topaz import STOCK_MAX_MP
 
 READY_DIR = settings.STOCK_DIR / "ready"
@@ -43,7 +49,7 @@ def _ensure_cuda_dlls() -> None:
     global _cuda_ready
     if _cuda_ready:
         return
-    missing = cuda_dlls.add_cuda_dll_dirs()
+    missing = cuda_dlls.add_cuda_dll_dirs(settings.CUDA_DLL_DIRS)
     if missing:
         raise RuntimeError(f"crop_upscale: CUDA DLL folders not found: {[str(d) for d in missing]} "
                             f"(set BIO_CUDA_DLL_DIRS)")
@@ -52,14 +58,10 @@ def _ensure_cuda_dlls() -> None:
 
 def pick_scale(w: int, h: int) -> int | None:
     """4, 2, or None (skip -- already close enough to the ceiling that even
-    2x would exceed it), whichever keeps w*scale x h*scale under
-    STOCK_MAX_MP, biased toward the larger useful scale."""
-    mp = w * h / 1e6
-    if mp * 16 <= STOCK_MAX_MP:
-        return 4
-    if mp * 4 <= STOCK_MAX_MP:
-        return 2
-    return None
+    2x would exceed it): lce.models.upscale.recommended_scale against
+    STOCK_MAX_MP."""
+    from lce.models.upscale import recommended_scale
+    return recommended_scale(w, h, max_mp=STOCK_MAX_MP)
 
 
 def upscale_one(src: Path, dst: Path, scale: int, cache) -> None:

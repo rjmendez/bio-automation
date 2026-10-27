@@ -3,9 +3,11 @@ Models and their extracted cache stay on C:\\TopazModels; everything written her
 import os, glob, time
 os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
 import numpy as np
-from bio_automation import cuda_dlls
+from lce import cuda_dlls
 
-cuda_dlls.add_cuda_dll_dirs()      # onnxruntime's CUDA provider is a CUDA 13 build: settings.CUDA_DLL_DIRS before importing it
+from bio_automation import settings
+
+cuda_dlls.add_cuda_dll_dirs(settings.CUDA_DLL_DIRS)      # onnxruntime's CUDA provider is a CUDA 13 build: before importing it
 import onnxruntime as ort
 from PIL import Image
 from scipy.ndimage import gaussian_filter, uniform_filter

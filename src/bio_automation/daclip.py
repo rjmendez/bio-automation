@@ -15,9 +15,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from bio_automation import cuda_dlls, ort_providers, settings
+from lce import cuda_dlls
 
-_MISSING_CUDA_DIRS = cuda_dlls.add_cuda_dll_dirs()       # before onnxruntime loads its CUDA provider
+from bio_automation import ort_providers, settings
+
+_MISSING_CUDA_DIRS = cuda_dlls.add_cuda_dll_dirs(settings.CUDA_DLL_DIRS)  # before onnxruntime loads its CUDA provider
 import onnxruntime as ort  # noqa: E402
 
 CACHE_DIR = settings.MODEL_CACHE_DIR

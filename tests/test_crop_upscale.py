@@ -83,7 +83,7 @@ def _always_room(monkeypatch):
 
 def _cuda_ok(monkeypatch):
     monkeypatch.setattr(crop_upscale, "_cuda_ready", False)
-    monkeypatch.setattr(crop_upscale.cuda_dlls, "add_cuda_dll_dirs", lambda: [])
+    monkeypatch.setattr(crop_upscale.cuda_dlls, "add_cuda_dll_dirs", lambda *a, **k: [])
 
 
 class TestRun:
@@ -213,7 +213,7 @@ class TestRun:
         calls = _recording_upscale_one(monkeypatch)
         _always_room(monkeypatch)
         monkeypatch.setattr(crop_upscale, "_cuda_ready", False)
-        monkeypatch.setattr(crop_upscale.cuda_dlls, "add_cuda_dll_dirs", lambda: [Path(r"C:\nonexistent\cuda")])
+        monkeypatch.setattr(crop_upscale.cuda_dlls, "add_cuda_dll_dirs", lambda *a, **k: [Path(r"C:\nonexistent\cuda")])
 
         result = crop_upscale.run(src_dir, out_dir=out_dir)
 
