@@ -22,7 +22,7 @@ from datetime import datetime
 
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 API = 'https://api.inaturalist.org/v1'
-UA = 'bio-automation-poster/0.1 (personal uploader; owner rjmendez)'
+UA = os.environ.get('INAT_USER_AGENT', 'bio-automation-poster/0.1 (+contact unset; personal uploader)')
 TAG = os.environ.get('BIO_QUEUE_TAG', '')
 LEDGER = os.path.join(ROOT, f'inat_decisions{TAG}.jsonl')
 POSTED = os.path.join(ROOT, f'inat_posted{TAG}.jsonl')

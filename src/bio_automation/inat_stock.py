@@ -46,7 +46,7 @@ ADOBE_CSV_FIELDS = ("Filename", "Title", "Keywords", "Category", "Releases")
 PHOTO_MATCH_MIN_SIMILARITY = settings.EXACT_FRAME_SIMILARITY
 PHOTO_MATCH_WINDOW_S = settings.PHOTO_MATCH_WINDOW_S
 PHOTO_CACHE_DEFAULT = settings.INAT_PHOTO_CACHE
-PHOTO_USER_AGENT = "bio-automation-owner-sync/1.0 (own account rjmendez; read-only)"
+PHOTO_USER_AGENT = "bio-automation-owner-sync/1.0 (+contact unset; own account, read-only)"
 
 
 class SnapshotStale(Exception):
