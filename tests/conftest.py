@@ -14,6 +14,15 @@ def private_inat_pace(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def private_inat_client_pace(tmp_path, monkeypatch):
+    """inat_client's own module-level default (bio_automation.inat never uses it -- it binds its own -- but inat_client's own
+    test suite and any future direct caller do)."""
+    import inat_client.client as client_module
+
+    monkeypatch.setattr(client_module, "_default_rate_limiter", client_module.SharedRateLimiter(tmp_path / "inat_client_rate.sqlite3", 0.0))
+
+
+@pytest.fixture(autouse=True)
 def private_nas_io_gate(tmp_path, monkeypatch):
     """No test reaches the machine-wide NAS read gate file (settings.NAS_IO_DB on D:), which the running pipeline shares."""
     from bio_automation import nas_io, settings
