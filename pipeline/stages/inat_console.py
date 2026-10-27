@@ -30,7 +30,7 @@ import inat_export
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 PORT = int(os.environ.get('BIO_CONSOLE_PORT', '8777'))
 TAG = os.environ.get('BIO_QUEUE_TAG', '')      # '' = the exported-files queue, '_lc' = the LightCraft queue
-UA = 'bio-automation-console/0.1 (personal photo review tool; owner rjmendez)'
+UA = os.environ.get('INAT_USER_AGENT', 'bio-automation-console/0.1 (+contact unset; personal photo review tool)')
 LEDGER = os.path.join(ROOT, f'inat_decisions{TAG}.jsonl')
 POSTED = os.path.join(ROOT, f'inat_posted{TAG}.jsonl')
 Image.MAX_IMAGE_PIXELS = None

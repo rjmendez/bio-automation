@@ -13,7 +13,7 @@ Usage:
 Requires: fastapi uvicorn Pillow openvino
 
 The server loads ModelCache once at startup and keeps models warm.
-Designed to run on mrpink (or Windows) as a persistent enhancement service.
+Designed to run on a dedicated GPU host on your LAN (Linux or Windows) as a persistent enhancement service.
 """
 from __future__ import annotations
 

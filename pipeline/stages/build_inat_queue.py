@@ -23,7 +23,7 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
 SRC = os.environ.get('BIO_SRC', r'F:\Bio')
-NAS = os.environ.get('BIO_NAS', r'Y:\rjmendez-admin\DESKTOP-BVRDK4J\Data\F\Bio')
+NAS = os.environ.get('BIO_NAS', r'Y:\Bio')
 UPLOAD_DIR = os.environ.get('BIO_INAT_UPLOAD', r'F:\Bio-export\inat-upload')
 NEIGHBOR_S = int(os.environ.get('BIO_NEIGHBOR_S', '900'))
 AGREE_M = 100.0

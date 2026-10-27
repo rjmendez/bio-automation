@@ -12,9 +12,9 @@ module only ever decides WHICH folder/files a call targets; the actual
 status-change/crop/delete logic lives in pipeline.py and is reused as-is.
 
 Loopback only (127.0.0.1) by default, same as pipeline/stages/inat_console.py
--- reached from outside through a reverse proxy (Caddy's
-photos.lab.floppydicks.net site) that restricts by source IP, not by this
-process binding a public interface itself.
+-- if you need it from another machine, put a LAN-only reverse proxy that
+restricts by source IP in front of it; never bind this process to a public
+interface itself.
 """
 from __future__ import annotations
 

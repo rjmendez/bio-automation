@@ -4,7 +4,8 @@
 # trap pushes logs+checkpoints to S3 and shuts the instance down (terminating it, since
 # launched with instance-initiated-shutdown-behavior terminate) on ANY exit path.
 set -uo pipefail
-BUCKET="bio-automation-cloud-399511413068"
+BUCKET="__BIO_CLOUD_BUCKET__"   # replace with your own S3 bucket name before using this as EC2 user-data
+if [ "$BUCKET" = "__BIO_CLOUD_BUCKET__" ]; then echo "set BUCKET to your own S3 bucket first" >&2; exit 1; fi
 WORK=/opt/sam3-train
 LOG="$WORK/train.log"
 mkdir -p "$WORK/code" "$WORK/data" "$WORK/weights" "$WORK/out"

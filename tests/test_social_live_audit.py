@@ -62,7 +62,7 @@ def jpeg_bytes(color=(120, 140, 90), size=(640, 480), exif_gps=False):
     buf = io.BytesIO()
     if exif_gps:
         exif = Image.Exif()
-        exif.get_ifd(0x8825)[2] = (40.0, 24.0, 44.0)
+        exif.get_ifd(0x8825)[2] = (12.0, 3.0, 4.0)
         im.save(buf, "JPEG", exif=exif)
     else:
         im.save(buf, "JPEG")
@@ -90,6 +90,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SOCIAL_LEDGER", tmp_path / "ledger.jsonl")
     monkeypatch.setattr(settings, "SOCIAL_DIR", tmp_path / "social")
     monkeypatch.setattr(settings, "SOCIAL_AUDIT_LOG", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(settings, "BSKY_HANDLE", "example.bsky.social")
     return tmp_path
 
 
@@ -125,10 +126,10 @@ class TestTextAndAlt:
         assert r == {"checked": 1, "problem_posts": 0, "place_unchecked": 1, "problems": [], "gps_verified": 0, "gps_unverified": 0, "images_checked": False}
 
     def test_coordinates_in_the_text_and_in_an_alt_are_reported_by_uri_and_kind_only(self, world):
-        r = run(world, [post(1, text="Found at 40.41234, -75.98765 today"), post(2, alts=("Bird, lat 40.4123 lon -75.9876",)), post(3)])
+        r = run(world, [post(1, text="Found at 12.34567, -65.43217 today"), post(2, alts=("Bird, lat 12.3456 lon -65.4321",)), post(3)])
         assert [(p["uri"], p["kinds"]) for p in r["problems"]] == [
             (uri(1), ["coordinates in post text"]), (uri(2), ["coordinates in alt of image 1"])]
-        assert "40.41" not in json.dumps(r)
+        assert "12.34" not in json.dumps(r)
 
     def test_a_street_address_is_reported(self, world):
         r = run(world, [post(1, alts=("Taken behind 1234 Old Mill Rd at dusk",))])
@@ -142,12 +143,12 @@ class TestTextAndAlt:
     def test_the_old_bot_template_posts_are_not_flagged_for_a_missing_alt_but_still_for_a_leak(self, world):
         bot = "Turdus migratorius - American Robin" + chr(10) * 2 + "Quality grade: research" + chr(10) + "2025-05-28" + chr(10) + "Warning! AI generated alt text."
         assert run(world, [post(1, text=bot, alts=("", ""))])["problem_posts"] == 0
-        r = run(world, [post(1, text=bot, alts=("lat 40.4123 lon -75.9876",))])
+        r = run(world, [post(1, text=bot, alts=("lat 12.3456 lon -65.4321",))])
         assert r["problems"] == [{"uri": uri(1), "kinds": ["coordinates in alt of image 1"]}]
 
     def test_a_post_without_images_is_checked_on_its_text_alone(self, world):
         assert run(world, [post(1, alts=())])["problem_posts"] == 0
-        assert run(world, [post(1, text="at 40.41234, -75.98765", alts=())])["problems"][0]["kinds"] == ["coordinates in post text"]
+        assert run(world, [post(1, text="at 12.34567, -65.43217", alts=())])["problems"][0]["kinds"] == ["coordinates in post text"]
 
 
 class TestHiddenPlace:
@@ -248,7 +249,7 @@ class TestImages:
         assert asked == ["https://cdn.example/1/0.jpg", blob_url(1)]
 
     def test_a_quote_post_with_images_is_audited_for_alt_and_gps(self, world):
-        feed = [post(1, alts=("Bird at lat 40.4123 lon -75.9876",), quote=True), post(2, alts=("",), quote=True), post(3, quote=True)]
+        feed = [post(1, alts=("Bird at lat 12.3456 lon -65.4321",), quote=True), post(2, alts=("",), quote=True), post(3, quote=True)]
         r = run(world, feed, images=True, get_bytes=self.blobs(**{blob_url(3): jpeg_bytes(exif_gps=True)}))
         assert {p["uri"]: p["kinds"] for p in r["problems"]} == {
             uri(1): ["coordinates in alt of image 1"], uri(2): ["image without alt text 1"], uri(3): ["GPS tags in a public image (image 1)"]}
@@ -308,14 +309,14 @@ class TestAudit:
     def test_a_run_with_problems_logs_live_audit_and_live_audit_problem_with_uris_not_text(self, world):
         audit = Audit(world / "audit.jsonl", run="r1")
         social_live_audit.audit_live("me.example", images=False, audit=audit,
-                                     get_json=Appview([{"feed": [post(1, text="at 40.41234, -75.98765"), post(2)]}]))
+                                     get_json=Appview([{"feed": [post(1, text="at 12.34567, -65.43217"), post(2)]}]))
         recs = audit.records()
         assert [r["event"] for r in recs] == ["live_audit", "live_audit_problem"]
         assert (recs[0]["checked"], recs[0]["problem_posts"]) == (2, 1)
         assert recs[1]["uris"] == [uri(1)]
         assert recs[1]["reason"] == f"1 public post(s) fail the privacy gates: {uri(1)}"
         assert recs[1]["problems"] == [f"{uri(1)}: coordinates in post text"]
-        assert "40.41" not in json.dumps(recs)
+        assert "12.34" not in json.dumps(recs)
 
     def test_a_clean_run_logs_only_live_audit(self, world):
         audit = Audit(world / "audit.jsonl", run="r1")
@@ -328,11 +329,11 @@ class TestAudit:
         assert ERROR_EVENTS["live_audit_problem"] == "error"
         now = dt.datetime(2026, 10, 23, 21, 40, tzinfo=settings.LOCAL_TZ)
         audit = Audit(world / "audit.jsonl", run="r1", now=lambda: now - dt.timedelta(minutes=5))
-        social_live_audit.audit_live("me.example", images=False, audit=audit, get_json=Appview([{"feed": [post(1, text="at 40.41234, -75.98765")]}]))
+        social_live_audit.audit_live("me.example", images=False, audit=audit, get_json=Appview([{"feed": [post(1, text="at 12.34567, -65.43217")]}]))
         alerts, _ = social_alerts.scan(now, audit_path=world / "audit.jsonl", ledger_path=world / "ledger.jsonl", slots=[],
                                        log_file=world / "social.log", taxonomy_file=world / "tax.json", disk_free=lambda root: 10**12)
         [alert] = [a for a in alerts if a.kind == "live_audit_problem"]
-        assert alert.level == "error" and uri(1) in alert.message and "40.41" not in alert.message
+        assert alert.level == "error" and uri(1) in alert.message and "12.34" not in alert.message
 
 
 class TestWeekly:
@@ -365,8 +366,8 @@ class TestWeekly:
         feed = {"feed": [post(1)]}
         monkeypatch.setattr(social_live_audit, "_get_json", lambda url: feed)
         assert self.cli(monkeypatch, "social-audit-live", "--no-images") == 0
-        assert "checked 1 public posts of trunkfullofdeadhookers.com; 1 had no draft on record" in capsys.readouterr().out
-        feed["feed"] = [post(1, text="at 40.41234, -75.98765")]
+        assert "checked 1 public posts of example.bsky.social; 1 had no draft on record" in capsys.readouterr().out
+        feed["feed"] = [post(1, text="at 12.34567, -65.43217")]
         assert self.cli(monkeypatch, "social-audit-live", "--no-images") == 1
         assert capsys.readouterr().out.splitlines()[2] == f"PROBLEM {uri(1)}: coordinates in post text"
 
@@ -384,7 +385,7 @@ class TestWeeklyRepeatsWhileThereAreProblems:
 
     def test_a_run_with_problems_does_not_silence_the_next_evening(self, world, monkeypatch, capsys):
         calls = []
-        feed = {"feed": [post(1, text="at 40.41234, -75.98765")]}
+        feed = {"feed": [post(1, text="at 12.34567, -65.43217")]}
         monkeypatch.setattr(social_live_audit, "_get_json", lambda url: calls.append(url) or feed)
         assert self.cli(monkeypatch, "social-audit-live", "--weekly", "--no-images") == 1             # first run: a problem
         assert self.cli(monkeypatch, "social-audit-live", "--weekly", "--no-images") == 1             # the next evening: audited again, not skipped
