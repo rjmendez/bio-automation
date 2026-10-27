@@ -22,9 +22,9 @@
 
 .EXAMPLE
   # how the task was registered (kept here so it can be recreated)
-  $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "D:\apps\bio-automation\scripts\run-suggest-refresh.ps1"'
+  $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\path\to\bio-automation\scripts\run-suggest-refresh.ps1"'
   $t = New-ScheduledTaskTrigger -Daily -At '06:30'
-  $p = New-ScheduledTaskPrincipal -UserId 'rjmendez-admin' -LogonType S4U -RunLevel Limited
+  $p = New-ScheduledTaskPrincipal -UserId '<your-windows-username>' -LogonType S4U -RunLevel Limited
   $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName 'Bio-Suggest-Refresh' -Action $a -Trigger $t -Principal $p -Settings $s
 #>

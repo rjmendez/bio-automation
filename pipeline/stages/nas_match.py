@@ -9,8 +9,8 @@ import numpy as np
 from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
-ROOT = r'F:\bio-automation-data'
-NAS = r'Y:\rjmendez-admin\DESKTOP-BVRDK4J\Data\F\Bio'
+ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
+NAS = os.environ.get('BIO_NAS', r'Y:\Bio')
 BS = chr(92)
 TH, MARGIN = 0.95, 0.01
 CACHE_INAT = os.path.join(ROOT, 'cache', 'inat')

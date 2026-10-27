@@ -1029,9 +1029,11 @@ class TestBskyBoundary:
         from bsky_oauth import Profile
 
         monkeypatch.setattr(social.settings, "BSKY_OAUTH_DIR", tmp_path / "oauth")
+        monkeypatch.setattr(social.settings, "BSKY_CLIENT_ID", "https://example.github.io/bio-social-oauth/poster/client-metadata.json")
+        monkeypatch.setattr(social.settings, "BSKY_REDIRECT_URI", "https://example.github.io/bio-social-oauth/callback.html")
         assert social.poster_profile() == Profile(
-            "poster", "https://rjmendez.github.io/bio-social-oauth/poster/client-metadata.json",
-            "https://rjmendez.github.io/bio-social-oauth/callback.html", "atproto repo:app.bsky.feed.post?action=create blob:image/*",
+            "poster", "https://example.github.io/bio-social-oauth/poster/client-metadata.json",
+            "https://example.github.io/bio-social-oauth/callback.html", "atproto repo:app.bsky.feed.post?action=create blob:image/*",
             tmp_path / "oauth", "bio-automation photo posts")
 
     def test_bsky_post_hands_the_request_to_the_account_and_returns_uri_and_cid(self):

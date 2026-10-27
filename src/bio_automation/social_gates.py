@@ -22,9 +22,9 @@ from .social_rules import Audit
 # ------------------------------------------------------------------------------------------------------ alt_text_privacy
 
 # Coordinates, in the forms a photographer or a GPS app writes them. Unicode minus signs are normalised to "-" first (see _normalise).
-#   decimal pair   "40.4123, -75.9876", "40.41234 -75.98765", "+40.4123;-75.9876", comma decimals "40,4123 -75,9876", also at the end of a sentence
-#   labelled       "lat 40.4", "Longitude: -75.9", "lng=-75.9"
-#   hemisphere     "40.4123 N 75.9876 W", "N 40.41 W 75.98", "40.4123° N"
+#   decimal pair   "12.3456, -65.4321", "12.34567 -65.43217", "+12.3456;-65.4321", comma decimals "12,3456 -65,4321", also at the end of a sentence
+#   labelled       "lat 12.3", "Longitude: -65.4", "lng=-65.4"
+#   hemisphere     "12.3456 N 65.4321 W", "N 12.34 W 65.43", "12.3456° N"
 #   DMS            40°24'44"N 75°59'15"W (degrees and minutes with their marks)
 # A number must have 3+ decimals (comma decimals: 4+) so a measurement like "2.5, 3.1 cm", "f/2.8", "10.5 mm", "4000 px" or "2025" never matches.
 _NUM = r"(?:[+\-]?\d{1,3}\.\d{3,}|[+\-]?\d{1,3},\d{4,})"
