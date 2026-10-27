@@ -429,6 +429,34 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Skip the DA-CLIP subject-consistency safety gate before "
                                      "handing off to the stacking engine, for every folder")
 
+    p_enhance_stock = sub.add_parser(
+        "enhance-stock",
+        help="Sharpen the Stock-ready backlog into a separate output dir, "
+             "never in place (GPU lens-blur sharpen, topaz.enhance(mode='stock')). "
+             "No upscale: these exports are already at full sensor resolution. "
+             "Resumable: a file already present in --out-dir is skipped; see "
+             "stock_enhance.py.",
+    )
+    p_enhance_stock.add_argument("--src-dir", default=str(settings.STOCK_DIR / "ready"))
+    p_enhance_stock.add_argument("--out-dir", default=str(settings.PHOTOS_CACHE / "stock-enhanced"))
+    p_enhance_stock.add_argument("--min-free-gb", type=float, default=10.0)
+    p_enhance_stock.add_argument("--limit", type=int, default=None,
+                                  help="process at most this many not-yet-enhanced files (for a bounded trial run)")
+
+    p_publish_stock_review = sub.add_parser(
+        "publish-stock-review",
+        help="Hardlink enhance-stock's output into the gallery under "
+             "_review/<name>/ for a visual compare, without touching the "
+             "originals or anything in the gallery's dated trees. Safe to "
+             "re-run as more files finish; see stock_enhance.publish_review().",
+    )
+    p_publish_stock_review.add_argument("--out-dir", default=str(settings.PHOTOS_CACHE / "stock-enhanced"))
+    p_publish_stock_review.add_argument("--gallery-dir", default=str(settings.GALLERY_DIR))
+    p_publish_stock_review.add_argument("--review-name", default="stock-enhanced")
+    p_publish_stock_review.add_argument("--no-queue", action="store_true",
+                                         help="Don't enqueue a gallery.reindex message (default: on).")
+    p_publish_stock_review.add_argument("--queue-db", default=None, help="queue database file (default: env BIO_QUEUE_DB)")
+
     p_serve = sub.add_parser("serve", help="Start Topaz enhancement HTTP server")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8091)
@@ -732,6 +760,36 @@ def cmd_stock_publish(args: argparse.Namespace) -> int:
             queue.close()
     print(json.dumps(result, indent=2))
     return 1 if result["failed"] or result["missing"] or result.get("refused") else 0      # skipped NEF/Enhanced-NR twins are not a failure
+
+
+def cmd_enhance_stock(args: argparse.Namespace) -> int:
+    import json
+
+    from . import stock_enhance
+
+    result = stock_enhance.run(Path(args.src_dir), out_dir=Path(args.out_dir),
+                                min_free_gb=args.min_free_gb, limit=args.limit)
+    print(json.dumps(result, indent=2))
+    return 1 if result["failed"] else 0
+
+
+def cmd_publish_stock_review(args: argparse.Namespace) -> int:
+    import json
+
+    from . import stock_enhance
+    from .queue import Queue
+
+    queue = None
+    if not args.no_queue:
+        queue = Queue(Path(args.queue_db)) if args.queue_db else Queue()
+    try:
+        result = stock_enhance.publish_review(Path(args.out_dir), gallery_dir=Path(args.gallery_dir),
+                                               review_name=args.review_name, queue=queue)
+    finally:
+        if queue is not None:
+            queue.close()
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 def cmd_inat_gallery(args: argparse.Namespace) -> int:
@@ -1351,6 +1409,10 @@ def main() -> int:
         return cmd_stock_publish(args)
     if args.command == "inat-gallery":
         return cmd_inat_gallery(args)
+    if args.command == "enhance-stock":
+        return cmd_enhance_stock(args)
+    if args.command == "publish-stock-review":
+        return cmd_publish_stock_review(args)
     if args.command == "disk-guard":
         from . import disk_guard
 
