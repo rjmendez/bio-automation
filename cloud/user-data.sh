@@ -5,7 +5,8 @@
 # terminate, is torn down) on ANY exit path -- success, training crash, or the
 # 2-hour timeout cap -- so nothing can be left running and billing by accident.
 set -uo pipefail
-BUCKET="bio-automation-cloud-399511413068"
+BUCKET="__BIO_CLOUD_BUCKET__"   # replace with your own S3 bucket name before using this as EC2 user-data
+if [ "$BUCKET" = "__BIO_CLOUD_BUCKET__" ]; then echo "set BUCKET to your own S3 bucket first" >&2; exit 1; fi
 WORK=/opt/bio-sr-train
 LOG="$WORK/train.log"
 mkdir -p "$WORK/code" "$WORK/patches" "$WORK/held-out" "$WORK/out"

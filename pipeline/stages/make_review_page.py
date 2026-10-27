@@ -5,8 +5,8 @@ import visionlib
 from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 
-ROOT = r'F:\bio-automation-data'
-OUTF = r'C:\Users\rjmendez-admin\.claude\jobs\7998954d\tmp\release_review.html'
+ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
+OUTF = os.environ.get('BIO_REVIEW_PAGE', os.path.join(ROOT, 'release_review.html'))
 SIDE, Q = int(os.environ.get('REVIEW_THUMB', 420)), int(os.environ.get('REVIEW_Q', 68))
 FIELDS = [('identifiable_person', 'Identifiable person'), ('face_visible', 'Face visible'), ('person_visible', 'Person / body part'),
           ('text_or_logo_visible', 'Text or logo'), ('brand_or_product_visible', 'Brand or product'), ('property_identifiable', 'Identifiable property')]
@@ -20,7 +20,7 @@ def truthy(x):
 vf = json.load(open(os.path.join(ROOT, 'vision_files.json'), encoding='utf-8'))
 rows = []
 for mf in ('manifest.csv', 'manifest_nas.csv', 'manifest_rendered.csv'):
-    p = os.path.join(r'F:\Bio-export\adobe-stock', mf)
+    p = os.path.join(os.environ.get('BIO_EXPORT', r'F:\Bio-export\adobe-stock'), mf)
     if os.path.exists(p):
         rows += [dict(r, _manifest=mf) for r in csv.DictReader(open(p, encoding='utf-8'))]
 seen, cards = set(), []

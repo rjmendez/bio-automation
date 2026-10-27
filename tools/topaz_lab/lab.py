@@ -11,7 +11,7 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter, uniform_filter
 
 SRC = os.environ.get('LAB_SRC', r'F:\Bio-export\inat-raws-q95-auto')      # the q95 renders the lab reads; LAB_SRC points it at another render set
-                                                                           # (the pre-2026-10-21 non-auto-retouched set moved to NAS: \\172.16.100.5\Shared\bio-automation-archive\inat-raws-q95)
+                                                                           # (an older non-auto-retouched set may instead live on a NAS share; point LAB_SRC there)
 GPU = int(os.environ.get('LAB_GPU', '0'))      # PCI order: 0 = RTX 2080 Ti (more free memory), 1 = RTX 4070 Ti
 _sess = {}
 

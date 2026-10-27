@@ -11,8 +11,8 @@ import sqlite3
 import sys
 import time
 
-ROOT = r'F:\bio-automation-data'
-CAT = r'C:\Users\rjmendez-admin\Pictures\Lightroom\Lightroom Catalog.lrcat'
+ROOT = os.environ.get('BIO_DATA', r'F:\bio-automation-data')
+CAT = os.environ.get('BIO_LRCAT', os.path.join(os.path.expanduser('~'), 'Pictures', 'Lightroom', 'Lightroom Catalog.lrcat'))
 BS = chr(92)
 
 
