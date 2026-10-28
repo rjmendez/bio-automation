@@ -24,10 +24,12 @@ from pathlib import Path
 
 import numpy as np
 
-from . import cuda_dlls, ort_providers, settings
+from lce import cuda_dlls
+
+from . import ort_providers, settings
 from .topaz import _run_tiled
 
-_MISSING_CUDA_DIRS = cuda_dlls.add_cuda_dll_dirs()       # before onnxruntime loads its CUDA provider
+_MISSING_CUDA_DIRS = cuda_dlls.add_cuda_dll_dirs(settings.CUDA_DLL_DIRS)  # before onnxruntime loads its CUDA provider
 import onnxruntime as ort  # noqa: E402
 
 CACHE_DIR = settings.MODEL_CACHE_DIR
