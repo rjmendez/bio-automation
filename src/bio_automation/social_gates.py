@@ -25,7 +25,7 @@ from .social_rules import Audit
 #   decimal pair   "12.3456, -65.4321", "12.34567 -65.43217", "+12.3456;-65.4321", comma decimals "12,3456 -65,4321", also at the end of a sentence
 #   labelled       "lat 12.3", "Longitude: -65.4", "lng=-65.4"
 #   hemisphere     "12.3456 N 65.4321 W", "N 12.34 W 65.43", "12.3456° N"
-#   DMS            40°24'44"N 75°59'15"W (degrees and minutes with their marks)
+#   DMS            12°3'4"N 65°4'3"W (degrees and minutes with their marks)
 # A number must have 3+ decimals (comma decimals: 4+) so a measurement like "2.5, 3.1 cm", "f/2.8", "10.5 mm", "4000 px" or "2025" never matches.
 _NUM = r"(?:[+\-]?\d{1,3}\.\d{3,}|[+\-]?\d{1,3},\d{4,})"
 _ANGLE = r"\d{1,3}(?:[.,]\d+)?"
