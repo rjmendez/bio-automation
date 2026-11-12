@@ -154,6 +154,7 @@ SOCIAL_BACKUP_DIR = env_path("BIO_SOCIAL_BACKUP_DIR", SOCIAL_DIR / "backups")
 SOCIAL_BACKUP_MAX_MB = int(env("BIO_SOCIAL_BACKUP_MAX_MB", 500))                                  # total size cap of the backup folder (0: no size cap); the newest and the newest clean one always stay
 SOCIAL_BACKUP_OFFSITE_DIR = env("BIO_SOCIAL_BACKUP_OFFSITE_DIR", "")                              # OFF by default: a folder on ANOTHER drive/share that every new backup is also copied to (read back and hashed, audited)
 SOCIAL_BACKUP_STALE_DAYS = float(env("BIO_SOCIAL_BACKUP_STALE_DAYS", 2))                          # social-restore-check fails when the newest backup is older
+SOCIAL_RESTORE_CHECK_MARKER = env_path("BIO_SOCIAL_RESTORE_CHECK_MARKER", CACHE_DIR / "state" / "restore_check_marker.json")   # when the restore_check maintenance hook last ran (once a day)
 QDRANT_SYNC_MARKER = env_path("BIO_QDRANT_SYNC_MARKER", CACHE_DIR / "state" / "qdrant_sync_marker.json")   # when each Qdrant sync last wrote successfully
 QDRANT_STALE_DAYS = float(env("BIO_QDRANT_STALE_DAYS", 3))                                         # social-selfcheck and social-alerts warn when a sync is older than this
 SOCIAL_ENGAGEMENT_LOG = env_path("BIO_SOCIAL_ENGAGEMENT_LOG", CACHE_DIR / "state" / "social_engagement.jsonl")
