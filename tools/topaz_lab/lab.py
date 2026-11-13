@@ -1,5 +1,5 @@
 """Topaz model lab: GPU (onnxruntime CUDA) tiled inference + synthetic-degradation scoring.
-Models and their extracted cache stay on C:\\TopazModels; everything written here is under D:."""
+Models and their extracted cache stay under settings.MODEL_CACHE_DIR; everything written here is under D:."""
 import os, glob, time
 os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
 import numpy as np
@@ -20,9 +20,9 @@ _sess = {}
 
 def session(stem):
     if stem not in _sess:
-        onnx = glob.glob(r'C:\TopazModels\%s\*.onnx' % stem)
+        onnx = glob.glob(str(settings.MODEL_CACHE_DIR / stem / '*.onnx'))
         if not onnx:
-            raise FileNotFoundError(f'no extracted .onnx for {stem} in C:\\TopazModels')
+            raise FileNotFoundError(f'no extracted .onnx for {stem} in {settings.MODEL_CACHE_DIR}')
         so = ort.SessionOptions(); so.log_severity_level = 3
         # GPU ONLY (owner rule 2026-10-20: no CPU processing). No CPU fallback: if CUDA cannot load, fail loudly.
         s = ort.InferenceSession(onnx[0], so, providers=[('CUDAExecutionProvider', {'device_id': GPU})])

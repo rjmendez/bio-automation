@@ -7,7 +7,7 @@ one-off scripts per model. The automation is the point, not any single number
 this run produces.
 
 Model directory layout (ground truth for this session, see topaz_bench_config.json):
-    C:\\TopazModels\\<stem>\\   already holds EXTRACTED plaintext OpenVINO IR
+    D:\\topazmodels\\<stem>\\   already holds EXTRACTED plaintext OpenVINO IR
     (*.xml + *.bin) and/or ONNX (*.onnx) -- no decryption step here. Internal
     filenames inside a cache directory are NOT predictable from the directory
     name (e.g. gendet-v1-fp32-256x256-1x-ov/ holds
@@ -69,12 +69,12 @@ new eval protocol):
 
 CLI:
     python topaz_bench.py --family raw_denoise --task denoise \
-        --model-dir "C:\\TopazModels\\dnt_beta-v5-fp32-512x512-ov" \
+        --model-dir "D:\\topazmodels\\dnt_beta-v5-fp32-512x512-ov" \
         --held-out-csv D:\\bio-cache\\sr-train\\denoise\\held_out_pairs.csv \
         --result-json D:\\bio-cache\\sr-train\\bench_results\\dnt_beta_denoise.json
 
     python topaz_bench.py --family auto_classifiers --task characterize \
-        --model-dir "C:\\TopazModels\\gendet-v1-fp32-256x256-1x-ox" \
+        --model-dir "D:\\topazmodels\\gendet-v1-fp32-256x256-1x-ox" \
         --result-json D:\\bio-cache\\sr-train\\bench_results\\gendet_characterize.json
 """
 from __future__ import annotations
@@ -220,7 +220,7 @@ class LoadedModel:
 
 
 def load_model(model_dir: Path, device: str = "CPU") -> LoadedModel:
-    """Load *model_dir* (a C:\\TopazModels\\<stem> directory) via OpenVINO if
+    """Load *model_dir* (a D:\\topazmodels\\<stem> directory) via OpenVINO if
     .xml/.bin are present, else via onnxruntime CPUExecutionProvider if only
     .onnx is present ("CPU execution provider is fine here, these models are
     small" -- these are Topaz-size nets, not the GPU-mandated custom SR/DA-CLIP
@@ -577,7 +577,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", required=True, help="a key from topaz_bench_config.json, carried into the result JSON")
     ap.add_argument("--task", required=True, choices=["denoise", "upscale", "characterize"])
-    ap.add_argument("--model-dir", type=Path, required=True, help=r"e.g. C:\TopazModels\dnt_beta-v5-fp32-512x512-ov")
+    ap.add_argument("--model-dir", type=Path, required=True, help=r"e.g. D:\topazmodels\dnt_beta-v5-fp32-512x512-ov")
     ap.add_argument("--result-json", type=Path, required=True)
     ap.add_argument("--device", default="CPU", help="OpenVINO compile device; ignored for ONNX models (CPU EP always)")
     ap.add_argument("--held-out-csv", type=Path, default=None,

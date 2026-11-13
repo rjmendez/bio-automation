@@ -3,9 +3,9 @@ import onnx
 from collections import Counter
 
 paths = {
-    "noise_det-v1": r"C:\TopazModels\noise_det-v1-fp16-128x128-1x-ox\noise_det-v1-fp16.onnx",
-    "liting_det-v1": r"C:\TopazModels\liting_det-v1-fp16-128x128-ox\liting_det-v1-fp16.onnx",
-    "gendet-v1-ox": r"C:\TopazModels\gendet-v1-fp32-256x256-1x-ox\gendet-v1-fp32-256x256-1x.onnx",
+    "noise_det-v1": r"D:\topazmodels\noise_det-v1-fp16-128x128-1x-ox\noise_det-v1-fp16.onnx",
+    "liting_det-v1": r"D:\topazmodels\liting_det-v1-fp16-128x128-ox\liting_det-v1-fp16.onnx",
+    "gendet-v1-ox": r"D:\topazmodels\gendet-v1-fp32-256x256-1x-ox\gendet-v1-fp32-256x256-1x.onnx",
 }
 
 for name, p in paths.items():

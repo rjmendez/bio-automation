@@ -6,9 +6,9 @@ signal-sanity-check per the research task.
 import numpy as np
 import onnxruntime as ort
 
-NOISE_PATH = r"C:\TopazModels\noise_det-v1-fp16-128x128-1x-ox\noise_det-v1-fp16.onnx"
-LITING_PATH = r"C:\TopazModels\liting_det-v1-fp16-128x128-ox\liting_det-v1-fp16.onnx"
-GENDET_PATH = r"C:\TopazModels\gendet-v1-fp32-256x256-1x-ox\gendet-v1-fp32-256x256-1x.onnx"
+NOISE_PATH = r"D:\topazmodels\noise_det-v1-fp16-128x128-1x-ox\noise_det-v1-fp16.onnx"
+LITING_PATH = r"D:\topazmodels\liting_det-v1-fp16-128x128-ox\liting_det-v1-fp16.onnx"
+GENDET_PATH = r"D:\topazmodels\gendet-v1-fp32-256x256-1x-ox\gendet-v1-fp32-256x256-1x.onnx"
 
 rng = np.random.default_rng(0)
 

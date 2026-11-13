@@ -5,7 +5,7 @@ Outputs (content_vec[512], degradation_vec[512]) per image.
 content_vec  — semantic content embedding (like standard CLIP)
 degradation_vec — describes image quality degradation type and severity
 
-Uses the extracted daclip-v2-fp32-224x224-1x-ox.onnx from C:\\TopazModels\\.
+Uses the extracted daclip-v2-fp32-224x224-1x-ox.onnx from settings.MODEL_CACHE_DIR.
 Requires: onnxruntime, numpy, Pillow  (no openvino needed for ONNX models).
 """
 from __future__ import annotations
