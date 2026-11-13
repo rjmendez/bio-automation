@@ -20,7 +20,6 @@ import hashlib
 import json
 import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Callable
 

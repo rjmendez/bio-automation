@@ -26,7 +26,7 @@ from pathlib import Path
 from . import settings
 
 from .models import Asset, Observation
-from .paths import make_observation_path, metadata_dir, source_raw_dir
+from .paths import make_observation_path, source_raw_dir
 from .pipeline import ensure_layout, process_observation
 from .auto_ingest import upsert_assets, upsert_observation
 
