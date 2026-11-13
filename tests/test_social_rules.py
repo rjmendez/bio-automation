@@ -401,6 +401,23 @@ class Photos:
         return v
 
 
+class FlakyPhotos:
+    """Stands in for the download: {url: [response, response, ...]} -- each call to that url pops the next queued item (bytes, an int
+    HTTP status, or an exception to raise); records every url asked for."""
+
+    def __init__(self, by_url):
+        self.by_url, self.calls = by_url, []
+
+    def __call__(self, url):
+        self.calls.append(url)
+        v = self.by_url[url].pop(0)
+        if isinstance(v, int):
+            raise urllib.error.HTTPError(url, v, "status", {}, None)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+
 class Sleeps:
     def __init__(self):
         self.calls = []
@@ -463,6 +480,30 @@ class TestFetchBestPhoto:
             social.fetch_best_photo(5, tmp_path, min_edge=1000, get=Photos({open_data(5, "original"): 500}), sleep=Sleeps())
         with pytest.raises(SkipObservation, match=r"^iNat photo 5: URLError: .*no route"):
             social.fetch_best_photo(5, tmp_path, min_edge=1000, get=Photos({open_data(5, "original"): urllib.error.URLError("no route")}), sleep=Sleeps())
+
+    def test_a_transient_server_error_is_retried_and_a_later_success_is_still_kept(self, tmp_path):
+        url = open_data(5, "original")
+        big = jpeg_bytes((2048, 1365))
+        get, sleeps = FlakyPhotos({url: [503, big]}), Sleeps()
+        got = social.fetch_best_photo(5, tmp_path, min_edge=1000, get=get, sleep=sleeps)
+        assert got.read_bytes() == big
+        assert get.calls == [url, url]
+        assert sleeps.calls == [social.PHOTO_RETRY_BACKOFF_S, social.PHOTO_PAUSE_S]
+
+    def test_a_persistent_server_error_still_skips_the_observation_after_retrying(self, tmp_path):
+        url = open_data(5, "original")
+        get, sleeps = FlakyPhotos({url: [503, 503, 503]}), Sleeps()
+        with pytest.raises(SkipObservation, match=r"^iNat photo 5: HTTP 503 from https://inaturalist-open-data"):
+            social.fetch_best_photo(5, tmp_path, min_edge=1000, get=get, sleep=sleeps)
+        assert get.calls == [url, url, url]                                            # PHOTO_RETRIES=2 retries: 3 attempts total
+        assert sleeps.calls == [social.PHOTO_RETRY_BACKOFF_S, social.PHOTO_RETRY_BACKOFF_S * 2, social.PHOTO_PAUSE_S]
+
+    def test_a_non_retryable_status_is_never_retried(self, tmp_path):
+        url = open_data(5, "original")
+        get = Photos({url: 401, open_data(5, "large"): 401})
+        with pytest.raises(SkipObservation, match=r"^iNat photo 5: HTTP 401 from https://inaturalist-open-data"):
+            social.fetch_best_photo(5, tmp_path, min_edge=1000, get=get, sleep=Sleeps())
+        assert get.calls == [url]                                                      # no retry for a non-retryable status
 
 
 class TestResolvePhotos:

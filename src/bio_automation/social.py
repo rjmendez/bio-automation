@@ -286,10 +286,35 @@ def _http_photo(url: str) -> bytes:
         return r.read()
 
 
+PHOTO_RETRIES = 2                                                 # retries after the first attempt, for a transient open-data error
+PHOTO_RETRYABLE_STATUS = frozenset({500, 502, 503, 504})          # not 403/404: those mean "no copy at this size", never retried
+PHOTO_RETRY_BACKOFF_S = 2.0                                       # first retry wait; doubles each time
+
+
+def _get_retrying(get: Callable[[str], bytes], url: str, *, sleep: Callable[[float], None], retries: int = PHOTO_RETRIES,
+                  backoff_s: float = PHOTO_RETRY_BACKOFF_S) -> bytes:
+    """`get(url)`, retrying up to `retries` times (waiting `backoff_s`, doubling each time) on a transient open-data error (500/502/503/504)
+    or a network error (URLError/OSError). A 403/404, any other HTTP status, or the final attempt's error is raised unchanged."""
+    wait = backoff_s
+    for attempt in range(retries + 1):
+        try:
+            return get(url)
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404) or e.code not in PHOTO_RETRYABLE_STATUS or attempt == retries:
+                raise
+        except (urllib.error.URLError, OSError):
+            if attempt == retries:
+                raise
+        sleep(wait)
+        wait *= 2
+    raise AssertionError("unreachable")
+
+
 def fetch_best_photo(photo_id: int, dest_dir: Path, *, min_edge: int, get: Callable[[str], bytes] | None = None,
                      sleep: Callable[[float], None] = time.sleep, pause_s: float = PHOTO_PAUSE_S) -> Path:
     """<dest_dir>/<photo id>.jpg: the biggest copy of the iNat photo in iNat's open data (original, else large) that is at least `min_edge`
-    px on its long side, downloaded once and kept. SkipObservation when there is none (not in open data, too small, or the network failed)."""
+    px on its long side, downloaded once and kept. SkipObservation when there is none (not in open data, too small, or a transient
+    error outlasted PHOTO_RETRIES retries)."""
     dest = Path(dest_dir) / f"{photo_id}.jpg"
     if dest.is_file():
         with contextlib.suppress(OSError):
@@ -300,7 +325,7 @@ def fetch_best_photo(photo_id: int, dest_dir: Path, *, min_edge: int, get: Calla
     for size in PHOTO_SIZES:
         url = OPEN_DATA_URL.format(id=photo_id, size=size)
         try:
-            data = get(url)
+            data = _get_retrying(get, url, sleep=sleep)
         except urllib.error.HTTPError as e:
             if e.code in (403, 404):                              # not in open data, or not in that size
                 continue
@@ -522,18 +547,19 @@ class Ledger:
         return "\n"
 
     def drafts(self) -> dict[str, dict]:
-        """{draft_id: {"state", "obs_id", "month", "drafted_at", "last": <last state record>, "seq": its ledger position, "approved_hash",
-        "approved_seq": position of the owner's approval, "last_error": the last error note}}."""
+        """{draft_id: {"state", "obs_id", "month", "drafted_at", "image_hashes", "last": <last state record>, "seq": its ledger position,
+        "approved_hash", "approved_seq": position of the owner's approval, "last_error": the last error note}}."""
         out: dict[str, dict] = {}
         for seq, r in enumerate(self.records()):
             d = out.setdefault(r["draft_id"], {"obs_id": r.get("obs_id"), "month": r.get("month"), "drafted_at": r["at"], "approved_hash": None,
-                                               "obs_ids": r.get("obs_ids"), "for_date": r.get("for_date"), "theme": r.get("theme")})
+                                               "obs_ids": r.get("obs_ids"), "for_date": r.get("for_date"), "theme": r.get("theme"),
+                                               "image_hashes": r.get("image_hashes")})
             if r["event"] in NOTES:
                 d["last_error"] = r
                 continue
             if r["event"] == "drafted":            # a (re)draft under this id (after a withdrawal): its observations, day and theme are the latest record's
                 d.update(obs_id=r.get("obs_id"), month=r.get("month"), drafted_at=r["at"], approved_hash=None, obs_ids=r.get("obs_ids"),
-                         for_date=r.get("for_date"), theme=r.get("theme"))
+                         for_date=r.get("for_date"), theme=r.get("theme"), image_hashes=r.get("image_hashes"))
                 d.pop("approved_seq", None)
             d["state"], d["last"], d["seq"] = r["event"], r, seq       # seq: ledger position (timestamps tie within a second)
             if r["event"] == "approved":
@@ -994,10 +1020,11 @@ def make_draft(obs_id: int, rels: list[str], *, month: str, gallery_dir: Path, d
         if stop is not None:
             shutil.rmtree(out)
             raise HookRejected(f"observation {obs_id}: {stop[1].reason or stop[0].name}")
-        images.append({"file": name, "source": rel, "alt": alt, **info, "alt_attempts": context["attempts"],
+        images.append({"file": name, "source": rel, "alt": alt, "image_hash": hashlib.sha256((out / name).read_bytes()).hexdigest(), **info,
+                       "alt_attempts": context["attempts"],
                        **({"style_examples": context["style"]["examples"]} if style is not None else {})})
     draft = {"draft_id": draft_id, "month": month, "obs_id": obs_id, "url": INAT_OBS_URL.format(obs_id), "text": text_segments(obs, prints_url),
-             "images": images, "vision_model": model, "observation": obs,
+             "images": images, "image_hashes": sorted({i["image_hash"] for i in images}), "vision_model": model, "observation": obs,
              "created_at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds")}
     (out / "draft.json").write_text(json.dumps(draft, indent=1, ensure_ascii=False), encoding="utf-8")
     return draft
@@ -1132,7 +1159,7 @@ def draft_month(index: dict, ledger: Ledger, *, today: dt.date, gallery_dir: Pat
                     audit.log("draft_reject_cap", scope="single", limit=rejects.limit, drafted=len(report["drafted"]))
                     break
             continue
-        ledger.append_locked("drafted", draft["draft_id"], obs_id=obs_id, month=month, images=len(draft["images"]))
+        ledger.append_locked("drafted", draft["draft_id"], obs_id=obs_id, month=month, images=len(draft["images"]), image_hashes=draft["image_hashes"])
         audit.log("drafted", draft_id=draft["draft_id"], obs_id=obs_id, print=obs_id in prints, images=len(draft["images"]))
         report["drafted"].append(draft["draft_id"])
     return report
@@ -1218,7 +1245,8 @@ def make_group_draft(obs_ids: list[int], rels_of: dict[int, list[str]], theme, d
             items.append({"common": tx.get("preferred_common_name") or tx.get("common_name"), "name": tx.get("name"), "print": prints.get(o)})
         draft = {"draft_id": draft_id, "month": month, "for_date": day.isoformat(), "theme": theme.key, "obs_id": picked[0][0],
                  "obs_ids": [o for o, _ in picked], "url": picked[0][1]["url"], "text": group_text_segments(theme, items), "images": images,
-                 "vision_model": model, "observations": {str(o): d["observation"] for o, d in picked},
+                 "image_hashes": sorted({i["image_hash"] for i in images}), "vision_model": model,
+                 "observations": {str(o): d["observation"] for o, d in picked},
                  "created_at": (now or dt.datetime.now(settings.LOCAL_TZ)).isoformat(timespec="seconds")}
         (out / "draft.json").write_text(json.dumps(draft, indent=1, ensure_ascii=False), encoding="utf-8")
         return draft, skipped
@@ -1305,7 +1333,7 @@ def draft_themes(index: dict, ledger: Ledger, taxonomy: dict[int, dict], themes:
         for o, reason in skipped.items():
             audit.log("draft_skipped", obs_id=o, theme=theme.key, reason=reason)
         ledger.append_locked("drafted", draft["draft_id"], obs_id=draft["obs_id"], obs_ids=draft["obs_ids"], month=draft["month"], kind="theme",
-                             theme=theme.key, for_date=draft["for_date"], images=len(draft["images"]))
+                             theme=theme.key, for_date=draft["for_date"], images=len(draft["images"]), image_hashes=draft["image_hashes"])
         audit.log("theme_drafted", draft_id=draft["draft_id"], theme=theme.key, for_date=draft["for_date"], obs_ids=draft["obs_ids"],
                   with_print=sum(1 for o in draft["obs_ids"] if o in prints))
         taken |= set(draft["obs_ids"])

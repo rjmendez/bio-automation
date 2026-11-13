@@ -233,7 +233,8 @@ class TestPreSendGate:
         social_state.register_hooks()
         assert [(h.name, h.rule, h.priority) for h in social_hooks.hooks("pre_send")] == [
             ("ledger_integrity", "ledger_integrity", 2), ("duplicate_post", "ledger_integrity", 3)]
-        assert [(h.name, h.rule, h.priority) for h in social_hooks.hooks("maintenance")] == [("daily_backup", "ledger_integrity", 90)]
+        assert [(h.name, h.rule, h.priority) for h in social_hooks.hooks("maintenance")] == [
+            ("daily_backup", "ledger_integrity", 90), ("restore_check", "ledger_integrity", 91)]
 
     def dup_world(self, tmp_path, other_state):
         """Draft d-new wants observation 1, which draft d-old (observation 1 and 7) is in `other_state`."""
@@ -265,6 +266,40 @@ class TestPreSendGate:
         ledger.append("drafted", "d-other", obs_id=50, month="2026-10", now=NOW)
         assert social_state.duplicate_gate({"draft_id": "d-old", "ledger": ledger}) is None
         assert social_state.duplicate_gate({"draft_id": "d-other", "ledger": ledger}) is None
+
+    def image_hash_world(self, tmp_path, other_state):
+        """Draft d-new (observation 2) shares image hash 'aaa1' with draft d-old (observation 1, a DIFFERENT observation) in `other_state`."""
+        ledger = Ledger(tmp_path / "hash-dup.jsonl")
+        ledger.append("drafted", "d-old", obs_id=1, month="2026-10", image_hashes=["aaa1"], now=NOW)
+        ledger.append("approved", "d-old", obs_id=1, month="2026-10", hash="h", now=NOW)
+        if other_state in ("posting", "posted"):
+            ledger.append("posting", "d-old", obs_id=1, month="2026-10", now=NOW)
+        if other_state == "posted":
+            ledger.append("posted", "d-old", obs_id=1, month="2026-10", uri="at://u", now=NOW)
+        if other_state == "withdrawn":
+            ledger.append("withdrawn", "d-old", obs_id=1, month="2026-10", reason="x", now=NOW)
+        ledger.append("drafted", "d-new", obs_id=2, month="2026-10", image_hashes=["aaa1", "bbb2"], now=NOW)
+        return ledger
+
+    @pytest.mark.parametrize("state", ["posted", "posting"])
+    def test_duplicate_gate_withdraws_a_shared_image_hash_even_under_a_different_observation(self, tmp_path, state):
+        ledger = self.image_hash_world(tmp_path, state)
+        verdict = social_state.duplicate_gate({"draft_id": "d-new", "ledger": ledger})
+        assert verdict == social_hooks.Verdict(
+            "withdraw", f"image aaa1... is already in {state} draft d-old (different observation id); posting d-new would be a duplicate photo")
+
+    @pytest.mark.parametrize("state", ["approved", "withdrawn"])
+    def test_duplicate_gate_passes_a_shared_image_hash_when_the_other_draft_is_not_posted_or_posting(self, tmp_path, state):
+        ledger = self.image_hash_world(tmp_path, state)
+        assert social_state.duplicate_gate({"draft_id": "d-new", "ledger": ledger}) is None
+
+    def test_duplicate_gate_passes_different_observations_with_no_shared_image_hash(self, tmp_path):
+        ledger = Ledger(tmp_path / "no-hash-dup.jsonl")
+        ledger.append("drafted", "d-old", obs_id=1, month="2026-10", image_hashes=["aaa1"], now=NOW)
+        ledger.append("posting", "d-old", obs_id=1, month="2026-10", now=NOW)
+        ledger.append("posted", "d-old", obs_id=1, month="2026-10", uri="at://u", now=NOW)
+        ledger.append("drafted", "d-new", obs_id=2, month="2026-10", image_hashes=["ccc3"], now=NOW)
+        assert social_state.duplicate_gate({"draft_id": "d-new", "ledger": ledger}) is None
 
     def test_a_duplicate_is_withdrawn_in_the_run_and_the_next_draft_goes_out(self, tmp_path):
         social_state.register_hooks()
@@ -553,6 +588,52 @@ class TestDailyBackupHook:
         assert social_state.backups() == []
         social_hooks.run("maintenance", ctx, rules=rules_with(), audit=Audit())
         assert len(social_state.backups()) == 1
+
+
+class TestRestoreCheckHook:
+    def ctx(self, day):
+        return {"drafts_dir": Path("."), "ledger": Ledger(settings.SOCIAL_LEDGER), "rules": rules_with(), "today": day}
+
+    def marker(self):
+        from bio_automation import sync_marker
+        return sync_marker.load(settings.SOCIAL_RESTORE_CHECK_MARKER).get("restore-check")
+
+    def test_the_first_run_of_a_day_checks_and_the_second_does_not(self):
+        seed_files()
+        day = dt.date.today()
+        social_state.make_backup(now=dt.datetime.combine(day, dt.time(1), settings.LOCAL_TZ))   # fresh enough: not stale
+        social_state.restore_check_maintenance(self.ctx(day))
+        assert [r["event"] for r in logged() if r["event"].startswith("restore_check")] == ["restore_check"]
+        assert self.marker()["ok"] is True
+        social_state.restore_check_maintenance(self.ctx(day))
+        assert [r["event"] for r in logged() if r["event"].startswith("restore_check")] == ["restore_check"]   # still just the one run
+
+    def test_a_check_from_yesterday_runs_again_today(self):
+        from bio_automation import sync_marker
+
+        seed_files()
+        today = dt.date.today()
+        social_state.make_backup(now=dt.datetime.combine(today, dt.time(1), settings.LOCAL_TZ))   # fresh enough: not stale
+        yesterday = today - dt.timedelta(days=1)
+        sync_marker.record("restore-check", {"ok": True, "name": "x"}, path=settings.SOCIAL_RESTORE_CHECK_MARKER,
+                           now=dt.datetime.combine(yesterday, dt.time(12), settings.LOCAL_TZ))
+        social_state.restore_check_maintenance(self.ctx(today))
+        assert [r["event"] for r in logged() if r["event"].startswith("restore_check")] == ["restore_check"]
+
+    def test_a_missing_backup_is_recorded_as_not_ok_and_still_counts_as_todays_run(self):
+        social_state.restore_check_maintenance(self.ctx(dt.date.today()))              # no backup exists at all
+        assert [r["event"] for r in logged() if r["event"].startswith("restore_check")] == ["restore_check_failed"]
+        assert self.marker()["ok"] is False
+
+    def test_it_runs_through_the_maintenance_stage_only_while_the_rule_is_on(self):
+        seed_files()
+        social_state.make_backup(now=T0)
+        social_state.register_hooks()
+        ctx = self.ctx(dt.date.today())
+        social_hooks.run("maintenance", ctx, rules=rules_with(ledger_integrity=False), audit=Audit())
+        assert self.marker() is None
+        social_hooks.run("maintenance", ctx, rules=rules_with(), audit=Audit())
+        assert self.marker() is not None
 
 
 class TestRestore:

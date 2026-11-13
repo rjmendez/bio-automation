@@ -227,18 +227,25 @@ def ledger_gate(ctx: dict) -> Verdict | None:
 
 def duplicate_gate(ctx: dict) -> Verdict | None:
     """pre_send, rule ledger_integrity: withdraw a candidate when any of its observations is already in a posted or posting draft with a different
-    draft id (two drafts of one observation, e.g. a single and a themed one, must not both go out). A pass for the same draft id."""
+    draft id (two drafts of one observation, e.g. a single and a themed one, must not both go out). Also withdraws when one of its images'
+    content (image_hash) matches an already posted/posting draft's, even under a different observation id -- the same physical photo
+    indexed under two different observations must still not post twice. A pass for the same draft id."""
     drafts = ctx["ledger"].drafts()
     mine = drafts.get(ctx["draft_id"])
     if mine is None:
         return None
     wanted = {str(o) for o in _obs_of(mine)}
+    mine_hashes = set(mine.get("image_hashes") or [])
     for did, v in sorted(drafts.items()):
         if did == ctx["draft_id"] or v.get("state") not in ("posted", "posting"):
             continue
         shared = sorted(wanted & {str(o) for o in _obs_of(v)})
         if shared:
             return Verdict("withdraw", f"observation {', '.join(shared)} is already in {v['state']} draft {did}; posting {ctx['draft_id']} would be a duplicate")
+        shared_images = sorted(mine_hashes & set(v.get("image_hashes") or []))
+        if shared_images:
+            return Verdict("withdraw", f"image {shared_images[0][:12]}... is already in {v['state']} draft {did} (different observation id); "
+                                       f"posting {ctx['draft_id']} would be a duplicate photo")
     return None
 
 
@@ -739,9 +746,25 @@ def add_parsers(sub) -> None:
     p.add_argument("--scratch", default=None, help="folder to restore into (default <cache dir>/tmp; a temp subfolder, deleted afterwards)")
 
 
+def restore_check_maintenance(ctx: dict) -> None:
+    """maintenance, rule ledger_integrity: once a day, restore_check()'s the newest backup into a scratch folder and validates it (touches
+    no live file) -- so a backup that was made but is corrupt or stale is caught here instead of staying unnoticed until a real restore
+    is needed."""
+    from . import sync_marker
+
+    marker_path = settings.SOCIAL_RESTORE_CHECK_MARKER
+    last_at = sync_marker.load(marker_path).get("restore-check", {}).get("at", "")
+    if last_at[:10] == ctx["today"].isoformat():
+        return None
+    result = restore_check()
+    sync_marker.record("restore-check", {"ok": result["ok"], "name": result["name"]}, path=marker_path)
+    return None
+
+
 def register_hooks() -> None:
     from . import social_hooks
 
     social_hooks.register("ledger_integrity", "pre_send", ledger_gate, rule="ledger_integrity", priority=2)
     social_hooks.register("duplicate_post", "pre_send", duplicate_gate, rule="ledger_integrity", priority=3)
     social_hooks.register("daily_backup", "maintenance", daily_backup, rule="ledger_integrity", priority=90)
+    social_hooks.register("restore_check", "maintenance", restore_check_maintenance, rule="ledger_integrity", priority=91)

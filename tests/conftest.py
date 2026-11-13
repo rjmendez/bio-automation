@@ -54,6 +54,7 @@ def private_prints_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SOCIAL_BACKUP_DIR", tmp_path / "no-prints" / "backups")
     monkeypatch.setattr(settings, "SOCIAL_BACKUP_OFFSITE_DIR", "")
     monkeypatch.setattr(settings, "QDRANT_SYNC_MARKER", tmp_path / "no-prints" / "qdrant_sync_marker.json")
+    monkeypatch.setattr(settings, "SOCIAL_RESTORE_CHECK_MARKER", tmp_path / "no-prints" / "restore_check_marker.json")
     monkeypatch.setattr(settings, "SOCIAL_ENGAGEMENT_LOG", tmp_path / "no-prints" / "engagement.jsonl")
     monkeypatch.setattr(settings, "GALLERY_TITLE_CACHE", tmp_path / "no-prints" / "titles_cache.json")
     monkeypatch.setattr(settings, "GALLERY_OBS_INDEX", tmp_path / "no-prints" / "gallery_obs_index.json")
