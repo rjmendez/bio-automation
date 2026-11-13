@@ -52,8 +52,7 @@ COMMON_WORDS = frozenset({"black", "white", "red", "green", "blue", "yellow", "b
                           "high", "great", "old", "upper", "lower", "middle", "falls", "glen", "pine", "oak", "maple", "cedar", "beaver", "bucks",
                           "bear", "deer", "eagle", "hawk", "fox", "wolf", "bald", "sandy", "rocky", "cold", "clear", "round", "flat", "grove"})
 SEASON_WORDS = frozenset({"spring", "summer", "fall", "autumn", "winter"})
-HIDING = ("private", "obscured-private", "obscured")  # geoprivacy / taxon_geoprivacy values under which the true (or even a general) place is not for the text
-TAXON_HIDING = HIDING                                 # kept as a name: a taxon-obscured observation's coordinates must not leak either
+HIDING = ("private", "obscured-private", "obscured")  # geoprivacy / taxon_geoprivacy values under which the true (or even a general) place is not for the text; applies equally when a taxon-obscured observation's coordinates must not leak
 LEAK_COORDINATES, LEAK_ADDRESS, LEAK_PLACE = "coordinates", "street address", "place finer than the county"
 
 
