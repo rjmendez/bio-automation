@@ -681,7 +681,6 @@ def cmd_export_stock(args: argparse.Namespace) -> int:
 
 def cmd_export_zip(args: argparse.Namespace) -> int:
     import getpass
-    import os
     import socket
     out_dir = Path(args.out_dir or settings.env(settings.DOWNLOAD_DIR_ENV, DEFAULT_DOWNLOAD_DIR))
     try:
@@ -1228,7 +1227,7 @@ def cmd_darkroom_sync(args: argparse.Namespace) -> int:
 def cmd_qdrant_sync(args: argparse.Namespace) -> int:
     import json
 
-    from . import daclip, darkroom, inat, qdrant_obs, social
+    from . import daclip, inat, qdrant_obs, social
 
     session = []
 
