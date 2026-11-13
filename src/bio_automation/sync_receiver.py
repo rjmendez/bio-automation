@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
