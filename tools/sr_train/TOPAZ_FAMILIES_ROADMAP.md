@@ -1,7 +1,7 @@
 # Topaz Photo AI Model Families — Research + Benchmark Roadmap
 
 Session: 2026-10-23. Worktree: `D:\dev\bio-sr-train` (branch `feat/custom-sr-model`).
-Scope: five unused Topaz Photo AI model families in `C:\TopazModels`, evaluated as
+Scope: five unused Topaz Photo AI model families in `D:\topazmodels`, evaluated as
 candidates to improve or replace what `bio_automation`'s `enhance()` pipeline currently
 wires in. Nothing here is wired into `D:\apps\bio-automation` — that stays a separate,
 deliberate decision per this project's standing rule.
@@ -144,7 +144,7 @@ masked-enhancement step (e.g. sharpen-only-the-subject) is ever built, go straig
 upstream MobileSAM (Apache-2.0, ~10MB, near-identical mask quality) or full SAM/SAM2
 (Apache-2.0) rather than reverse-engineering Topaz's prompt-wrapper conventions. Note in
 passing: a separate, smaller `smp_flexible-v2`/`sms_new-v3`/`s_mask_l_flexible-v2` family
-(320×320) also exists in `C:\TopazModels` and looks like Topaz's own lighter subject-mask
+(320×320) also exists in `D:\topazmodels` and looks like Topaz's own lighter subject-mask
 net, distinct from the SAM pair — out of scope here, worth knowing it exists if "subject
 mask" comes up again.
 

@@ -1,6 +1,6 @@
 # topaz_lab
 
-GPU-only (onnxruntime CUDA, no CPU fallback) experiments with the owner's Topaz models (read from C:\TopazModels, never copied).
+GPU-only (onnxruntime CUDA, no CPU fallback) experiments with the owner's Topaz models (read from settings.MODEL_CACHE_DIR, D:\topazmodels, never copied).
 Scores outputs against synthetic ground truth. Working files go under D:\bio-cache\photos.
 
 - `lab.py`: session loader (fails loudly if CUDA is not active), tiled runner (symmetric window), PSNR/own SSIM, noise helpers.

@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 MODELS_DIR = Path(r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
-CACHE_DIR = Path(r"C:\TopazModels")
+CACHE_DIR = Path(r"D:\topazmodels")
 SUBJECT_MASK_MODEL = "s_mask_l_flexible-v2-fp16-320x320-ov.tz2"
 
 

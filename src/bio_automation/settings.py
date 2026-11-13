@@ -79,7 +79,7 @@ EXIFTOOL_DEFAULT = PROGRAM_FILES / "ZereneStacker" / "exiftool" / "exiftool.exe"
 FOCUS_STACK_ENV = "BIO_FOCUS_STACK"
 FOCUS_STACK_DEFAULT = HOME / "AppData" / "Local" / "Programs" / "focus-stack" / "focus-stack" / "focus-stack.exe"
 TOPAZ_MODELS_DIR = env_path("BIO_TOPAZ_MODELS_DIR", r"C:\ProgramData\Topaz Labs LLC\Topaz Photo AI\models")
-MODEL_CACHE_DIR = env_path("BIO_MODEL_CACHE_DIR", r"C:\TopazModels")   # extracted ONNX models (DA-CLIP, Topaz)
+MODEL_CACHE_DIR = env_path("BIO_MODEL_CACHE_DIR", r"D:\topazmodels")   # extracted ONNX models (DA-CLIP, Topaz); moved off C: 2026-10-26
 # "ghqv2" (Topaz, default -- never silently switched) or "custom" (bio-sr2x-v1, trained on the owner's own
 # photos). NOT a validated win: the +5.01 dB vs bicubic number from the first checkpoint was a training/
 # deploy domain-mismatch artifact (see sr_model.py's own STATUS block) -- that checkpoint shipped softer

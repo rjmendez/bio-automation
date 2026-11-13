@@ -433,7 +433,7 @@ class TestSubjectConsistencyGate:
         _, _, fake_zerene, fake_focus_stack, fake_check, _, fake_decode = self._prep(
             tmp_path, monkeypatch, outliers=[]
         )
-        model_path = r"C:\TopazModels\daclip-v2-fp32-224x224-1x-ox\daclip-v2-fp32-224x224-1x.onnx"
+        model_path = r"D:\topazmodels\daclip-v2-fp32-224x224-1x-ox\daclip-v2-fp32-224x224-1x.onnx"
 
         def _raise_missing():
             raise FileNotFoundError(f"DA-CLIP model not found: {model_path}")
